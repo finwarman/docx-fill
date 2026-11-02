@@ -15,6 +15,7 @@ fn reads_every_option() {
         "comments": { "author": "Jane", "initials": "J", "date": "2026-11-02T09:00:00Z" },
         "footnotes": { "raw": true, "refProperties": "<w:b/>", "refRun": "<w:r/>", "paragraphProperties": "<w:keepNext/>", "runProperties": "<w:i/>" },
         "table": { "paragraphValidation": "ignore", "autoResizeTable": true },
+        "htmlStyleSheet": "p { color: red }",
         "document": {
             "readOnly": true,
             "language": "en-GB",
@@ -47,6 +48,7 @@ fn reads_every_option() {
     assert_eq!(options.footnotes.run_properties.as_deref(), Some("<w:i/>"));
     assert_eq!(options.table.paragraph_validation, docx_fill::TableValidation::Ignore);
     assert_eq!(options.table.resize, docx_fill::TableResize::KeepColumns);
+    assert_eq!(options.html_style_sheet, "p { color: red }");
     let document = &options.document;
     assert!(document.read_only);
     assert_eq!(document.language.as_deref(), Some("en-GB"));

@@ -100,6 +100,10 @@ impl FillOptions {
                 "continuedBookmarks" => self.continued_bookmarks = Some(read_string(value, key)?),
                 "expressions" => self.expressions = read_bool(value, key)?,
                 "filters" => self.filters = read_array(value, key)?.iter().map(|each| read_string(each, key)).collect::<Result<_, _>>()?,
+                "htmlStyleSheet" => {
+                    self.html_style_sheet = read_string(value, key)?;
+                    crate::rich_text::validate_style_sheet(&self.html_style_sheet).map_err(FillError::new)?;
+                }
                 _ => return Err(unknown(key)),
             }
         }
