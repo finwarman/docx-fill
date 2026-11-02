@@ -555,3 +555,8 @@ fn keeps_the_innermost_loop_index_when_trying_an_outer_scope() {
 
     assert_eq!(fill_text("{#l}{#m}[{$index ? 'Y' : q.r}]{/m}{/l}", &data), "[][Y][][Y]");
 }
+
+#[test]
+fn filters_the_assignment_result() {
+    assert_eq!(fill_text("{v = s | upper}|{v}", &data()), "ABC|abc");
+}

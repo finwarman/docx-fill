@@ -242,7 +242,7 @@ impl Parser<'_> {
         loop {
             while self.eat(";") {}
             if self.at == self.tokens.len() || self.tokens.get(self.at) == Some(&Token::Symbol(")")) { break; }
-            items.push(self.assignment()?);
+            items.push(self.filter_chain()?);
             if !self.eat(";") { break; }
         }
         Ok(match items.len() {
@@ -253,7 +253,7 @@ impl Parser<'_> {
     }
 
     fn assignment(&mut self) -> Result<Expression, String> {
-        let target = self.filter_chain()?;
+        let target = self.conditional()?;
         if !self.eat("=") { return Ok(target); }
         if !target.assignable() { return Err("the assignment target is not a name or property".into()); }
         self.nest()?;
@@ -278,8 +278,9 @@ impl Parser<'_> {
         }
     }
 
+    // Filters bind loosest, so `{a = b | f}` stores `b` and prints `f(b)`.
     fn filter_chain(&mut self) -> Result<Expression, String> {
-        let mut expression = self.conditional()?;
+        let mut expression = self.assignment()?;
         while self.eat("|") {
             let Some(Token::Name(name)) = self.tokens.get(self.at).cloned() else { return Err("expected a filter's name".to_string()) };
             self.at += 1;
@@ -374,7 +375,7 @@ impl Parser<'_> {
                 expression = Expression::Property(Box::new(expression), name);
             } else if self.eat("[") {
                 self.nest()?;
-                let index = self.assignment()?;
+                let index = self.filter_chain()?;
                 self.nesting -= 1;
                 self.expect("]")?;
                 expression = Expression::Index(Box::new(expression), Box::new(index));
@@ -426,7 +427,7 @@ impl Parser<'_> {
                 self.nest()?;
                 let mut items = Vec::new();
                 while !self.eat("]") {
-                    items.push(self.assignment()?);
+                    items.push(self.filter_chain()?);
                     if !self.eat(",") {
                         self.expect("]")?;
                         break;
@@ -714,11 +715,14 @@ impl<'a> Evaluation<'_, 'a> {
             // any loop, as in core.
             Expression::LoopIndex => self.loop_indexes.last().map_or(Evaluated::owned(Value::Null), |&index| Evaluated::Float(index as f64)),
             Expression::Identifier(name) => self.identifier(name, level),
-            Expression::Property(object, name) => property(self.at_level(object, level), name),
+            Expression::Property(object, name) => {
+                let object = self.at_level(object, level);
+                property(self.with_assignments(object), name)
+            }
             Expression::Index(object, key) => {
                 let object = self.at_level(object, level);
                 let key = self.at_level(key, level);
-                index(object, &key)
+                index(self.with_assignments(object), &key)
             }
             Expression::Array(items) => Evaluated::owned(Value::Array(items.iter().map(|item| self.json_at(item, level)).collect())),
             Expression::Unary(operator, operand) => {
@@ -765,7 +769,8 @@ impl<'a> Evaluation<'_, 'a> {
             Expression::Assignment(target, value) => {
                 let value = self.at_level(value, level).into_value().map(Cow::into_owned);
                 let Some((name, path)) = self.target_path(target, level) else { return Evaluated::Undefined };
-                let owner = if path.is_empty() { level } else {
+                // A loop over plain values has no object to hold a name, so it goes to the nearest one that does.
+                let owner = if path.is_empty() { (0..=level).rev().find(|&index| self.scopes[index].is_object()).unwrap_or(level) } else {
                     std::iter::once(level).chain((0..self.scopes.len()).rev()).find(|&index| {
                         self.assignments.get(self.scopes[index], &name).map_or_else(|| self.scopes[index].get(&name).is_some_and(|value| !value.is_null()), |value| value.as_ref().is_some_and(|value| !value.is_null()))
                     }).unwrap_or(level)
@@ -802,6 +807,14 @@ impl<'a> Evaluation<'_, 'a> {
                 Some((root, path))
             }
             _ => None,
+        }
+    }
+
+    /// A loop item read through a path, such as `rows[0]`, with the names assigned inside its loop.
+    fn with_assignments(&self, value: Evaluated<'a>) -> Evaluated<'a> {
+        match &value {
+            Evaluated::Data(Cow::Borrowed(item)) if self.assignments.scopes.contains_key(&Assignments::key(item)) => Evaluated::owned(self.assignments.scope(item)),
+            _ => value,
         }
     }
 

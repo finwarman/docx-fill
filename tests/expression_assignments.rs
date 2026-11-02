@@ -60,3 +60,17 @@ fn assignments_share_package_scope() {
 
     assert_eq!(text(&String::from_utf8_lossy(&header.1)), "filled");
 }
+
+#[test]
+fn reads_loop_item_assignments_through_paths() {
+    let xml = fill(&paragraph(&["{#rows}{c=n}{/rows}|{rows[0].c}|{c}"]), json!({"rows":[{"n":1}]}));
+
+    assert_eq!(text(&xml), "|1|");
+}
+
+#[test]
+fn keeps_assignments_from_loops_over_plain_values() {
+    let xml = fill(&paragraph(&["{#vals}{t=1}{t}{/vals}|{t}|{#flag}{u=2}{/flag}{u}"]), json!({"vals":[1,2],"flag":true}));
+
+    assert_eq!(text(&xml), "11|1|2");
+}
