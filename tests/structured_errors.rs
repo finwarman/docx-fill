@@ -1,6 +1,6 @@
 mod common;
 
-use common::{document, paragraph};
+use common::{cell, document, paragraph, row, table};
 use docx_fill::{FillErrorId, FillOptions, PackageTemplate, Template};
 
 #[test]
@@ -56,4 +56,13 @@ fn identifies_malformed_xml() {
     let error = Template::parse("<w:p><w:r></w:p>", &FillOptions::default()).err().unwrap();
 
     assert_eq!(error.id, FillErrorId::MalformedXml);
+}
+
+#[test]
+fn identifies_unbalanced_table_loops() {
+    let xml = document(&table(&[row(&[cell(&["{#a}1{/a}{#b}"]), cell(&["2{/b}"])])]));
+    let error = Template::parse(&xml, &FillOptions::default()).err().unwrap();
+
+    assert_eq!(error.id.as_str(), "unbalanced_loop_tags");
+    assert_eq!(error.tag.as_deref(), Some("/b"));
 }

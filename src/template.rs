@@ -1109,7 +1109,7 @@ fn check_cell_loops(parts: &[Part], tags: &[Tag], opening: usize, closing: usize
     let pair = |name: &str| format!("{start}#{name}{end}{start}/{name}{end}");
     let (loop_name, other_name) = (&tags[opening].name, &other.name);
     let written = if before.is_some() { pair(other_name) + &pair(loop_name) } else { pair(loop_name) + &pair(other_name) };
-    Err(FillError::new(format!("Unbalanced loop tags {written}: a loop across table cells cannot share its first or last cell with another loop")))
+    Err(FillError::new(format!("Unbalanced loop tags {written}: a loop across table cells cannot share its first or last cell with another loop")).with_id(crate::FillErrorId::UnbalancedLoopTags))
 }
 
 fn not_inside(tag: &Tag, element: &str) -> FillError {
