@@ -22,6 +22,7 @@ mod empty_last_page;
 mod expressions;
 mod footnotes;
 mod full_table;
+mod html;
 mod images;
 mod includes;
 mod json;
@@ -53,6 +54,7 @@ pub use empty_last_page::drop_empty_last_page;
 pub use comments::CommentDefaults;
 pub use footnotes::{FootnoteContent, FootnoteOptions};
 pub use full_table::{TableOptions, TableResize, TableValidation};
+pub use html::{HtmlBlockMode, HtmlCustomization, HtmlElement, HtmlFragment, HtmlOptions, HtmlTagKind};
 pub use images::{Image, ImageLength, ImageSize};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
@@ -260,6 +262,7 @@ pub struct FillOptions {
     pub filters: Vec<String>,
     /// CSS applied to HTML values before their inline styles.
     pub html_style_sheet: String,
+    pub html: HtmlOptions,
 }
 
 impl Default for FillOptions {
@@ -287,6 +290,7 @@ impl Default for FillOptions {
             expressions: false,
             filters: Vec::new(),
             html_style_sheet: String::new(),
+            html: HtmlOptions::default(),
         }
     }
 }
@@ -322,6 +326,13 @@ impl fmt::Display for FillError {
 }
 
 impl std::error::Error for FillError {}
+
+pub(crate) fn check_html_errors(errors: Vec<FillError>) -> Result<(), FillError> {
+    let mut errors = errors.into_iter();
+    let Some(mut first) = errors.next() else { return Ok(()) };
+    for error in errors { first.message.push_str(&format!("; {error}")); }
+    Err(first)
+}
 
 /// Whether a package part holds tags: the body, a header or a footer.
 pub fn is_template_part(name: &str) -> bool {
@@ -455,6 +466,18 @@ impl PackageTemplate {
     /// [`PackageTemplate::render`], asking `hooks` for module tags and images. Images add their
     /// media parts, relationships and content types.
     pub fn render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Vec<(String, Cow<'_, [u8]>)> {
+        self.render_result(data, hooks).0
+    }
+
+    pub fn try_render(&self, data: &Value) -> Result<Vec<(String, Cow<'_, [u8]>)>, FillError> { self.try_render_with(data, &mut NoHooks) }
+
+    pub fn try_render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Result<Vec<(String, Cow<'_, [u8]>)>, FillError> {
+        let (parts, errors) = self.render_result(data, hooks);
+        check_html_errors(errors)?;
+        Ok(parts)
+    }
+
+    fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (Vec<(String, Cow<'_, [u8]>)>, Vec<FillError>) {
         let mut state = FillState {
             next_drawing_id: self.max_drawing_id + 1,
             body: self.body,
@@ -476,11 +499,13 @@ impl PackageTemplate {
         let mut definitions = Vec::new();
         let mut includes = Vec::new();
         let mut sections = Vec::new();
+        let mut errors = Vec::new();
         for (name, part) in &self.parts {
             let bytes = match part {
                 PackagePart::Bytes(bytes) => Cow::Borrowed(bytes.as_slice()),
                 PackagePart::Template(template) => {
                     let filled = template.fill(data, name, hooks, &mut state);
+                    errors.extend(filled.html_errors);
                     media.extend(filled.media.into_iter().map(|used| (name.clone(), used)));
                     if *name == self.main_part {
                         notes = filled.footnotes;
@@ -512,7 +537,7 @@ impl PackageTemplate {
         self.finish_template_parts(&mut out);
         apply_theme_colors(&mut out, &self.theme_colors);
         self.document.apply(&mut out);
-        out
+        (out, errors)
     }
 
     /// Renumbers repeated ids and repairs each template part's structure, now that subtemplates

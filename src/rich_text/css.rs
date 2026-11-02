@@ -62,6 +62,12 @@ impl Cascade {
 }
 
 pub(super) fn validate_sheet(sheet: &str) -> Result<(), String> { read_rules(sheet).map(|_| ()) }
+pub(super) fn validate_style(style: &str) -> Result<(), String> { read_declarations(style).map(|_| ()) }
+pub(super) fn matches_element(selector: &str, tag: &str, attributes: &[(String, String)]) -> bool {
+    let Ok(selector) = read_selector(selector) else { return false };
+    let node = Node { tag: tag.to_string(), attributes: attributes.to_vec(), parent: None, previous: None };
+    matches_selector(&selector, &[node], 0)
+}
 
 fn read_rules(sheet: &str) -> Result<Vec<Rule>, String> {
     let sheet = strip_comments(sheet)?;

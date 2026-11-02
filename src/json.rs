@@ -102,11 +102,33 @@ impl FillOptions {
                 "filters" => self.filters = read_array(value, key)?.iter().map(|each| read_string(each, key)).collect::<Result<_, _>>()?,
                 "htmlStyleSheet" => {
                     self.html_style_sheet = read_string(value, key)?;
-                    crate::rich_text::validate_style_sheet(&self.html_style_sheet).map_err(FillError::new)?;
+                }
+                "html" => {
+                    for (name, value) in read_object(value, key)? {
+                        match name.as_str() {
+                            "ignoreUnknownTags" => self.html.ignore_unknown_tags = read_bool(value, name)?,
+                            "ignoreCssErrors" => self.html.ignore_css_errors = read_bool(value, name)?,
+                            "onInvalidBlock" => self.html.on_invalid_block = match read_string(value, name)?.as_str() {
+                                "block" => crate::HtmlBlockMode::Block, "inline" => crate::HtmlBlockMode::Inline, "error" => crate::HtmlBlockMode::Error,
+                                other => return Err(FillError::new(format!("Unknown HTML block mode {other}"))),
+                            },
+                            "customTags" => {
+                                for (tag, kind) in read_object(value, name)? {
+                                    let kind = match read_string(kind, tag)?.as_str() {
+                                        "inline" => crate::HtmlTagKind::Inline, "block" => crate::HtmlTagKind::Block,
+                                        other => return Err(FillError::new(format!("Unknown HTML tag kind {other}"))),
+                                    };
+                                    self.html.custom_tags.insert(tag.to_ascii_lowercase(), kind);
+                                }
+                            }
+                            _ => return Err(unknown(name)),
+                        }
+                    }
                 }
                 _ => return Err(unknown(key)),
             }
         }
+        if !self.html.ignore_css_errors { crate::rich_text::validate_style_sheet(&self.html_style_sheet).map_err(FillError::new)?; }
         Ok(self)
     }
 }
