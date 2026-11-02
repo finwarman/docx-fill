@@ -16,7 +16,8 @@ fn chart(layout: &str, numeric_type: &str) -> String {
     let axes = if layout == "waterfall" { "<cx:axis id=\"0\"><cx:catScaling gapWidth=\"1\"/><cx:tickLabels/></cx:axis><cx:axis id=\"1\"><cx:valScaling/><cx:majorGridlines/><cx:tickLabels/><cx:numFmt formatCode=\"0.00\" sourceLinked=\"0\"/></cx:axis>" } else { "" };
     let links = if layout == "waterfall" { "<cx:axisId>0</cx:axisId><cx:axisId>1</cx:axisId>" } else { "" };
     let geo = if layout == "regionMap" { GEO } else { "" };
-    format!(r#"<cx:chartSpace xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><cx:chartData><cx:data id="7">{CAT}<cx:strDim type="entityId"><cx:lvl ptCount="2"><cx:pt idx="0">FR</cx:pt><cx:pt idx="1">ES</cx:pt></cx:lvl></cx:strDim><cx:numDim type="{numeric_type}"><cx:lvl ptCount="2" formatCode="0.00"><cx:pt idx="0">1</cx:pt><cx:pt idx="1">2</cx:pt></cx:lvl></cx:numDim></cx:data></cx:chartData><cx:chart><cx:title pos="t" align="ctr"><cx:tx><cx:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Revenue</a:t></a:r></a:p></cx:rich></cx:tx></cx:title><cx:plotArea><cx:plotAreaRegion><cx:series layoutId="{layout}" uniqueId="{{D5C87836-4BFB-4617-B29A-BE9E77F7D26B}}"><cx:tx><cx:txData><cx:v>Original</cx:v></cx:txData></cx:tx><cx:spPr><a:solidFill><a:srgbClr val="006699"/></a:solidFill></cx:spPr><cx:dataLabels pos="ctr"><cx:visibility seriesName="0" categoryName="1" value="0"/></cx:dataLabels><cx:dataId val="7"/><cx:layoutPr>{geo}</cx:layoutPr>{links}</cx:series></cx:plotAreaRegion>{axes}</cx:plotArea></cx:chart></cx:chartSpace>"#)
+    let entity = if layout == "regionMap" { "<cx:strDim type=\"entityId\"><cx:lvl ptCount=\"2\"><cx:pt idx=\"0\">FR</cx:pt><cx:pt idx=\"1\">ES</cx:pt></cx:lvl></cx:strDim>" } else { "" };
+    format!(r#"<cx:chartSpace xmlns:cx="http://schemas.microsoft.com/office/drawing/2014/chartex" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><cx:chartData><cx:data id="7">{CAT}{entity}<cx:numDim type="{numeric_type}"><cx:lvl ptCount="2" formatCode="0.00"><cx:pt idx="0">1</cx:pt><cx:pt idx="1">2</cx:pt></cx:lvl></cx:numDim></cx:data></cx:chartData><cx:chart><cx:title pos="t" align="ctr"><cx:tx><cx:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Revenue</a:t></a:r></a:p></cx:rich></cx:tx></cx:title><cx:plotArea><cx:plotAreaRegion><cx:series layoutId="{layout}" uniqueId="{{D5C87836-4BFB-4617-B29A-BE9E77F7D26B}}"><cx:tx><cx:txData><cx:v>Original</cx:v></cx:txData></cx:tx><cx:spPr><a:solidFill><a:srgbClr val="006699"/></a:solidFill></cx:spPr><cx:dataLabels pos="ctr"><cx:visibility seriesName="0" categoryName="1" value="0"/></cx:dataLabels><cx:dataId val="7"/><cx:layoutPr>{geo}</cx:layoutPr>{links}</cx:series></cx:plotAreaRegion>{axes}</cx:plotArea></cx:chart></cx:chartSpace>"#)
 }
 
 fn render(body: &str, chart: &str, data: Value) -> BTreeMap<String, Vec<u8>> {
@@ -26,7 +27,7 @@ fn render(body: &str, chart: &str, data: Value) -> BTreeMap<String, Vec<u8>> {
 fn render_with_relations(body: &str, chart: &str, relations: &str, data: Value) -> BTreeMap<String, Vec<u8>> {
     let document = format!(r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>"#);
     let parts = [
-        ("[Content_Types].xml".into(), br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/extendedCharts/chart1.xml" ContentType="application/vnd.ms-office.chartex+xml"/></Types>"#.to_vec()),
+        ("[Content_Types].xml".into(), br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/extendedCharts/chart1.xml" ContentType="application/vnd.ms-office.chartex+xml"/><Override PartName="/word/charts/fallback.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/><Default Extension="png" ContentType="image/png"/></Types>"#.to_vec()),
         ("_rels/.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_vec()),
         ("word/document.xml".into(), document.into_bytes()),
         ("word/extendedCharts/chart1.xml".into(), chart.as_bytes().to_vec()),
@@ -165,7 +166,7 @@ fn binds_supported_chart_choice() {
     let fallback = selected.replace("xmlns:cx=\"http://schemas.microsoft.com/office/drawing/2014/chartex\"", "xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"").replace("<cx:chart", "<c:chart").replace("rIdChart", "rIdFallback");
     let alternate = format!(r#"<alt:AlternateContent xmlns:alt="http://schemas.openxmlformats.org/markup-compatibility/2006"><alt:Choice xmlns:extended="http://schemas.microsoft.com/office/drawing/2014/chartex" Requires="extended">{selected}</alt:Choice><alt:Fallback>{fallback}</alt:Fallback></alt:AlternateContent>"#);
     let relations = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdChart" Type="http://schemas.microsoft.com/office/2014/relationships/chartEx" Target="extendedCharts/chart1.xml"/><Relationship Id="rIdFallback" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/fallback.xml"/></Relationships>"#;
-    for body in [format!("<w:p><w:r>{alternate}</w:r></w:p>{}", paragraph(&["{$sales}"])), format!("<w:p><w:r>{alternate}</w:r><w:r><w:t>{{$sales}}</w:t></w:r></w:p>")] {
+    for body in [format!("<w:p><w:r>{alternate}</w:r></w:p>{}", paragraph(&["{$sales}"])), format!("<w:p><w:r>{alternate}</w:r><w:r><w:t>{{$sales}}</w:t></w:r></w:p>"), format!("<w:p><w:r>{}</w:r></w:p>{}", alternate.replace("Requires=\"extended\"", "Requires=\"&#101;xtended\""), paragraph(&["{$sales}"]))] {
         let parts = render_with_relations(&body, &chart("waterfall", "val"), relations, json!({"sales":{"categories":["Chosen"],"data":[8]}}));
         assert!(output_chart(&parts).contains(">Chosen</cx:pt>"));
         let document = String::from_utf8_lossy(&parts["word/document.xml"]);
@@ -190,4 +191,19 @@ fn keeps_chart_fallback_picture() {
     assert!(output_chart(&parts).contains(">Picture</cx:pt>"));
     assert!(String::from_utf8_lossy(&parts["word/document.xml"]).contains(picture));
     assert_eq!(parts["word/media/fallback.png"], b"opaque fallback image");
+}
+
+#[test]
+fn preserves_mce_attribute_scope() {
+    for prefix in ["r", "&#114;"] {
+        let external = format!(r#"<cx:externalData xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:r="urn:foreign" xmlns:rels="http://schemas.openxmlformats.org/officeDocument/2006/relationships" mc:Ignorable="{prefix}" rels:id="book" r:marker="retained"/>"#);
+        let source = chart("waterfall", "val").replace("<cx:chartData>", &format!("<cx:chartData>{external}"));
+        let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+        let parts = render(&body, &source, json!({"sales":{"categories":["A"],"data":[8]}}));
+        let original = String::from_utf8_lossy(&parts["word/extendedCharts/chart1.xml"]);
+        assert!(original.contains("r:id=\"book\""));
+        assert!(original.contains("mc:Ignorable=\"docxFillNs"));
+        assert!(original.contains("urn:foreign") && original.contains(":marker=\"retained\""));
+        assert!(output_chart(&parts).contains(">A</cx:pt>"));
+    }
 }

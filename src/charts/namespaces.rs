@@ -88,6 +88,9 @@ pub(super) fn normalize(xml: &str) -> Option<String> {
             }
             if prefix(&renamed).is_some() { bind_name(&renamed, uri, &mut output, &mut declarations, &mut locked); }
             if renamed != attr.name { edits.push((attr.name_start, attr.name_start + attr.name.len(), renamed)); }
+        }
+        for attr in &attrs {
+            let uri = attribute_uri(attr.name, &bindings);
             let prefix_list = uri == Some(COMPATIBILITY) && matches!(local(attr.name), "Ignorable" | "MustUnderstand" | "ProcessContent" | "PreserveAttributes" | "PreserveElements")
                 || attr.name == "Requires" && element_uri(name, &bindings) == Some(COMPATIBILITY);
             if prefix_list {
@@ -130,7 +133,8 @@ pub(super) fn references(xml: &str) -> (Vec<usize>, bool) {
                 if uri == Some(COMPATIBILITY) && matches!(local(name), "Choice" | "Fallback")
                     && let Some(chosen) = frames.last_mut().and_then(|frame| frame.alternative.as_mut()) {
                     let supported = local(name) == "Fallback" || attrs.iter().find(|attr| attr.name == "Requires").is_some_and(|attr| {
-                        let required = attr.value.split_whitespace().collect::<Vec<_>>();
+                        let decoded = unescape(attr.value);
+                        let required = decoded.split_whitespace().collect::<Vec<_>>();
                         !required.is_empty() && required.iter().all(|prefix| bindings.get(*prefix).is_some_and(|uri| matches!(uri.as_str(), EXTENDED | CHART | DRAWING)))
                     });
                     let selected = !*chosen && supported;
@@ -265,7 +269,8 @@ fn bind_name(name: &str, uri: Option<&str>, output: &mut Bindings, declarations:
 
 fn preserve_qnames(value: &str, original: &Bindings, output: &mut Bindings, declarations: &mut Bindings, locked: &mut Bindings, next: &mut usize) -> String {
     let mut changed = false;
-    let words = value.split_whitespace().map(|word| {
+    let decoded = unescape(value);
+    let words = decoded.split_whitespace().map(|word| {
         let (old, suffix) = word.split_once(':').map_or((word, ""), |(prefix, _)| (prefix, &word[prefix.len()..]));
         let Some(uri) = original.get(old) else { return word.to_string() };
         if output.get(old) == Some(uri) { return word.to_string(); }
@@ -275,7 +280,10 @@ fn preserve_qnames(value: &str, original: &Bindings, output: &mut Bindings, decl
         changed = true;
         format!("{prefix}{suffix}")
     }).collect::<Vec<_>>();
-    if changed { words.join(" ") } else { value.to_string() }
+    if !changed { return value.to_string(); }
+    let mut escaped = String::new();
+    escape(&words.join(" "), &mut escaped);
+    escaped
 }
 
 fn replace_name(raw: &str, old: &str, new: &str, start: usize) -> String {
