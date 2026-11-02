@@ -41,7 +41,7 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 
 | Flag | Tags | Does | docxtemplater module |
 |---|---|---|---|
-| `vertical_tables` | `{:vt#cols}` … `{:vt/cols}` | Repeats table cells | Vertical table |
+| `vertical_tables` | `{:vt#cols}` … `{:vt/cols}` | Repeats columns, including ranges across rows | Vertical table |
 | `cell_styling`, `styling` | `{:stylecell}`, `{:stylepar}`, `{:stylerow}`, `{:stylerun}`, `{:stylebullets}`, `{:styleshape}`, `{:stylestart}` … `{:/style}`, `{::stylepar}`, `{::stylerun}` | Styles a cell, paragraph, row, run, bullet, shape or style definition | Styling |
 | `table_merge` | `{:merge-cells-col 1,2}`, `{:merge-cells-row 1,-1}` | Merges neighbouring cells with the same text | Table |
 | `full_tables` | `{:table name}`, `{:#grid name}` … `{:/grid}` | Builds a table from data, or a grid of cells | Table |
