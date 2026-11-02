@@ -19,6 +19,7 @@ const CELL: &str = "w:tc";
 const ROW: &str = "w:tr";
 const RUN: &str = "w:r";
 const RUN_PROPS: &str = "w:rPr";
+const BREAK: &str = "w:br";
 const PRESERVE_SPACE: &str = " xml:space=\"preserve\"";
 // Word lengths are twentieths of a point; pixels are 1/96 inch.
 pub(crate) const PX_PER_TWIP: f64 = 96.0 / 1440.0;
@@ -285,14 +286,22 @@ impl Template {
             }
         }
 
+        // Each open paragraph and how far into its joined text the tokens have reached.
+        let mut reached: Vec<(usize, usize)> = Vec::new();
         for (index, token) in tokens.iter().enumerate() {
             match *token {
                 Token::Element { kind, name, raw } => {
                     if let Some(paragraph) = paragraph_starts[index] {
                         paragraphs[paragraph].start = builder.parts.len();
+                        reached.push((paragraph, 0));
                     }
                     if let Some(paragraph) = paragraph_ends[index] {
                         paragraphs[paragraph].end = builder.parts.len();
+                        reached.pop();
+                    }
+                    // A break inside a tag goes with the tag, as in core.
+                    if kind == ElementKind::SelfClosing && name == BREAK && reached.last().is_some_and(|&(paragraph, at)| found[paragraph].iter().any(|tag| tag.start < at && at <= tag.name.end)) {
+                        continue;
                     }
                     let touched = kind == ElementKind::Open && name == TEXT && is_touched(&tokens, index + 1, &text_owner, &found);
                     let raw = if touched { preserve_space(raw) } else { raw.to_string() };
@@ -300,6 +309,9 @@ impl Template {
                 }
                 Token::Text(text) => match text_owner[index] {
                     Some((paragraph, offset)) => {
+                        if let Some(last) = reached.last_mut().filter(|(open, _)| *open == paragraph) {
+                            last.1 = offset + text.len();
+                        }
                         builder.split_text(text, offset, paragraph, &found[paragraph], &joined_texts[paragraph], options)
                     }
                     None => builder.parts.push(Part::Text(text.to_string())),

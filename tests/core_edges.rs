@@ -1,7 +1,7 @@
 mod common;
 
-use common::{cell, document, fill, paragraph, paragraph_texts, read_rows, row, table, text};
-use docx_fill::{FillOptions, fill_part};
+use common::{cell, document, fill, fill_with, paragraph, paragraph_texts, read_rows, row, table, text};
+use docx_fill::{Delimiters, FillOptions, fill_part};
 use serde_json::{Value, json};
 
 #[test]
@@ -144,4 +144,30 @@ fn fills_loops_that_share_a_cell_without_crossing() {
     assert_eq!(read_rows(&nested), [["1", "2"], ["1", "2"]]);
     let after_text = fill(&table(&[row(&[cell(&["{#b}1"]), cell(&["2{/b}x"])])]), data);
     assert_eq!(read_rows(&after_text), [["1", "2x"], ["1", "2x"]]);
+}
+
+#[test]
+fn drops_a_break_inside_a_tag_split_across_runs() {
+    let breaks = |body: &str| fill(body, json!({ "name": "N" })).matches("<w:br").count();
+
+    assert_eq!(breaks(r#"<w:p><w:r><w:t>A{na</w:t><w:br/></w:r><w:r><w:t>me}B</w:t></w:r></w:p>"#), 0);
+    assert_eq!(breaks(r#"<w:p><w:r><w:t>A{na</w:t></w:r><w:r><w:br w:type="page"/><w:t>me}B</w:t></w:r></w:p>"#), 0);
+    assert_eq!(breaks(r#"<w:p><w:r><w:t>A</w:t><w:br/><w:t>{name}</w:t><w:br/></w:r><w:r><w:t>B</w:t></w:r></w:p>"#), 2);
+}
+
+#[test]
+fn keeps_a_break_inside_a_closing_delimiter() {
+    let options = FillOptions { delimiters: Delimiters { start: "[[".into(), end: "]]".into() }, ..FillOptions::default() };
+    let breaks = |body: &str| fill_with(body, json!({ "name": "N" }), &options).matches("<w:br").count();
+
+    assert_eq!(breaks(r#"<w:p><w:r><w:t>A[[name]</w:t><w:br/></w:r><w:r><w:t>]B</w:t></w:r></w:p>"#), 1);
+    assert_eq!(breaks(r#"<w:p><w:r><w:t>A[[name</w:t><w:br/></w:r><w:r><w:t>]]B</w:t></w:r></w:p>"#), 0);
+    assert_eq!(breaks(r#"<w:p><w:r><w:t>A[</w:t><w:br/></w:r><w:r><w:t>[name]]B</w:t></w:r></w:p>"#), 0);
+}
+
+#[test]
+fn keeps_tabs_inside_a_tag_split_across_runs() {
+    let xml = fill(r#"<w:p><w:r><w:t>A{na</w:t><w:tab/></w:r><w:r><w:t>me}B</w:t></w:r></w:p>"#, json!({ "name": "N" }));
+
+    assert!(xml.contains("<w:tab/>"), "{xml}");
 }
