@@ -14,7 +14,7 @@
 
 use crate::cell_styling::{find_element_start, remove_first_element};
 use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_child};
-use crate::xml::escape;
+use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
 
 pub(crate) mod numbering;
@@ -35,6 +35,7 @@ const CODE_FONT: &str = "Courier New";
 const LINK_COLOR: &str = "0563C1";
 const CHECKED: &str = "\u{2612}";
 const UNCHECKED: &str = "\u{2610}";
+const OBJECT_REPLACEMENT: char = '\u{fffc}';
 const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
 // Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
 const TABLE_COLUMN_TWIPS: u32 = 2000;
@@ -127,6 +128,21 @@ struct BlockWriter<'a, 'n> {
     lists: ListWriter<'n>,
 }
 
+#[derive(Default)]
+struct SpaceEdges {
+    start: bool,
+    end: bool,
+}
+
+impl SpaceEdges {
+    fn between(before: Option<char>, after: Option<char>) -> Self {
+        Self {
+            start: before.is_some_and(|c| !is_html_space(c)),
+            end: after.is_some_and(|c| !is_html_space(c)),
+        }
+    }
+}
+
 impl ListWriter<'_> {
     fn id_for(&mut self, item: &ListItem) -> Option<u32> {
         if let Some(id) = self.ids.get(&item.group) {
@@ -152,7 +168,8 @@ pub(crate) fn mark(index: usize) -> String {
 /// External links are added to `links`, whose position names their relationship. `continued`
 /// gives the bookmark prefix whose later paragraphs get numbered bookmarks, and the next free id.
 pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>) -> String {
-    let mut paragraph = write_earlier_marks(paragraph, values, links);
+    let paragraph = without_empty_marks(paragraph, values);
+    let mut paragraph = write_earlier_marks(&paragraph, values, links);
     while let Some((mark, index)) = find_mark(&paragraph) {
         // Only printed values hold marks by accident, and those have no value to print.
         let Some(value) = values.get(index) else {
@@ -162,10 +179,16 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
         let other_text = read_text(&paragraph).replacen(&mark, "", 1);
         let run = find_run(&paragraph, &mark);
         let run_props = run.and_then(|run| find_between(run, "<w:rPr>", "</w:rPr>")).unwrap_or("");
-        let blocks = read_html(&value.html, value.has_extras);
+        let is_block = value.is_block && other_text.trim().is_empty() && run.is_some();
+        let spaces = if is_block { SpaceEdges::default() } else {
+            let text = read_flow_text(&paragraph);
+            let (before, after) = text.split_once(&mark).unwrap_or(("", ""));
+            SpaceEdges::between(before.chars().next_back(), after.chars().next())
+        };
+        let blocks = read_html(&value.html, value.has_extras, spaces);
 
         // Alone in its paragraph: the paragraph becomes the value's paragraphs.
-        if value.is_block && other_text.trim().is_empty() && !blocks.is_empty() && run.is_some() {
+        if is_block && !blocks.is_empty() {
             return write_blocks(&paragraph, &blocks, run_props, links, continued, numbering);
         }
 
@@ -181,11 +204,31 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
     paragraph
 }
 
+/// Empty fragments must not hide the real text on either side of another fragment.
+fn without_empty_marks(paragraph: &str, values: &[RichValue]) -> String {
+    let mut out = String::with_capacity(paragraph.len());
+    let mut rest = paragraph;
+    while let Some((mark, index)) = find_mark(rest) {
+        let at = rest.find(&mark).unwrap_or(0);
+        out.push_str(&rest[..at]);
+        if let Some(value) = values.get(index)
+            && !read_html(&value.html, value.has_extras, SpaceEdges { start: true, end: true }).is_empty() {
+            out.push_str(&mark);
+        }
+        rest = &rest[at + mark.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// `paragraph` with every mark but its last printed inline, in one pass, as only a last mark can
 /// be alone in its paragraph.
 fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<String>) -> String {
     let mut left = paragraph.matches(MARK_START).count().saturating_sub(1);
     let mut out = String::with_capacity(paragraph.len());
+    let flow = read_flow_text(paragraph);
+    let mut following = flow.as_str();
+    let mut previous = None;
     let mut from = 0;
     while left > 0 {
         let Some(at) = find_element_start(&paragraph[from..], "<w:r") else { break };
@@ -208,9 +251,15 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
             let Some((mark, index)) = find_mark(rest) else { break };
             let at = rest.find(&mark).unwrap_or(0);
             out.push_str(&write_text_run(open, run_props, &rest[..at]));
+            let (before, after) = following.split_once(&mark).unwrap_or(("", ""));
+            previous = before.chars().next_back().or(previous);
             if let Some(value) = values.get(index) {
-                out.push_str(&join_inline(&read_html(&value.html, value.has_extras), run_props, links));
+                let spaces = SpaceEdges::between(previous, after.chars().next());
+                let inline = join_inline(&read_html(&value.html, value.has_extras, spaces), run_props, links);
+                previous = read_flow_text(&inline).chars().next_back().or(previous);
+                out.push_str(&inline);
             }
+            following = after;
             rest = &rest[at + mark.len()..];
             left -= 1;
         }
@@ -364,6 +413,23 @@ fn read_text(xml: &str) -> String {
     text
 }
 
+/// Text and line boundaries used to collapse only the inserted HTML's edge spaces.
+fn read_flow_text(xml: &str) -> String {
+    let mut text = String::new();
+    let mut in_text = false;
+    for token in tokenize(xml).unwrap_or_default() {
+        match token {
+            Token::Element { kind: ElementKind::Open, name: "w:t", .. } => in_text = true,
+            Token::Element { kind: ElementKind::Close, name: "w:t", .. } => in_text = false,
+            Token::Text(value) if in_text => text.push_str(&unescape(value)),
+            Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "w:br" | "w:cr" | "w:tab", .. } => text.push(' '),
+            Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "w:drawing" | "w:pict" | "w:object", .. } => text.push(OBJECT_REPLACEMENT),
+            _ => {}
+        }
+    }
+    text
+}
+
 /// The first `open…close` element, whole.
 fn find_between<'a>(xml: &'a str, open: &str, close: &str) -> Option<&'a str> {
     let start = xml.find(open)?;
@@ -486,6 +552,7 @@ struct Reader {
     tables: Vec<(usize, Vec<Vec<Cell>>)>,
     /// Open tables past `MAX_TABLE_DEPTH`, printed as part of the table around them.
     ignored_tables: usize,
+    spaces: SpaceEdges,
 }
 
 impl Reader {
@@ -528,7 +595,8 @@ impl Reader {
 
     /// Collapse HTML whitespace across inline boundaries, without collapsing NBSP.
     fn add_text(&mut self, text: &str) {
-        let mut space = self.current.is_none_or(|index| {
+        let keep_start = self.spaces.start && self.collections.len() == 1 && self.blocks().is_empty();
+        let mut space = self.current.map_or(!keep_start, |index| {
             self.blocks()[index].runs.last().is_none_or(|run| run.is_break || run.text.as_deref().is_none_or(|text| text.ends_with(' ')))
         });
         let mut collapsed = String::new();
@@ -575,7 +643,7 @@ impl Reader {
 }
 
 /// The HTML's paragraphs, headings, list items and, with extras, tables, with their runs.
-fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
+fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
     let mut reader = Reader {
         collections: vec![Vec::new()],
         current: None,
@@ -586,6 +654,7 @@ fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
         containers: Vec::new(),
         tables: Vec::new(),
         ignored_tables: 0,
+        spaces,
     };
 
     for token in read_html_tokens(html, has_extras) {
@@ -674,7 +743,7 @@ fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
         read_extra_tag(&mut reader, true, "table", &[]);
     }
     let mut blocks = reader.collections.swap_remove(0);
-    trim_blocks(&mut blocks);
+    trim_blocks(&mut blocks, reader.spaces);
     blocks
 }
 
@@ -695,13 +764,16 @@ fn trim_spaces(block: &mut Block) {
     }
 }
 
-fn trim_blocks(blocks: &mut [Block]) {
-    for block in blocks {
-        trim_spaces(block);
+fn trim_blocks(blocks: &mut [Block], spaces: SpaceEdges) {
+    let last = blocks.len().saturating_sub(1);
+    for (index, block) in blocks.iter_mut().enumerate() {
+        if index != last || !spaces.end {
+            trim_spaces(block);
+        }
         block.runs.retain(|run| run.is_break || run.text.as_deref().is_some_and(|text| !text.is_empty()));
         if let Some(rows) = &mut block.table {
             for cell in rows.iter_mut().flatten() {
-                trim_blocks(&mut cell.blocks);
+                trim_blocks(&mut cell.blocks, SpaceEdges::default());
             }
         }
     }
@@ -1264,7 +1336,7 @@ mod tests {
 
     #[test]
     fn skips_a_tag_with_attributes_as_text() {
-        let blocks = read_html("<p class=\"x\">t</p>", false);
+        let blocks = read_html("<p class=\"x\">t</p>", false, SpaceEdges::default());
         assert_eq!(blocks[0].runs[0].text.as_deref(), Some("p class=\"x\">t"));
     }
 
