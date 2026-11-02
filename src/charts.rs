@@ -9,7 +9,43 @@ use crate::{FillOptions, CONTENT_TYPES_PART, add_relationship, insert_before_las
 
 const CHART_RELATIONSHIP: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
 const CHART_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
-const SERIES_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:invertIfNegative", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:shape", "c:extLst"];
+const BAR_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:invertIfNegative", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:shape", "c:extLst"];
+const LINE_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:marker", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:smooth", "c:extLst"];
+const AREA_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:extLst"];
+const RADAR_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:pictureOptions", "c:marker", "c:dPt", "c:dLbls", "c:cat", "c:val", "c:extLst"];
+const PIE_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:pictureOptions", "c:explosion", "c:dPt", "c:dLbls", "c:cat", "c:val", "c:extLst"];
+const SURFACE_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:cat", "c:val", "c:extLst"];
+const SCATTER_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:marker", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:xVal", "c:yVal", "c:smooth", "c:extLst"];
+const BUBBLE_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:pictureOptions", "c:invertIfNegative", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:xVal", "c:yVal", "c:bubbleSize", "c:bubble3D", "c:extLst"];
+const LABEL_ORDER: &[&str] = &["c:idx", "c:delete", "c:layout", "c:tx", "c:numFmt", "c:spPr", "c:txPr", "c:dLblPos", "c:showLegendKey", "c:showVal", "c:showCatName", "c:showSerName", "c:showPercent", "c:showBubbleSize", "c:separator", "c:extLst"];
+
+#[derive(Clone, Copy)]
+enum ChartKind { Bar, Line, Area, Radar, Pie, Doughnut, Surface, Scatter, Bubble }
+
+impl ChartKind {
+    fn read(name: &str) -> Option<Self> {
+        match name {
+            "c:barChart" | "c:bar3DChart" => Some(Self::Bar),
+            "c:lineChart" | "c:line3DChart" => Some(Self::Line),
+            "c:areaChart" | "c:area3DChart" => Some(Self::Area),
+            "c:radarChart" => Some(Self::Radar),
+            "c:pieChart" | "c:pie3DChart" | "c:ofPieChart" => Some(Self::Pie),
+            "c:doughnutChart" => Some(Self::Doughnut),
+            "c:surfaceChart" | "c:surface3DChart" => Some(Self::Surface),
+            "c:scatterChart" => Some(Self::Scatter),
+            "c:bubbleChart" => Some(Self::Bubble),
+            _ => None,
+        }
+    }
+
+    fn series_order(self) -> &'static [&'static str] {
+        match self {
+            Self::Bar => BAR_ORDER, Self::Line => LINE_ORDER, Self::Area => AREA_ORDER,
+            Self::Radar => RADAR_ORDER, Self::Pie | Self::Doughnut => PIE_ORDER, Self::Surface => SURFACE_ORDER,
+            Self::Scatter => SCATTER_ORDER, Self::Bubble => BUBBLE_ORDER,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ChartUse {
@@ -19,7 +55,7 @@ pub(crate) struct ChartUse {
 
 #[derive(Debug)]
 struct ChartData {
-    categories: Vec<String>,
+    categories: Option<Vec<String>>,
     series: Vec<Series>,
 }
 
@@ -27,31 +63,69 @@ struct ChartData {
 struct Series {
     title: Option<String>,
     values: Vec<Option<String>>,
+    x_values: Option<Vec<Option<String>>>,
+    sizes: Option<Vec<Option<String>>>,
+    names: Option<Vec<Option<String>>>,
 }
 
 enum DataKind<'a> { Text, Number(&'a str) }
 
 impl ChartData {
     fn read(value: &Value) -> Option<Self> {
-        let categories = value.get("categories")?.as_array()?.iter().map(|value| match value {
-            Value::String(text) => Some(text.clone()),
-            Value::Number(number) => Some(number.to_string()),
-            Value::Null => Some(String::new()),
-            _ => None,
-        }).collect::<Option<Vec<_>>>()?;
+        let categories = match value.get("categories") {
+            Some(value) => Some(value.as_array()?.iter().map(|value| match value {
+                Value::String(text) => Some(text.clone()),
+                Value::Number(number) => Some(number.to_string()),
+                Value::Null => Some(String::new()),
+                _ => None,
+            }).collect::<Option<Vec<_>>>()?),
+            None => None,
+        };
         let mut series = Vec::new();
         for value in value.get("series")?.as_array()? {
             let title = match value.get("title") { None | Some(Value::Null) => None, Some(title) => Some(title.as_str()?.to_string()) };
-            let values = value.get("data")?.as_array()?.iter().map(|value| match value {
-                Value::Null => Some(None),
-                Value::Number(number) => Some(Some(number.to_string())),
-                _ => None,
-            }).collect::<Option<Vec<_>>>()?;
-            if values.len() != categories.len() { return None; }
-            series.push(Series { title, values });
+            let points = value.get("data")?.as_array()?;
+            let is_xy = categories.is_none() || points.iter().any(Value::is_object);
+            let mut values = Vec::new();
+            let mut x_values = is_xy.then(Vec::new);
+            let mut sizes = points.iter().any(|point| point.get("size").is_some()).then(Vec::new);
+            let mut names = points.iter().any(|point| point.get("name").is_some()).then(Vec::new);
+            for point in points {
+                if !is_xy { values.push(number(point)?); continue; }
+                if point.is_null() {
+                    values.push(None);
+                    x_values.as_mut()?.push(None);
+                    if let Some(sizes) = &mut sizes { sizes.push(None); }
+                    if let Some(names) = &mut names { names.push(None); }
+                    continue;
+                }
+                let mut y = number(point.get("y")?)?;
+                let mut x = number(point.get("x")?)?;
+                let size = if sizes.is_some() { number(point.get("size")?)? } else { None };
+                if x.is_none() || y.is_none() || (sizes.is_some() && size.is_none()) { x = None; y = None; }
+                values.push(y);
+                x_values.as_mut()?.push(x);
+                if let Some(sizes) = &mut sizes { sizes.push(size); }
+                if let Some(names) = &mut names { names.push(match point.get("name") { None | Some(Value::Null) => None, Some(name) => Some(name.as_str()?.to_string()) }); }
+            }
+            series.push(Series { title, values, x_values, sizes, names });
         }
         Some(Self { categories, series })
     }
+
+    fn matches(&self, kind: ChartKind) -> bool {
+        if matches!(kind, ChartKind::Pie) && self.series.len() > 1 { return false; }
+        if !matches!(kind, ChartKind::Scatter | ChartKind::Bubble) && self.categories.is_none() { return false; }
+        self.series.iter().all(|series| match kind {
+            ChartKind::Scatter => series.x_values.is_some() && series.sizes.is_none(),
+            ChartKind::Bubble => series.x_values.is_some() && (series.sizes.is_some() || series.values.iter().all(Option::is_none)),
+            _ => self.categories.as_ref().is_some_and(|categories| series.x_values.is_none() && categories.len() == series.values.len()),
+        })
+    }
+}
+
+fn number(value: &Value) -> Option<Option<String>> {
+    match value { Value::Null => Some(None), Value::Number(number) => Some(Some(number.to_string())), _ => None }
 }
 
 /// Keep occurrence indexes so each chart repeated by a loop can have different data.
@@ -154,11 +228,18 @@ fn fill_charts(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)]
 }
 
 fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<String> {
-    if tokenize(xml).ok()?.iter().any(|token| matches!(token, Token::Element { name, .. } if name.ends_with("Chart") && *name != "c:barChart")) { return None; }
-    let plots = find_starts(xml, "c:barChart");
+    let names: Vec<_> = tokenize(xml).ok()?.iter().filter_map(|token| match token {
+        Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name, .. } if name.starts_with("c:") && name.ends_with("Chart") => Some(*name),
+        _ => None,
+    }).collect();
+    let [name] = names.as_slice() else { return None };
+    let kind = ChartKind::read(name)?;
+    if !data.matches(kind) { return None; }
+    let order = kind.series_order();
+    let plots = find_starts(xml, name);
     if plots.len() != 1 { return None; }
     let start = plots[0];
-    let end = find_element_end(xml, start, "c:barChart")?;
+    let end = find_element_end(xml, start, name)?;
     let plot = &xml[start..end];
     let templates: Vec<_> = find_starts(plot, "c:ser").into_iter().filter_map(|start| find_element_end(plot, start, "c:ser").map(|end| (start, end))).filter(|&(start, end)| plot[start..end].ends_with("</c:ser>")).collect();
     let &(first, _) = templates.first()?;
@@ -170,16 +251,25 @@ fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<St
         let mut inner = template[open..template.len() - "</c:ser>".len()].to_string();
         // An added series takes the theme's next colour, not a copy of the first one's.
         if index >= templates.len() { inner = remove_children(&inner, &["c:spPr", "c:dPt", "c:extLst"]); }
-        inner = set_child(&inner, "c:idx", &format!("<c:idx val=\"{index}\"/>"), SERIES_ORDER);
-        inner = set_child(&inner, "c:order", &format!("<c:order val=\"{index}\"/>"), SERIES_ORDER);
+        inner = set_child(&inner, "c:idx", &format!("<c:idx val=\"{index}\"/>"), order);
+        inner = set_child(&inner, "c:order", &format!("<c:order val=\"{index}\"/>"), order);
         if let Some(title) = value.title.clone().or_else(|| series_title(template)) {
             let mut escaped = String::new(); escape(&title, &mut escaped);
-            inner = set_child(&inner, "c:tx", &format!("<c:tx><c:v>{escaped}</c:v></c:tx>"), SERIES_ORDER);
+            inner = set_child(&inner, "c:tx", &format!("<c:tx><c:v>{escaped}</c:v></c:tx>"), order);
         }
-        let points: Vec<_> = data.categories.iter().cloned().map(Some).collect();
-        inner = set_child(&inner, "c:cat", &format!("<c:cat>{}</c:cat>", literal(DataKind::Text, &points)), SERIES_ORDER);
-        let format = find_starts(template, "c:val").first().and_then(|&at| element_text(&template[at..], "c:formatCode")).unwrap_or_else(|| "General".to_string());
-        inner = set_child(&inner, "c:val", &format!("<c:val>{}</c:val>", literal(DataKind::Number(&format), &value.values)), SERIES_ORDER);
+        if let Some(x_values) = &value.x_values {
+            inner = set_numbers(&inner, template, "c:xVal", x_values, order);
+            inner = set_numbers(&inner, template, "c:yVal", &value.values, order);
+            if matches!(kind, ChartKind::Bubble) {
+                let empty = vec![None; value.values.len()];
+                inner = set_numbers(&inner, template, "c:bubbleSize", value.sizes.as_deref().unwrap_or(&empty), order);
+            }
+            if let Some(names) = &value.names { inner = set_labels(&inner, names, order); }
+        } else {
+            let points: Vec<_> = data.categories.as_ref()?.iter().cloned().map(Some).collect();
+            inner = set_child(&inner, "c:cat", &format!("<c:cat>{}</c:cat>", literal(DataKind::Text, &points)), order);
+            inner = set_numbers(&inner, template, "c:val", &value.values, order);
+        }
         series.push_str(&format!("{}{}{}", &template[..open], inner, "</c:ser>"));
     }
     let mut changed = plot.to_string();
@@ -192,6 +282,41 @@ fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<St
     }
     if let Some(literal) = title_tag { out = strip_title_tag(&out, literal); }
     Some(out)
+}
+
+fn set_numbers(inner: &str, template: &str, name: &str, values: &[Option<String>], order: &[&str]) -> String {
+    let format = find_starts(template, name).first().and_then(|&at| find_element_end(template, at, name).and_then(|end| element_text(&template[at..end], "c:formatCode"))).unwrap_or_else(|| "General".to_string());
+    set_child(inner, name, &format!("<{name}>{}</{name}>", literal(DataKind::Number(&format), values)), order)
+}
+
+fn set_labels(inner: &str, names: &[Option<String>], order: &[&str]) -> String {
+    let mut labels = String::new();
+    if let Some(start) = find_starts(inner, "c:dLbls").first().copied()
+        && let Some(end) = find_element_end(inner, start, "c:dLbls") {
+        let element = &inner[start..end];
+        if let Some(open) = element.find('>') && element.ends_with("</c:dLbls>") { labels = element[open + 1..element.len() - "</c:dLbls>".len()].to_string(); }
+    }
+    for (index, name) in names.iter().enumerate() {
+        let Some(name) = name else { continue };
+        let mut escaped = String::new(); escape(name, &mut escaped);
+        let text = format!(r#"<c:tx><c:rich xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>{escaped}</a:t></a:r></a:p></c:rich></c:tx>"#);
+        let range = find_starts(&labels, "c:dLbl").into_iter().find_map(|start| {
+            let end = find_element_end(&labels, start, "c:dLbl")?;
+            let index_start = *find_starts(&labels[start..end], "c:idx").first()? + start;
+            (read_attribute(&labels[index_start..end], "val").and_then(|value| value.parse::<usize>().ok()) == Some(index)).then_some((start, end))
+        });
+        let mut label = range.map_or_else(|| format!("<c:idx val=\"{index}\"/>"), |(start, end)| {
+            let open = labels[start..end].find('>').unwrap_or(0) + start + 1;
+            labels[open..end - "</c:dLbl>".len()].to_string()
+        });
+        label = set_child(&label, "c:tx", &text, LABEL_ORDER);
+        for name in ["c:showLegendKey", "c:showVal", "c:showCatName", "c:showSerName", "c:showPercent", "c:showBubbleSize"] {
+            label = set_child(&label, name, &format!("<{name} val=\"0\"/>"), LABEL_ORDER);
+        }
+        let label = format!("<c:dLbl>{label}</c:dLbl>");
+        if let Some((start, end)) = range { labels.replace_range(start..end, &label); } else { labels.insert_str(0, &label); }
+    }
+    set_child(inner, "c:dLbls", &format!("<c:dLbls>{labels}</c:dLbls>"), order)
 }
 
 /// `xml` without its own `names` children; descendants of other children stay.

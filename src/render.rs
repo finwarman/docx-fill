@@ -592,7 +592,7 @@ impl<'a> Render<'a, '_> {
                                 error.paragraph = Some(tag.paragraph);
                                 error
                             }));
-                            let is_block = is_block || (prepared.has_block && self.template.html_options.on_invalid_block == crate::HtmlBlockMode::Block);
+                            let is_block = is_block || (prepared.has_block && matches!(self.template.html_options.on_invalid_block, crate::HtmlBlockMode::Block | crate::HtmlBlockMode::Preserve));
                             self.out.push_str(&rich_text::mark(self.rich_values.len()));
                             self.rich_values.push(RichValue { html: prepared.html, raw: prepared.raw, is_block, block_mode: self.template.html_options.on_invalid_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone() });
                             if let Some(paragraph) = self.paragraphs.last_mut() {

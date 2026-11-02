@@ -143,7 +143,7 @@ pub struct Extensions {
     pub rich_text: bool,
     /// `{%name}` and `{%%name}`: an image from [`FillHooks::image`].
     pub images: bool,
-    /// `{$name}`: category and series data for an existing bar chart.
+    /// `{$name}`: category or coordinate data for an existing chart.
     pub charts: bool,
     /// Decode image tags held in raster QR codes before filling the package. Needs the
     /// `qr-codes` cargo feature.
