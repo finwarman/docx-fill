@@ -38,6 +38,24 @@ impl FillOptions {
             match key.as_str() {
                 "paragraphLoop" => self.paragraph_loop = read_bool(value, key)?,
                 "linebreaks" => self.linebreaks = read_bool(value, key)?,
+                "tagPrefixes" => {
+                    for (name, value) in read_object(value, key)? {
+                        let field = match name.as_str() {
+                            "loopStart" => &mut self.tag_prefixes.loop_start,
+                            "loopEnd" => &mut self.tag_prefixes.loop_end,
+                            "invertedLoop" => &mut self.tag_prefixes.inverted_loop,
+                            "raw" => &mut self.tag_prefixes.raw,
+                            "image" => &mut self.tag_prefixes.image,
+                            "centeredImage" => &mut self.tag_prefixes.centered_image,
+                            "html" => &mut self.tag_prefixes.html,
+                            "blockHtml" => &mut self.tag_prefixes.block_html,
+                            "wordRun" => &mut self.tag_prefixes.word_run,
+                            _ => return Err(unknown(name)),
+                        };
+                        *field = read_string(value, name)?;
+                    }
+                    self.tag_prefixes.validate()?;
+                }
                 "delimiters" => {
                     let delimiters = read_object(value, key)?;
                     let read = |name: &str| delimiters.get(name).map(|each| read_string(each, name)).transpose();

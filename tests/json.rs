@@ -6,6 +6,7 @@ fn reads_every_option() {
     let value = json!({
         "paragraphLoop": false,
         "linebreaks": false,
+        "tagPrefixes": { "loopStart": "if ", "loopEnd": "endif", "invertedLoop": "unless ", "raw": "raw ", "image": "img ", "centeredImage": "centerImg ", "html": "html ", "blockHtml": "blockHtml ", "wordRun": "wordRun " },
         "delimiters": { "start": "[[", "end": "]]" },
         "extensions": { "tableMerge": false, "sections": true },
         "dropEmptyLastPage": false,
@@ -26,6 +27,15 @@ fn reads_every_option() {
     let options = base.read_json(&value).unwrap();
 
     assert!(!options.paragraph_loop && !options.linebreaks && !options.drop_empty_last_page && options.drop_style_paragraphs);
+    assert_eq!(options.tag_prefixes.loop_start, "if ");
+    assert_eq!(options.tag_prefixes.loop_end, "endif");
+    assert_eq!(options.tag_prefixes.inverted_loop, "unless ");
+    assert_eq!(options.tag_prefixes.raw, "raw ");
+    assert_eq!(options.tag_prefixes.image, "img ");
+    assert_eq!(options.tag_prefixes.centered_image, "centerImg ");
+    assert_eq!(options.tag_prefixes.html, "html ");
+    assert_eq!(options.tag_prefixes.block_html, "blockHtml ");
+    assert_eq!(options.tag_prefixes.word_run, "wordRun ");
     assert_eq!((options.delimiters.start.as_str(), options.delimiters.end.as_str()), ("[[", "]]"));
     assert_eq!(options.extensions, Extensions { table_merge: false, ..Extensions::ALL });
     assert_eq!(options.module_prefixes, ["$"]);
