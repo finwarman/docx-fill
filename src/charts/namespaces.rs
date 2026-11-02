@@ -83,7 +83,7 @@ pub(super) fn normalize(xml: &str) -> Option<String> {
                 else if (extended_part || reference) && uri == Some(RELATIONSHIPS) { format!("r:{}", local(attr.name)) }
                 else { attr.name.to_string() };
             let conflict = prefix(&renamed).is_some_and(|prefix| locked.get(prefix).is_some_and(|locked| Some(locked.as_str()) != uri));
-            if conflict || (extended_part && foreign_reserved(&renamed, uri)) {
+            if conflict || ((extended_part || reference) && foreign_reserved(&renamed, uri)) {
                 renamed = fresh_name(local(attr.name), uri?, &output, &mut next_prefix);
             }
             if prefix(&renamed).is_some() { bind_name(&renamed, uri, &mut output, &mut declarations, &mut locked); }

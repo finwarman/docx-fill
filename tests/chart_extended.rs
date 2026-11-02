@@ -207,3 +207,15 @@ fn preserves_mce_attribute_scope() {
         assert!(output_chart(&parts).contains(">A</cx:pt>"));
     }
 }
+
+#[test]
+fn preserves_reference_namespaces() {
+    let reference = r#"<ex:chart xmlns:ex="http://schemas.microsoft.com/office/drawing/2014/chartex" xmlns:r="urn:foreign" xmlns:rels="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" mc:Ignorable="r" r:custom="value" rels:id="rIdChart"/>"#;
+    let body = drawing().replace(r#"<cx:chart r:id="rIdChart"/>"#, reference) + &paragraph(&["{$sales}"]);
+    let parts = render(&body, &chart("waterfall", "val"), json!({"sales":{"categories":["Bound"],"data":[8]}}));
+    assert!(output_chart(&parts).contains(">Bound</cx:pt>"));
+    let document = String::from_utf8_lossy(&parts["word/document.xml"]);
+    assert!(document.contains("mc:Ignorable=\"docxFillNs"));
+    assert!(document.contains("urn:foreign") && document.contains(":custom=\"value\""));
+    assert!(document.contains("r:id=\"rIdDocxFillChart1\""));
+}
