@@ -106,7 +106,7 @@ Place `{$sales}` alone in the paragraph after a bar chart, in the chart's paragr
 
 An inline chart tag targets the nearest preceding chart in its paragraph. A tag in the following paragraph requires exactly one chart in the preceding paragraph; multiple charts are ambiguous and cause a parse error. A tag before a chart drawing cannot target a chart in an earlier paragraph.
 
-Only standard `c:barChart` charts are filled. Title tags need one chart in their drawing paragraph. Other chart types and invalid data keep the original chart. The generated chart uses literal data; its embedded workbook stays unchanged and is detached from the generated chart. JSON can disable this feature with `extensions.charts`.
+Category data fills bar, line, area, radar, pie, doughnut and surface charts, including supported 3D variants and pie-of-pie charts. Pie charts accept one series; doughnut charts accept multiple series. Title tags need one chart in their drawing paragraph. Combined plots, other chart types and invalid data keep the original chart. The generated chart uses literal data; its embedded workbook stays unchanged and is detached from the generated chart. JSON can disable this feature with `extensions.charts`.
 
 `FillOptions::footnotes` controls inserted footnotes. `FootnoteContent::Raw` accepts complete Word runs. `ref_properties`, `ref_run`, `paragraph_properties` and `run_properties` customize the note marker, separator and text. JSON uses `footnotes: { raw, refProperties, refRun, paragraphProperties, runProperties }`. XML fragments must be valid WordprocessingML.
 
