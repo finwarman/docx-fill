@@ -111,6 +111,8 @@ fn update(bytes: &[u8], chart: &str) -> Result<Updated, FillError> {
     let rels_path = super::relation_path(&workbook_path);
     let mut rels = read_xml(&mut archive, &rels_path)?;
     root(&rels, "Relationships", REL_NS)?;
+    let folder = workbook_path.rsplit_once('/').map_or("", |(folder, _)| folder);
+    let sheet_paths = sheet_paths(&rels, folder)?;
     let mut types = read_xml(&mut archive, "[Content_Types].xml")?;
     root(&types, "Types", TYPES_NS)?;
     let workbook_type = elements(&types, "Override")?.into_iter().any(|item| {
@@ -119,10 +121,18 @@ fn update(bytes: &[u8], chart: &str) -> Result<Updated, FillError> {
     });
     if !workbook_type { return Err(error("Only standard XLSX workbooks are supported")); }
     if elements(&workbook, "workbookProtection")?.iter().any(|item| read_attribute(&workbook[item.start..item.open_end], "lockStructure").is_some_and(|value| matches!(value, "1" | "true"))) { return Err(error("Cannot add chart data to a structure-protected workbook")); }
-    let sheet_names: BTreeSet<_> = elements(&workbook, "sheet")?.iter().filter_map(|sheet| read_attribute(&workbook[sheet.start..sheet.open_end], "name").map(|name| unescape(name).to_lowercase())).collect();
-    let sheet_count = elements(&workbook, "sheet")?.len();
+    let sheets = elements(&workbook, "sheet")?;
+    let sheet_count = sheets.len();
+    let mut sheet_names = BTreeSet::new();
+    let mut sheet_ids = BTreeSet::new();
+    for sheet in sheets {
+        let raw = &workbook[sheet.start..sheet.open_end];
+        let name = read_attribute(raw, "name").map(unescape).filter(|name| !name.is_empty()).ok_or_else(|| error("Missing worksheet name"))?;
+        let id = read_attribute(raw, "sheetId").and_then(|id| id.parse::<u32>().ok()).filter(|id| *id > 0).ok_or_else(|| error("Invalid worksheet ID"))?;
+        if !sheet_names.insert(name.to_lowercase()) || !sheet_ids.insert(id) { return Err(error("Duplicate worksheet name or ID")); }
+    }
     let ids: BTreeSet<_> = elements(&rels, "Relationship")?.iter().filter_map(|item| read_attribute(&rels[item.start..item.open_end], "Id").map(str::to_string)).collect();
-    let max_id = elements(&workbook, "sheet")?.iter().filter_map(|sheet| read_attribute(&workbook[sheet.start..sheet.open_end], "sheetId").and_then(|id| id.parse::<u32>().ok())).max().unwrap_or(0);
+    let max_id = sheet_ids.last().copied().unwrap_or(0);
     let sheet_id = max_id.checked_add(1).ok_or_else(|| error("Workbook sheet IDs are exhausted"))?;
     let folder = workbook_path.rsplit_once('/').map_or("", |(folder, _)| folder);
     let (sheet_name, sheet_path, id) = (1..).find_map(|index| {
@@ -151,7 +161,7 @@ fn update(bytes: &[u8], chart: &str) -> Result<Updated, FillError> {
     let types_prefix = prefix(root(&types, "Types", TYPES_NS)?.name);
     types = append_to(&types, "Types", &format!("<{types_prefix}Override PartName=\"/{sheet_path}\" ContentType=\"{SHEET_TYPE}\"/>"))?;
     let mut changes = BTreeMap::from([(workbook_path, workbook), (rels_path, rels), ("[Content_Types].xml".into(), types), (sheet_path, sheet_xml)]);
-    clear_selection(&mut archive, &mut changes)?;
+    clear_selection(&mut archive, &mut changes, &sheet_paths)?;
     let mut output = ZipWriter::new(Cursor::new(Vec::new()));
     output.set_raw_comment(archive.comment().into()).map_err(|cause| error(cause.to_string()))?;
     for index in 0..archive.len() {
@@ -165,11 +175,12 @@ fn update(bytes: &[u8], chart: &str) -> Result<Updated, FillError> {
         output.write_all(xml.as_bytes()).map_err(|cause| error(cause.to_string()))?;
     }
     let archive = output.finish().map_err(|cause| error(cause.to_string()))?.into_inner();
+    if archive.len() > MAX_ARCHIVE_BYTES { return Err(error("The generated workbook exceeds 64 MiB")); }
     Ok(Updated { archive, chart })
 }
 
 fn check_archive(archive: &mut ZipArchive<Cursor<&[u8]>>) -> Result<BTreeSet<String>, FillError> {
-    if archive.len() > MAX_ENTRIES || archive.has_duplicate_names() { return Err(error("The embedded workbook has too many or duplicate ZIP entries")); }
+    if archive.len() >= MAX_ENTRIES || archive.has_duplicate_names() { return Err(error("The embedded workbook has too many or duplicate ZIP entries")); }
     let mut total = 0u64;
     let mut names = BTreeSet::new();
     for index in 0..archive.len() {
@@ -257,7 +268,20 @@ fn one<'a>(xml: &'a str, name: &str) -> Result<Element<'a>, FillError> {
 }
 
 fn root<'a>(xml: &'a str, name: &str, namespace: &str) -> Result<Element<'a>, FillError> {
+    if xml.contains("<!DOCTYPE") { return Err(error("Workbook XML cannot contain a document type")); }
+    let tokens = tokenize(xml).map_err(error)?;
+    check_balanced(&tokens).map_err(error)?;
+    let mut depth = 0usize;
+    let mut roots = Vec::new();
+    for token in tokens {
+        if let Token::Element { kind, name, .. } = token {
+            if depth == 0 && kind != ElementKind::Close { roots.push(name); }
+            match kind { ElementKind::Open => depth += 1, ElementKind::Close => depth = depth.saturating_sub(1), _ => {} }
+        }
+    }
+    let [actual] = roots[..] else { return Err(error("Workbook XML must have one root")); };
     let found = one(xml, name)?;
+    if actual != found.name { return Err(error(format!("Expected {name} at the XML root"))); }
     let key = if prefix(found.name).is_empty() { "xmlns".to_string() } else { format!("xmlns:{}", prefix(found.name).trim_end_matches(':')) };
     if read_attribute(&xml[found.start..found.open_end], &key) != Some(namespace) { return Err(error(format!("Unsupported {name} namespace"))); }
     Ok(found)
@@ -273,10 +297,21 @@ fn append_to(xml: &str, name: &str, child: &str) -> Result<String, FillError> {
     Ok(out)
 }
 
-fn clear_selection(archive: &mut ZipArchive<Cursor<&[u8]>>, changes: &mut BTreeMap<String, String>) -> Result<(), FillError> {
-    let paths: Vec<_> = archive.file_names().collect::<Result<Vec<_>, _>>().map_err(|cause| error(cause.to_string()))?.into_iter().filter(|path| path.ends_with(".xml") && path.contains("/worksheets/")).map(|path| path.into_owned()).collect();
+fn sheet_paths(rels: &str, folder: &str) -> Result<BTreeSet<String>, FillError> {
+    let mut paths = BTreeSet::new();
+    for item in elements(rels, "Relationship")? {
+        let raw = &rels[item.start..item.open_end];
+        if !matches!(read_attribute(raw, "Type"), Some(kind) if kind == format!("{OFFICE_REL_NS}/worksheet") || kind == format!("{OFFICE_REL_NS}/chartsheet")) { continue; }
+        if read_attribute(raw, "TargetMode") == Some("External") { return Err(error("External worksheets are unsupported")); }
+        let target = read_attribute(raw, "Target").ok_or_else(|| error("Missing worksheet target"))?;
+        paths.insert(resolve(folder, target)?);
+    }
+    Ok(paths)
+}
+
+fn clear_selection(archive: &mut ZipArchive<Cursor<&[u8]>>, changes: &mut BTreeMap<String, String>, paths: &BTreeSet<String>) -> Result<(), FillError> {
     for path in paths {
-        let xml = read_xml(archive, &path)?;
+        let xml = read_xml(archive, path)?;
         let mut edited = xml.clone();
         for view in elements(&xml, "sheetView")?.into_iter().rev() {
             if read_attribute(&xml[view.start..view.open_end], "tabSelected").is_some_and(|value| matches!(value, "1" | "true")) {
@@ -284,7 +319,7 @@ fn clear_selection(archive: &mut ZipArchive<Cursor<&[u8]>>, changes: &mut BTreeM
                 edited.replace_range(view.start..view.open_end, &raw);
             }
         }
-        if edited != xml { changes.insert(path, edited); }
+        if edited != xml { changes.insert(path.clone(), edited); }
     }
     Ok(())
 }
@@ -358,7 +393,7 @@ fn read_points(xml: &str, kind: CellKind) -> Result<Vec<Option<String>>, FillErr
         let at = read_attribute(&xml[point.start..point.open_end], "idx").and_then(|value| value.parse::<usize>().ok()).filter(|index| *index < count).ok_or_else(|| error("Invalid chart point index"))?;
         if !used.insert(at) { return Err(error("Duplicate chart point index")); }
         let value = super::element_text(&xml[point.start..point.end], "c:v").ok_or_else(|| error("Missing chart point value"))?;
-        if value.chars().count() > MAX_CELL_CHARS || !value.chars().all(is_xml_char) { return Err(error("Invalid or oversized worksheet text")); }
+        if value.encode_utf16().count() > MAX_CELL_CHARS || !value.chars().all(is_xml_char) { return Err(error("Invalid or oversized worksheet text")); }
         if kind == CellKind::Number && !value.parse::<f64>().is_ok_and(f64::is_finite) { return Err(error("Invalid numeric chart value")); }
         values[at] = Some(value);
     }
@@ -395,7 +430,7 @@ fn write_sheet(columns: &[Column]) -> Result<String, FillError> {
 }
 
 fn write_cell(out: &mut String, cell: &str, value: &str, kind: CellKind) -> Result<(), FillError> {
-    if value.chars().count() > MAX_CELL_CHARS || !value.chars().all(is_xml_char) { return Err(error("Invalid or oversized worksheet text")); }
+    if value.encode_utf16().count() > MAX_CELL_CHARS || !value.chars().all(is_xml_char) { return Err(error("Invalid or oversized worksheet text")); }
     let mut escaped = String::new(); escape(value, &mut escaped);
     match kind {
         CellKind::Text => out.push_str(&format!("<c r=\"{cell}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{escaped}</t></is></c>")),

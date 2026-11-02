@@ -149,7 +149,7 @@ mod enabled {
     }
 
     #[test]
-    fn refuses_bad_workbooks_atomically() {
+    fn rejects_bad_workbooks() {
         let body = format!("{DRAWING}<w:p><w:r><w:t>{{$sales}}</w:t></w:r></w:p>");
         let external = relation().replace("Target=", "TargetMode=\"External\" Target=");
         for (workbook, relation) in [(b"invalid zip".to_vec(), relation()), (workbook("Template"), external)] {
@@ -171,4 +171,89 @@ mod enabled {
         let error = template.try_render(&json!({"sales":{"categories":[],"series":[{"data":[]}]}})).unwrap_err();
         assert_eq!(error.id, FillErrorId::ChartWorkbook);
     }
+    fn change_part(bytes: Vec<u8>, path: &str, change: impl FnOnce(String) -> String) -> Vec<u8> {
+        let mut parts = unzip(&bytes);
+        let xml = String::from_utf8(parts.remove(path).unwrap()).unwrap();
+        parts.insert(path.to_string(), change(xml).into_bytes());
+        let mut output = ZipWriter::new(Cursor::new(Vec::new()));
+        output.set_comment("source archive").unwrap();
+        for (name, bytes) in parts {
+            output.start_file(name, SimpleFileOptions::default()).unwrap();
+            output.write_all(&bytes).unwrap();
+        }
+        output.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn links_xy_and_bubble_ranges() {
+        let body = format!("{DRAWING}<w:p><w:r><w:t>{{$sales}}</w:t></w:r></w:p>");
+        for kind in ["scatterChart", "bubbleChart"] {
+            let mut source = parts(&body, workbook("Template"), &relation());
+            let chart = chart().replace("barChart", kind).replace("<c:barDir val=\"col\"/>", "").replace("c:cat", "c:xVal").replace("c:val", "c:yVal");
+            source.iter_mut().find(|(name, _)| name == "word/charts/chart1.xml").unwrap().1 = chart.into_bytes();
+            let template = PackageTemplate::parse(source, &options()).unwrap();
+            let mut values = json!({"sales":{"series":[{"title":"XY","data":[{"x":1,"y":2,"size":3,"name":"P1"},{"x":4,"y":5,"size":6,"name":"P2"}]}]}});
+            if kind == "scatterChart" {
+                for point in values["sales"]["series"][0]["data"].as_array_mut().unwrap() { point.as_object_mut().unwrap().remove("size"); }
+            }
+            let rendered: BTreeMap<_, _> = template.try_render(&values).unwrap().into_iter().map(|(name, bytes)| (name, bytes.into_owned())).collect();
+            let chart = text(&rendered, "word/charts/docxFillChart1.xml");
+            assert!(chart.contains("<c:xVal><c:numRef><c:f>'DocxFillData'!$A$2:$A$3</c:f>"));
+            assert!(chart.contains("<c:yVal><c:numRef><c:f>'DocxFillData'!$B$2:$B$3</c:f>"));
+            assert!(chart.contains("P1") && chart.contains("P2"));
+            let workbook = unzip(&rendered["word/embeddings/docxFillWorkbook1.xlsx"]);
+            let worksheet = text(&workbook, "xl/worksheets/docxFillData1.xml");
+            assert!(worksheet.contains("<c r=\"A2\"><v>1</v></c>") && worksheet.contains("<c r=\"B3\"><v>5</v></c>"));
+            if kind == "bubbleChart" {
+                assert!(chart.contains("<c:bubbleSize><c:numRef><c:f>'DocxFillData'!$C$2:$C$3</c:f>"));
+                assert!(worksheet.contains("<c r=\"C3\"><v>6</v></c>"));
+            }
+        }
+    }
+
+    #[test]
+    fn keeps_point_labels_separate() {
+        let body = format!("{DRAWING}<w:p><w:r><w:t>{{$sales}}</w:t></w:r></w:p>");
+        let mut source = parts(&body, workbook("Template"), &relation());
+        let chart = chart().replace("barChart", "scatterChart").replace("<c:barDir val=\"col\"/>", "").replace("c:cat", "c:xVal").replace("c:val", "c:yVal");
+        let first = chart.find("<c:tx>").unwrap();
+        let end = chart.find("</c:tx>").unwrap() + "</c:tx>".len();
+        let chart = format!("{}{}", &chart[..first], &chart[end..]);
+        source.iter_mut().find(|(name, _)| name == "word/charts/chart1.xml").unwrap().1 = chart.into_bytes();
+        let template = PackageTemplate::parse(source, &options()).unwrap();
+        let rendered: BTreeMap<_, _> = template.try_render(&json!({"sales":{"series":[{"data":[{"x":1,"y":2,"name":"Point name"}]}]}})).unwrap().into_iter().map(|(name, bytes)| (name, bytes.into_owned())).collect();
+        let chart = text(&rendered, "word/charts/docxFillChart1.xml");
+        assert!(chart.contains("Point name"));
+        let workbook = unzip(&rendered["word/embeddings/docxFillWorkbook1.xlsx"]);
+        assert!(text(&workbook, "xl/worksheets/docxFillData1.xml").contains("Series 1"));
+        assert!(!text(&workbook, "xl/worksheets/docxFillData1.xml").contains("Point name"));
+    }
+
+    #[test]
+    fn accepts_prefixed_workbooks() {
+        let workbook = change_part(workbook("Template"), "xl/workbook.xml", |mut xml| {
+            for name in ["workbook", "bookViews", "workbookView", "sheets", "sheet"] {
+                xml = xml.replace(&format!("<{name}"), &format!("<s:{name}")).replace(&format!("</{name}"), &format!("</s:{name}"));
+            }
+            xml.replace(&format!("xmlns=\"{SHEET_NS}\""), &format!("xmlns:s=\"{SHEET_NS}\"")).replace('"', "'")
+        });
+        let body = format!("{DRAWING}<w:p><w:r><w:t>{{$sales}}</w:t></w:r></w:p>");
+        let template = PackageTemplate::parse(parts(&body, workbook, &relation().replace('"', "'")), &options()).unwrap();
+        let rendered: BTreeMap<_, _> = template.try_render(&data()).unwrap().into_iter().map(|(name, bytes)| (name, bytes.into_owned())).collect();
+        let workbook = unzip(&rendered["word/embeddings/docxFillWorkbook1.xlsx"]);
+        let xml = text(&workbook, "xl/workbook.xml");
+        assert!(xml.contains("<s:sheet name=\"DocxFillData\""));
+        assert!(xml.contains("activeTab='2'"));
+    }
+
+    #[test]
+    fn refuses_protected_structure() {
+        let workbook = change_part(workbook("Template"), "xl/workbook.xml", |xml| xml.replace("<bookViews>", "<workbookProtection lockStructure=\"1\"/><bookViews>"));
+        let body = format!("{DRAWING}<w:p><w:r><w:t>{{$sales}}</w:t></w:r></w:p>");
+        let template = PackageTemplate::parse(parts(&body, workbook, &relation()), &options()).unwrap();
+        let error = template.try_render(&data()).unwrap_err();
+        assert_eq!(error.id, FillErrorId::ChartWorkbook);
+        assert!(error.message.contains("structure-protected"));
+    }
+
 }
