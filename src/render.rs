@@ -508,7 +508,7 @@ impl<'a> Render<'a, '_> {
                         TagKind::RichText { is_block } => {
                             let html = value.and_then(Value::as_str).unwrap_or_default().to_string();
                             self.out.push_str(&rich_text::mark(self.rich_values.len()));
-                            self.rich_values.push(RichValue { html, is_block, has_extras: self.template.html_extras });
+                            self.rich_values.push(RichValue { html, is_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone() });
                             if let Some(paragraph) = self.paragraphs.last_mut() {
                                 paragraph.has_rich_text = true;
                             }

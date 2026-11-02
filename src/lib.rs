@@ -258,6 +258,8 @@ pub struct FillOptions {
     /// The filters expressions can use, which [`FillHooks::filter`] applies. Any other is an error
     /// when parsing.
     pub filters: Vec<String>,
+    /// CSS applied to HTML values before their inline styles.
+    pub html_style_sheet: String,
 }
 
 impl Default for FillOptions {
@@ -284,6 +286,7 @@ impl Default for FillOptions {
             fill_properties: true,
             expressions: false,
             filters: Vec::new(),
+            html_style_sheet: String::new(),
         }
     }
 }
