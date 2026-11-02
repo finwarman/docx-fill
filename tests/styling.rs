@@ -1,6 +1,9 @@
 mod common;
 
+use std::collections::BTreeMap;
+
 use common::{cell, elements, fill, row, table};
+use docx_fill::{FillOptions, PackageTemplate};
 use serde_json::json;
 
 #[test]
@@ -134,6 +137,56 @@ fn nests_ranges_across_paragraphs() {
     assert!(styled("c").contains("<w:i/>") && styled("c").contains("<w:b/>"));
     assert!(styled("d").contains("<w:i/>") && !styled("d").contains("<w:b/>"));
     assert!(!styled("e").contains("<w:i/>"));
+}
+
+#[test]
+fn style_tag_prints_escaped_text_from_the_style_object() {
+    let body = fill(
+        r#"<w:p><w:r><w:t>{:stylerun s}</w:t></w:r></w:p>"#,
+        json!({ "s": { "text": "has <text> & more", "bold": true } }),
+    );
+
+    assert!(body.contains("<w:b/>"));
+    assert!(body.contains("has &lt;text&gt; &amp; more"));
+}
+
+#[test]
+fn package_theme_colors_replace_existing_and_system_colors() {
+    let theme = r#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:clrScheme><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:accent1><a:srgbClr val="FFFFFF"/></a:accent1></a:clrScheme></a:themeElements></a:theme>"#;
+    let mut package = PackageTemplate::parse(
+        [("word/theme/theme1.xml".to_string(), theme.as_bytes().to_vec())],
+        &FillOptions::default(),
+    )
+    .unwrap();
+    package
+        .set_theme_colors(BTreeMap::from([
+            ("a:dk1".to_string(), "123456".to_string()),
+            ("a:accent1".to_string(), "#abc".to_string()),
+        ]))
+        .unwrap();
+
+    let parts = package.render(&json!({}));
+    let theme = String::from_utf8(
+        parts.into_iter().find(|(name, _)| name == "word/theme/theme1.xml").unwrap().1.into_owned(),
+    )
+    .unwrap();
+    assert!(theme.contains(r#"<a:dk1><a:srgbClr val="123456"/></a:dk1>"#));
+    assert!(theme.contains(r#"<a:accent1><a:srgbClr val="AABBCC"/></a:accent1>"#));
+}
+
+#[test]
+fn package_theme_colors_reject_unknown_slots_and_invalid_hex() {
+    let mut package = PackageTemplate::parse([], &FillOptions::default()).unwrap();
+    assert!(
+        package
+            .set_theme_colors(BTreeMap::from([("a:other".to_string(), "123456".to_string())]))
+            .is_err()
+    );
+    assert!(
+        package
+            .set_theme_colors(BTreeMap::from([("a:dk1".to_string(), "red".to_string())]))
+            .is_err()
+    );
 }
 
 #[test]

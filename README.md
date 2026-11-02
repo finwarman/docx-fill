@@ -56,12 +56,25 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 | `sections` | `{:subsection name}`, `{:replacesection name}`, `{:page props}` | Takes headers and footers from a subtemplate, or sets page size and margins | Subsection |
 | `comments` | `{name}` with `{ "text", "comment" }` | Prints text with Word comments on it | |
 
-A style value looks like this. `fontSize` is in half-points.
+A style value looks like this. `fontSize` is in half-points. It can also include `text`, which is printed at the styling tag and escaped as Word text.
 
 ```json
 { "cellBackground": "#rrggbb", "textColor": "#f00", "textAlign": "center", "pStyle": "Heading1",
-  "fontSize": 24, "fontFamily": "Arial", "bold": true, "borders": { "top": { "val": "single", "sz": 4, "color": "#000" } } }
+  "fontSize": 24, "fontFamily": "Arial", "bold": true, "text": "Hello", "borders": { "top": { "val": "single", "sz": 4, "color": "#000" } } }
 ```
+
+After parsing a DOCX package, set theme colors before rendering:
+
+```rust
+use std::collections::BTreeMap;
+
+template.set_theme_colors(BTreeMap::from([
+    ("a:dk1".to_string(), "000000".to_string()),
+    ("a:accent1".to_string(), "4F81BD".to_string()),
+]))?;
+```
+
+The method updates standard slots in `word/theme/theme1.xml`; color values accept three- or six-digit hex with an optional `#`.
 
 ## Other options
 

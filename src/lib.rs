@@ -297,6 +297,7 @@ pub fn fill_part(xml: &str, data: &Value, options: &FillOptions) -> Result<Strin
 #[derive(Debug)]
 pub struct PackageTemplate {
     parts: Vec<(String, PackagePart)>,
+    theme_colors: BTreeMap<String, String>,
     /// The main document part, `word/document.xml` unless the content types name another.
     main_part: String,
     drop_empty_last_page: bool,
@@ -363,6 +364,7 @@ impl PackageTemplate {
         let body = templates().find(|(name, _)| **name == main_part).and_then(|(_, template)| template.body);
         Ok(PackageTemplate {
             main_part,
+            theme_colors: BTreeMap::new(),
             max_comment_id,
             drop_empty_last_page: options.drop_empty_last_page,
             document: options.document.clone(),
@@ -374,6 +376,16 @@ impl PackageTemplate {
             parts: parsed,
             includes: BTreeMap::new(),
         })
+    }
+
+    /// Replaces standard theme color slots in `word/theme/theme1.xml` during rendering.
+    ///
+    /// Keys are DrawingML names such as `a:dk1` and values are three- or six-digit hex colors.
+    /// A leading `#` is optional.
+    pub fn set_theme_colors(&mut self, colors: BTreeMap<String, String>) -> Result<(), FillError> {
+        styling::validate_theme_colors(&colors)?;
+        self.theme_colors = colors;
+        Ok(())
     }
 
     /// Names a subtemplate `{:include}` tags print where their value is `name`, or a list
@@ -446,6 +458,7 @@ impl PackageTemplate {
         let count = includes::print_includes(&mut out, &includes, &self.includes, hooks);
         sections::apply_sections(&mut out, &sections, &self.includes, hooks, count);
         self.finish_template_parts(&mut out);
+        apply_theme_colors(&mut out, &self.theme_colors);
         self.document.apply(&mut out);
         out
     }
@@ -468,6 +481,15 @@ impl PackageTemplate {
             }
         }
     }
+}
+
+fn apply_theme_colors(parts: &mut [(String, Cow<[u8]>)], colors: &BTreeMap<String, String>) {
+    if colors.is_empty() {
+        return;
+    }
+    let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == "word/theme/theme1.xml") else { return };
+    let Ok(xml) = std::str::from_utf8(bytes) else { return };
+    *bytes = Cow::Owned(styling::set_theme_colors(xml, colors).into_bytes());
 }
 
 /// Adds each image's media part, the relationship its part shows it by, and its content type.

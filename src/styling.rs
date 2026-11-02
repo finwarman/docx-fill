@@ -383,6 +383,56 @@ pub(crate) fn style_ranges(xml: &str, styles: &[Style]) -> String {
     })
 }
 
+const THEME_COLOR_NAMES: &[&str] = &[
+    "a:dk1", "a:lt1", "a:dk2", "a:lt2", "a:accent1", "a:accent2", "a:accent3", "a:accent4", "a:accent5", "a:accent6", "a:hlink", "a:folHlink",
+];
+const THEME_COLOR_TYPES: &[&str] = &["a:srgbClr", "a:scrgbClr", "a:hslClr", "a:sysClr", "a:schemeClr", "a:prstClr"];
+
+pub(crate) fn validate_theme_colors(colors: &std::collections::BTreeMap<String, String>) -> Result<(), crate::FillError> {
+    for (name, color) in colors {
+        if !THEME_COLOR_NAMES.contains(&name.as_str()) {
+            return Err(crate::FillError::new(format!("Unknown theme color \"{name}\"")));
+        }
+        if read_hex(color).is_none() {
+            return Err(crate::FillError::new(format!("Invalid hex color \"{color}\" for {name}")));
+        }
+    }
+    Ok(())
+}
+
+/// Replaces the color choice in each configured DrawingML theme slot.
+pub(crate) fn set_theme_colors(xml: &str, colors: &std::collections::BTreeMap<String, String>) -> String {
+    let mut xml = xml.to_string();
+    for (name, color) in colors {
+        let Some(color) = read_hex(color) else { continue };
+        xml = edit_each(&xml, name, |element| {
+            let Some(open_end) = element.find('>').map(|at| at + 1) else { return element.to_string() };
+            let open = if element[..open_end].ends_with("/>") {
+                format!("{}>", &element[..open_end - 2])
+            } else {
+                element[..open_end].to_string()
+            };
+            let close = format!("</{name}>");
+            let mut inner = if element[..open_end].ends_with("/>") || !element.ends_with(&close) {
+                String::new()
+            } else {
+                element[open_end..element.len() - close.len()].to_string()
+            };
+            for color_type in THEME_COLOR_TYPES {
+                inner = edit_each(&inner, color_type, |_| String::new());
+            }
+            let replacement = format!("<a:srgbClr val=\"{color}\"/>");
+            if let Some(ext) = inner.find("<a:extLst") {
+                inner.insert_str(ext, &replacement);
+            } else {
+                inner.push_str(&replacement);
+            }
+            format!("{open}{inner}{close}")
+        });
+    }
+    xml
+}
+
 /// Which style definitions a global styling tag changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StyleKind {
