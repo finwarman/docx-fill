@@ -12,7 +12,7 @@ use crate::images::{Image, MediaUse, body_or_default, drawing_size, drawing_xml}
 use crate::rich_text::{self, RichValue};
 use crate::template::{Block, BlockKind, LoopPageBreaks, Part, StyleTarget, TagKind, Template};
 use crate::cell_styling;
-use crate::expressions::{Computed, ComputedEnd, Evaluation};
+use crate::expressions::{Assignments, Computed, ComputedEnd, Evaluation};
 use crate::comments::{Comment, read_commented};
 use crate::includes::{INCLUDE_END, INCLUDE_START};
 use crate::sections::{SECTION_END, SECTION_START, SectionUse};
@@ -114,6 +114,7 @@ impl FillHooks for NoHooks {}
 
 /// Shared by the parts of one package fill.
 pub(crate) struct FillState {
+    pub assignments: Assignments,
     pub next_drawing_id: u32,
     /// Page width and height less margins, in pixels, when the part does not give its own.
     pub body: Option<(f64, f64)>,
@@ -206,7 +207,7 @@ impl Template {
     }
 
     fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (String, Vec<crate::FillError>) {
-        let mut state = FillState { next_drawing_id: self.max_drawing_id + 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
+        let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id + 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
         let filled = self.fill(data, "", hooks, &mut state);
         let errors = filled.html_errors;
         // Only a package prints subtemplates.
@@ -266,6 +267,11 @@ impl Template {
 }
 
 impl<'a> Render<'a, '_> {
+    fn current_scope(&self, scopes: &[&Value]) -> Value {
+        let updated: Vec<Value> = scopes.iter().map(|scope| self.state.assignments.scope(scope)).collect();
+        merge_scopes(&updated.iter().collect::<Vec<_>>())
+    }
+
     /// The value a tag's name gives: the hook's if it reads the tag, else its expression's result
     /// with expressions on, else the name's value in the innermost scope that has one.
     fn look_up(&mut self, scopes: &[&'a Value], name: &str) -> Option<&'a Value> {
@@ -274,7 +280,7 @@ impl<'a> Render<'a, '_> {
         }
         let template = self.template;
         let Some(expression) = template.expressions.get(name) else { return look_up(scopes, name) };
-        let mut evaluation = Evaluation { scopes, loop_indexes: &self.loop_indexes, hooks: &mut *self.hooks };
+        let mut evaluation = Evaluation { scopes, loop_indexes: &self.loop_indexes, hooks: &mut *self.hooks, assignments: &mut self.state.assignments };
         match evaluation.evaluate(expression)? {
             Cow::Borrowed(value) => Some(value),
             Cow::Owned(value) => Some(self.computed.keep(value)),
@@ -311,7 +317,7 @@ impl<'a> Render<'a, '_> {
                     self.out.push(SECTION_START);
                     self.out.push_str(&self.sections.len().to_string());
                     self.out.push(SECTION_END);
-                    self.sections.push(SectionUse { tag: *tag, value: value.clone(), scope: merge_scopes(scopes) });
+                    self.sections.push(SectionUse { tag: *tag, value: value.clone(), scope: self.current_scope(scopes) });
                 }
                 BlockKind::IncludeSegment { name, is_dynamic } => {
                     let wanted = if *is_dynamic { self.look_up(scopes, name).and_then(Value::as_str) } else { Some(name.as_str()) };
@@ -330,7 +336,7 @@ impl<'a> Render<'a, '_> {
                     if names.is_empty() {
                         continue;
                     }
-                    let scope = merge_scopes(scopes);
+                    let scope = self.current_scope(scopes);
                     for name in names {
                         self.out.push(INCLUDE_START);
                         self.out.push_str(&self.includes.len().to_string());

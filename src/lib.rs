@@ -19,6 +19,7 @@ mod cell_styling;
 mod comments;
 mod document_edits;
 mod empty_last_page;
+mod errors;
 mod expressions;
 mod footnotes;
 mod full_table;
@@ -44,13 +45,13 @@ mod xml;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use serde_json::Value;
 
 pub use document_edits::{DocumentEdits, Margins, Watermark, WatermarkLayout};
 pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
+pub use errors::{FillError, FillErrorId};
 pub use comments::CommentDefaults;
 pub use footnotes::{FootnoteContent, FootnoteOptions};
 pub use full_table::{TableOptions, TableResize, TableValidation};
@@ -302,36 +303,8 @@ impl FillOptions {
     }
 }
 
-/// Why a template could not be read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FillError {
-    /// The package part, when known.
-    pub part: Option<String>,
-    pub message: String,
-}
-
-impl FillError {
-    pub(crate) fn new(message: impl Into<String>) -> FillError {
-        FillError { part: None, message: message.into() }
-    }
-}
-
-impl fmt::Display for FillError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.part {
-            Some(part) => write!(f, "{part}: {}", self.message),
-            None => f.write_str(&self.message),
-        }
-    }
-}
-
-impl std::error::Error for FillError {}
-
-pub(crate) fn check_html_errors(errors: Vec<FillError>) -> Result<(), FillError> {
-    let mut errors = errors.into_iter();
-    let Some(mut first) = errors.next() else { return Ok(()) };
-    for error in errors { first.message.push_str(&format!("; {error}")); }
-    Err(first)
+fn check_html_errors(errors: Vec<FillError>) -> Result<(), FillError> {
+    if errors.is_empty() { Ok(()) } else { Err(FillError::many(errors)) }
 }
 
 /// Whether a package part holds tags: the body, a header or a footer.
@@ -386,6 +359,7 @@ impl PackageTemplate {
         let mut max_footnote_id = None;
         let mut max_comment_id = None;
         let mut parsed = Vec::new();
+        let mut errors = Vec::new();
         for (name, bytes) in parts {
             if name == footnotes::FOOTNOTES_PART {
                 max_footnote_id = Some(footnotes::read_max_id(&String::from_utf8_lossy(&bytes)));
@@ -402,14 +376,16 @@ impl PackageTemplate {
                 }
             };
 
-            let in_part = |mut error: FillError| {
-                error.part = Some(name.clone());
-                error
+            let xml = match String::from_utf8(bytes) {
+                Ok(xml) => xml,
+                Err(_) => { errors.push(FillError::new("The part is not UTF-8").with_id(FillErrorId::MalformedXml).in_part(&name)); continue; }
             };
-            let xml = String::from_utf8(bytes).map_err(|_| in_part(FillError::new("The part is not UTF-8")))?;
-            let template = Template::parse_text(&xml, options, layout).map_err(in_part)?;
-            parsed.push((name, PackagePart::Template(Box::new(template))));
+            match Template::parse_text(&xml, options, layout) {
+                Ok(template) => parsed.push((name, PackagePart::Template(Box::new(template)))),
+                Err(error) => errors.push(error.in_part(&name)),
+            }
         }
+        if !errors.is_empty() { return Err(FillError::many(errors)); }
 
         let templates = || parsed.iter().filter_map(|(name, part)| match part {
             PackagePart::Template(template) => Some((name, template)),
@@ -479,6 +455,7 @@ impl PackageTemplate {
 
     fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (Vec<(String, Cow<'_, [u8]>)>, Vec<FillError>) {
         let mut state = FillState {
+            assignments: expressions::Assignments::default(),
             next_drawing_id: self.max_drawing_id + 1,
             body: self.body,
             container_fill: CONTAINER_FILL,
