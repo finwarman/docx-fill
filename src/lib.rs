@@ -231,6 +231,10 @@ impl Extensions {
     };
 }
 
+/// Whether chart values are detached literals or linked to a cloned embedded workbook.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChartDataMode { #[default] Literal, Workbook }
+
 /// How a template is read and filled.
 #[derive(Debug, Clone)]
 pub struct FillOptions {
@@ -282,6 +286,8 @@ pub struct FillOptions {
     /// CSS applied to HTML values before their inline styles.
     pub html_style_sheet: String,
     pub html: HtmlOptions,
+    /// Workbook mode needs the `chart-workbook` feature and checked package rendering.
+    pub chart_data: ChartDataMode,
 }
 
 impl Default for FillOptions {
@@ -311,6 +317,7 @@ impl Default for FillOptions {
             filters: Vec::new(),
             html_style_sheet: String::new(),
             html: HtmlOptions::default(),
+            chart_data: ChartDataMode::Literal,
         }
     }
 }
@@ -346,6 +353,7 @@ pub fn fill_part(xml: &str, data: &Value, options: &FillOptions) -> Result<Strin
 pub struct PackageTemplate {
     parts: Vec<(String, PackagePart)>,
     chart_titles: BTreeMap<String, String>,
+    chart_data: ChartDataMode,
     theme_colors: BTreeMap<String, String>,
     /// The main document part, `word/document.xml` unless the content types name another.
     main_part: String,
@@ -372,6 +380,10 @@ impl PackageTemplate {
     /// [`FillOptions::fill_properties`] the core, app and custom document properties.
     pub fn parse(parts: impl IntoIterator<Item = (String, Vec<u8>)>, options: &FillOptions) -> Result<PackageTemplate, FillError> {
         options.document.check()?;
+        #[cfg(not(feature = "chart-workbook"))]
+        if options.chart_data == ChartDataMode::Workbook {
+            return Err(FillError::new("Workbook chart data needs the chart-workbook cargo feature").with_id(FillErrorId::ChartWorkbook));
+        }
         options.tag_prefixes.validate()?;
         let mut parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
         let chart_titles = if options.extensions.charts { charts::prepare(&mut parts, options) } else { BTreeMap::new() };
@@ -437,6 +449,7 @@ impl PackageTemplate {
             main_part,
             theme_colors: BTreeMap::new(),
             chart_titles,
+            chart_data: options.chart_data,
             max_comment_id,
             drop_empty_last_page: options.drop_empty_last_page,
             document: options.document.clone(),
@@ -485,7 +498,7 @@ impl PackageTemplate {
         self.render_result(data, hooks).0
     }
 
-    /// Renders once and returns HTML validation errors from this package and its includes.
+    /// Renders once and returns validation errors from this package and its includes.
     pub fn try_render(&self, data: &Value) -> Result<PackageParts<'_>, FillError> { self.try_render_with(data, &mut NoHooks) }
 
     /// Checked rendering with callbacks, each invoked once per element.
@@ -548,7 +561,7 @@ impl PackageTemplate {
         }
         add_media(&mut out, &media);
         add_links(&mut out, &links);
-        charts::apply(&mut out, &chart_uses, &self.chart_titles);
+        errors.extend(charts::apply(&mut out, &chart_uses, &self.chart_titles, self.chart_data));
         restyle_definitions(&mut out, &definitions);
         footnotes::add_footnotes(&mut out, &notes);
         comments::add_comments(&mut out, &comments);

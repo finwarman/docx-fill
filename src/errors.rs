@@ -9,7 +9,7 @@ pub enum FillErrorId {
     UnclosedLoop, UnopenedLoop, ClosingTagMismatch, LoopPositionInvalid, UnbalancedLoopTags,
     RawTagNotAlone, ImageTagNotAlone, TableTagNotAlone, SegmentTagNotAlone,
     UndefinedSegment, ScopeParserCompilation, NoXmlTagFound,
-    HtmlUnknownTag, HtmlCssInvalid, HtmlBlockInvalid,
+    HtmlUnknownTag, HtmlCssInvalid, HtmlBlockInvalid, ChartWorkbook,
 }
 
 impl FillErrorId {
@@ -27,6 +27,7 @@ impl FillErrorId {
             Self::UndefinedSegment => "undefined_subsegment", Self::ScopeParserCompilation => "scopeparser_compilation_failed",
             Self::NoXmlTagFound => "no_xml_tag_found_at_left", Self::HtmlUnknownTag => "html_tag_name_unsupported",
             Self::HtmlCssInvalid => "style_property_invalid", Self::HtmlBlockInvalid => "html_tag_invalid_type",
+            Self::ChartWorkbook => "chart_workbook_error",
         }
     }
 }

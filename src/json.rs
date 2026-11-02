@@ -36,6 +36,11 @@ impl FillOptions {
     pub fn read_json(mut self, value: &Value) -> Result<FillOptions, FillError> {
         for (key, value) in read_object(value, "options")? {
             match key.as_str() {
+                "chartData" => self.chart_data = match read_string(value, key)?.as_str() {
+                    "literal" => crate::ChartDataMode::Literal,
+                    "workbook" => crate::ChartDataMode::Workbook,
+                    other => return Err(FillError::new(format!("Unknown chart data mode {other}"))),
+                },
                 "paragraphLoop" => self.paragraph_loop = read_bool(value, key)?,
                 "linebreaks" => self.linebreaks = read_bool(value, key)?,
                 "tagPrefixes" => {
