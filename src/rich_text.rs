@@ -13,7 +13,7 @@
 //! font-size in px or pt, font-family, font-weight, font-style, text-decoration, text-align).
 
 use crate::cell_styling::{find_element_start, remove_first_element};
-use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_child};
+use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_attribute, set_child};
 use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
 
@@ -36,6 +36,11 @@ const LINK_COLOR: &str = "0563C1";
 const CHECKED: &str = "\u{2612}";
 const UNCHECKED: &str = "\u{2610}";
 const OBJECT_REPLACEMENT: char = '\u{fffc}';
+const TWIPS_PER_POINT: f64 = 20.0;
+const POINTS_PER_CSS_PIXEL: f64 = 0.75;
+const LINE_HEIGHT_UNIT: f64 = 240.0;
+const DEFAULT_FONT_POINTS: f64 = 11.0;
+const CELL_SIDES: [&str; 4] = ["top", "left", "bottom", "right"];
 const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
 // Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
 const TABLE_COLUMN_TWIPS: u32 = 2000;
@@ -67,6 +72,8 @@ struct Format {
     font: Option<String>,
     shade: Option<String>,
     link: Option<String>,
+    pre_spaces: Option<bool>,
+    rtl: Option<bool>,
 }
 
 impl Format {
@@ -83,6 +90,8 @@ impl Format {
         self.font = over.font.clone().or(self.font);
         self.shade = over.shade.clone().or(self.shade);
         self.link = over.link.clone().or(self.link);
+        self.pre_spaces = over.pre_spaces.or(self.pre_spaces);
+        self.rtl = over.rtl.or(self.rtl);
         self
     }
 }
@@ -107,6 +116,36 @@ struct Block {
     quote_level: u32,
     is_rule: bool,
     table: Option<Vec<Vec<Cell>>>,
+    layout: ParagraphLayout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineHeight { Multiple(u32), Exact(u32) }
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ParagraphLayout {
+    left: Option<i64>, right: Option<i64>, before: Option<i64>, after: Option<i64>,
+    text_indent: Option<i64>, line_height: Option<LineHeight>, rtl: Option<bool>,
+    page_before: bool, page_after: bool,
+}
+
+impl ParagraphLayout {
+    fn and(self, over: Self) -> Self {
+        Self { left: over.left.or(self.left), right: over.right.or(self.right), before: over.before.or(self.before), after: over.after.or(self.after),
+            text_indent: over.text_indent.or(self.text_indent), line_height: over.line_height.or(self.line_height), rtl: over.rtl.or(self.rtl),
+            page_before: over.page_before || self.page_before, page_after: over.page_after || self.page_after }
+    }
+    fn inherited(self) -> Self { Self { before: None, after: None, page_before: false, page_after: false, ..self } }
+}
+
+#[derive(Debug, Clone, Default)]
+struct CellLayout { margins: [Option<i64>; 4], vertical: Option<CellVertical> }
+
+#[derive(Debug, Clone, Copy)]
+enum CellVertical { Top, Center, Bottom }
+
+impl CellVertical {
+    fn as_str(self) -> &'static str { match self { Self::Top => "top", Self::Center => "center", Self::Bottom => "bottom" } }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -158,6 +197,7 @@ impl ListWriter<'_> {
 struct Cell {
     span: usize,
     blocks: Vec<Block>,
+    layout: CellLayout,
 }
 
 pub(crate) fn mark(index: usize) -> String {
@@ -304,7 +344,8 @@ fn join_inline(blocks: &[Block], run_props: &str, links: &mut Vec<String>) -> St
 fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &str, block: &Block, writer: &mut BlockWriter) {
     let Some(rows) = &block.table else {
         let number = block.list.as_ref().and_then(|item| writer.lists.id_for(item));
-        out.push_str(&format!("{open}{}{bookmarks}{}</w:p>", write_paragraph_props(paragraph_props, block, number), write_runs(block, writer.run_props, writer.links, number)));
+        let after = if block.layout.page_after { "<w:r><w:br w:type=\"page\"/></w:r>" } else { "" };
+        out.push_str(&format!("{open}{}{bookmarks}{}{after}</w:p>", write_paragraph_props(paragraph_props, block, number), write_runs(block, writer.run_props, writer.links, number)));
         return;
     };
     let columns = rows.iter().map(|row| row.iter().map(|cell| cell.span).sum::<usize>()).max().unwrap_or(1).max(1);
@@ -321,6 +362,9 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
             if cell.span > 1 {
                 out.push_str(&format!("<w:gridSpan w:val=\"{}\"/>", cell.span));
             }
+            let margins: String = CELL_SIDES.into_iter().zip(cell.layout.margins).filter_map(|(side, value)| value.map(|value| format!("<w:{side} w:w=\"{}\" w:type=\"dxa\"/>", value.max(0)))).collect();
+            if !margins.is_empty() { out.push_str(&format!("<w:tcMar>{margins}</w:tcMar>")); }
+            if let Some(vertical) = cell.layout.vertical { out.push_str(&format!("<w:vAlign w:val=\"{}\"/>", vertical.as_str())); }
             out.push_str("</w:tcPr>");
             for (index, block) in cell.blocks.iter().enumerate() {
                 if follows_table(&cell.blocks, index) {
@@ -534,6 +578,9 @@ struct Container {
     align: Option<&'static str>,
     quote_level: u32,
     is_pre: bool,
+    layout: ParagraphLayout,
+    collection: usize,
+    first: usize,
 }
 
 /// Builds blocks from HTML tokens.
@@ -569,12 +616,14 @@ impl Reader {
             align: inner.align.or(outer.align),
             quote_level: outer.quote_level + inner.quote_level,
             is_pre: outer.is_pre || inner.is_pre,
+            layout: outer.layout.and(inner.layout),
+            ..Container::default()
         })
     }
 
     fn start_block(&mut self, block: Block) {
         let container = self.container();
-        let block = Block { align: block.align.or(container.align), quote_level: container.quote_level, ..block };
+        let block = Block { align: block.align.or(container.align), quote_level: container.quote_level, layout: container.layout.inherited().and(block.layout), ..block };
         self.blocks().push(block);
         self.current = Some(self.blocks().len() - 1);
     }
@@ -584,7 +633,7 @@ impl Reader {
             self.start_block(Block::default());
         }
         let (bold, italic, underline) = self.counts;
-        let preserve_spaces = self.container().is_pre;
+        let preserve_spaces = self.preformatted();
         let run = Run { text, is_break, is_bold: bold > 0, is_italic: italic > 0, is_underlined: underline > 0, format: self.format(), preserve_spaces };
         let index = self.current.expect("started above");
         if is_break && !preserve_spaces {
@@ -619,6 +668,23 @@ impl Reader {
     fn is_in_list(&mut self) -> bool {
         let current = self.current;
         current.is_some_and(|index| self.blocks()[index].list.is_some())
+    }
+
+    fn preformatted(&self) -> bool { self.format().pre_spaces.unwrap_or(self.container().is_pre) }
+
+    fn close_container(&mut self, name: &str) {
+        let Some(at) = self.containers.iter().rposition(|(tag, _)| tag == name) else { return };
+        let (_, container) = self.containers.remove(at);
+        let Some(blocks) = self.collections.get_mut(container.collection) else { return };
+        if let Some(first) = blocks.get_mut(container.first) {
+            first.layout.before = container.layout.before.or(first.layout.before);
+            first.layout.page_before |= container.layout.page_before;
+        }
+        if blocks.len() > container.first
+            && let Some(last) = blocks.last_mut() {
+            last.layout.after = container.layout.after.or(last.layout.after);
+            last.layout.page_after |= container.layout.page_after;
+        }
     }
 
     /// Ends the open cell, if any, giving it the blocks collected in it.
@@ -661,7 +727,7 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
         let (is_closing, tag, attributes) = match token {
             HtmlToken::Text(text) => {
                 let decoded = decode_entities(text);
-                if reader.container().is_pre {
+                if reader.preformatted() {
                     for (index, line) in decoded.split('\n').enumerate() {
                         if index > 0 {
                             reader.add_run(None, true);
@@ -700,7 +766,8 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
                     reader.current = None;
                 } else {
                     let align = has_extras.then(|| read_style(&attributes, "text-align").and_then(read_align)).flatten();
-                    reader.start_block(Block { heading_level: heading, align, ..Block::default() });
+                    let layout = if has_extras { read_layout(&attributes) } else { ParagraphLayout::default() };
+                    reader.start_block(Block { heading_level: heading, align, layout, ..Block::default() });
                 }
             }
             "ul" | "ol" => {
@@ -730,7 +797,8 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
                             reader.next_list += 1;
                         }
                         *reader.lists.last_mut().expect("list read above") = item;
-                        reader.start_block(Block { list: Some(item), ..Block::default() });
+                        let layout = if has_extras { read_layout(&attributes) } else { ParagraphLayout::default() };
+                        reader.start_block(Block { list: Some(item), layout, ..Block::default() });
                     }
                     _ => reader.current = None,
                 }
@@ -812,12 +880,13 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
         "div" | "center" | "blockquote" | "pre" | "section" | "article" | "header" | "footer" | "main" => {
             reader.current = None;
             if is_closing {
-                Reader::close(&mut reader.containers, tag);
+                reader.close_container(tag);
                 Reader::close(&mut reader.formats, tag);
                 return true;
             }
             let align = if tag == "center" { Some("center") } else { read_style(attributes, "text-align").and_then(read_align) };
-            let container = Container { align, quote_level: u32::from(tag == "blockquote"), is_pre: tag == "pre" };
+            let first = reader.blocks().len();
+            let container = Container { align, quote_level: u32::from(tag == "blockquote"), is_pre: tag == "pre", layout: read_layout(attributes), first, collection: reader.collections.len() - 1 };
             reader.containers.push((tag.to_string(), container));
             let mut format = read_css(attributes);
             if tag == "pre" {
@@ -886,7 +955,9 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
                     if rows.is_empty() {
                         rows.push(Vec::new());
                     }
-                    rows.last_mut().expect("pushed above").push(Cell { span, blocks: Vec::new() });
+                    let margins = CELL_SIDES.map(|side| read_style(attributes, &format!("padding-{side}")).and_then(|value| css_twips(value, DEFAULT_FONT_POINTS)));
+                    let vertical = read_style(attributes, "vertical-align").and_then(|value| match value { "top" => Some(CellVertical::Top), "middle" | "center" => Some(CellVertical::Center), "bottom" => Some(CellVertical::Bottom), _ => None });
+                    rows.last_mut().expect("pushed above").push(Cell { span, blocks: Vec::new(), layout: CellLayout { margins, vertical } });
                 }
                 reader.collections.push(Vec::new());
                 reader.current = None;
@@ -917,6 +988,90 @@ fn read_style<'a>(attributes: &'a [(String, String)], property: &str) -> Option<
     })
 }
 
+fn css_twips(value: &str, font_points: f64) -> Option<i64> {
+    let value = value.trim();
+    let (number, factor) = if let Some(value) = value.strip_suffix("px") { (value, POINTS_PER_CSS_PIXEL * TWIPS_PER_POINT) }
+        else if let Some(value) = value.strip_suffix("pt") { (value, TWIPS_PER_POINT) }
+        else if let Some(value) = value.strip_suffix("em") { (value, font_points * TWIPS_PER_POINT) }
+        else if value == "0" { (value, 1.0) } else { return None };
+    let twips = number.trim().parse::<f64>().ok()? * factor;
+    (twips.is_finite() && twips.abs() <= i32::MAX as f64).then(|| twips.round() as i64)
+}
+
+fn read_layout(attributes: &[(String, String)]) -> ParagraphLayout {
+    let style = |name| read_style(attributes, name);
+    let font = style("font-size").and_then(read_font_size).map_or(DEFAULT_FONT_POINTS, |size| size as f64 / 2.0);
+    let length = |name| style(name).and_then(|value| css_twips(value, font));
+    let side = |margin, padding| match (length(margin), length(padding)) {
+        (None, None) => None,
+        (margin, padding) => Some(margin.unwrap_or(0) + padding.unwrap_or(0).max(0)),
+    };
+    let line_height = style("line-height").and_then(|value| {
+        let multiple = value.strip_suffix('%').and_then(|value| value.trim().parse::<f64>().ok()).map(|value| value / 100.0)
+            .or_else(|| value.parse::<f64>().ok());
+        if let Some(multiple) = multiple {
+            return (multiple.is_finite() && multiple > 0.0 && multiple * LINE_HEIGHT_UNIT <= i32::MAX as f64)
+                .then(|| LineHeight::Multiple((multiple * LINE_HEIGHT_UNIT).round() as u32));
+        }
+        css_twips(value, font).filter(|value| *value > 0).map(|value| LineHeight::Exact(value as u32))
+    });
+    ParagraphLayout {
+        left: side("margin-left", "padding-left"), right: side("margin-right", "padding-right"),
+        before: side("margin-top", "padding-top"), after: side("margin-bottom", "padding-bottom"),
+        text_indent: length("text-indent"), line_height,
+        rtl: style("direction").and_then(|value| match value { "rtl" => Some(true), "ltr" => Some(false), _ => None }),
+        page_before: style("break-before") == Some("page"), page_after: style("break-after") == Some("page"),
+    }
+}
+
+fn layout_is_empty(layout: ParagraphLayout) -> bool {
+    layout.left.is_none() && layout.right.is_none() && layout.before.is_none() && layout.after.is_none()
+        && layout.text_indent.is_none() && layout.line_height.is_none() && layout.rtl.is_none()
+        && !layout.page_before && !layout.page_after
+}
+
+fn read_property(inner: &str, name: &str) -> String {
+    let Some(start) = find_element_start(inner, &format!("<{name}")) else { return format!("<{name}/>") };
+    let Some(end) = inner[start..].find('>') else { return format!("<{name}/>") };
+    inner[start..start + end + 1].to_string()
+}
+
+fn remove_attribute(raw: &str, name: &str) -> String {
+    let needle = format!(" {name}=\"");
+    let Some(start) = raw.find(&needle) else { return raw.to_string() };
+    let from = start + needle.len();
+    let Some(end) = raw[from..].find('"') else { return raw.to_string() };
+    format!("{}{}", &raw[..start], &raw[from + end + 1..])
+}
+
+fn write_layout(mut inner: String, layout: ParagraphLayout) -> String {
+    if layout.left.is_some() || layout.right.is_some() || layout.text_indent.is_some() {
+        let mut ind = read_property(&inner, "w:ind");
+        for (name, value) in [("w:left", layout.left), ("w:right", layout.right)] {
+            if let Some(value) = value { ind = set_attribute(&ind, name, &value.to_string()); }
+        }
+        if let Some(value) = layout.text_indent {
+            ind = remove_attribute(&remove_attribute(&ind, "w:firstLine"), "w:hanging");
+            ind = set_attribute(&ind, if value < 0 { "w:hanging" } else { "w:firstLine" }, &value.unsigned_abs().to_string());
+        }
+        inner = set_child(&inner, "w:ind", &ind, PARAGRAPH_ORDER);
+    }
+    if layout.before.is_some() || layout.after.is_some() || layout.line_height.is_some() {
+        let mut spacing = read_property(&inner, "w:spacing");
+        for (name, value) in [("w:before", layout.before), ("w:after", layout.after)] {
+            if let Some(value) = value { spacing = set_attribute(&spacing, name, &value.max(0).to_string()); }
+        }
+        if let Some(height) = layout.line_height {
+            let (value, rule) = match height { LineHeight::Multiple(value) => (value, "auto"), LineHeight::Exact(value) => (value, "exact") };
+            spacing = set_attribute(&set_attribute(&spacing, "w:line", &value.to_string()), "w:lineRule", rule);
+        }
+        inner = set_child(&inner, "w:spacing", &spacing, PARAGRAPH_ORDER);
+    }
+    if let Some(rtl) = layout.rtl { inner = set_child(&inner, "w:bidi", if rtl { "<w:bidi/>" } else { "<w:bidi w:val=\"0\"/>" }, PARAGRAPH_ORDER); }
+    if layout.page_before { inner = set_child(&inner, "w:pageBreakBefore", "<w:pageBreakBefore/>", PARAGRAPH_ORDER); }
+    inner
+}
+
 fn read_align(align: &str) -> Option<&'static str> {
     match align.trim() {
         "left" | "start" => Some("left"),
@@ -944,6 +1099,8 @@ fn read_css(attributes: &[(String, String)]) -> Format {
         shade: style("background-color").or_else(|| style("background")).and_then(read_color),
         size: style("font-size").and_then(read_font_size),
         font: style("font-family").map(|family| family.split(',').next().unwrap_or(family).trim().trim_matches(['"', '\'']).to_string()).filter(|family| !family.is_empty()),
+        pre_spaces: style("white-space").and_then(|value| match value { "pre" | "pre-wrap" | "break-spaces" => Some(true), "normal" | "nowrap" => Some(false), _ => None }),
+        rtl: style("direction").and_then(|value| match value { "rtl" => Some(true), "ltr" => Some(false), _ => None }),
         ..Format::default()
     }
 }
@@ -1129,7 +1286,7 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
         }
         None => paragraph_props.to_string(),
     };
-    if block.align.is_none() && block.quote_level == 0 && !block.is_rule {
+    if block.align.is_none() && block.quote_level == 0 && !block.is_rule && layout_is_empty(block.layout) {
         return props;
     }
 
@@ -1143,6 +1300,7 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     if let Some(align) = block.align {
         inner = set_child(&inner, "w:jc", &format!("<w:jc w:val=\"{align}\"/>"), PARAGRAPH_ORDER);
     }
+    inner = write_layout(inner, block.layout);
     props = format!("<w:pPr>{inner}</w:pPr>");
     props
 }
@@ -1232,6 +1390,7 @@ fn write_run_props(run_props: &str, is_bold: bool, is_italic: bool, is_underline
 fn write_format(inner: &str, format: &Format) -> String {
     let mut inner = inner.to_string();
     let toggle = |is_on: bool, name: &str| if is_on { format!("<{name}/>") } else { format!("<{name} w:val=\"0\"/>") };
+    if let Some(rtl) = format.rtl { inner = set_child(&inner, "w:rtl", &toggle(rtl, "w:rtl"), RUN_ORDER); }
     if let Some(font) = &format.font {
         let mut family = String::new();
         escape(font, &mut family);
