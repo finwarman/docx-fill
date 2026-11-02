@@ -1,8 +1,11 @@
 use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use resvg::{tiny_skia, usvg};
 use super::Image;
+
+mod budget;
+mod validate;
 
 const MAX_SVG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RESOURCE_BYTES: usize = 16 * 1024 * 1024;
@@ -13,18 +16,20 @@ const MAX_FONT_TABLES: usize = 256;
 const MAX_SVG_NODES: u32 = 100_000;
 const MAX_RENDER_PIXELS: u64 = 32 * 1024 * 1024;
 const MAX_RENDER_DEPTH: usize = 64;
-const UNSUPPORTED_ELEMENTS: &[&str] = &["foreignObject", "pattern", "filter", "mask", "clipPath"];
+const MIN_PREVIEW_SIDE: u32 = 128;
 const RASTER_FONT_TABLES: &[&[u8; 4]] = &[b"SVG ", b"sbix", b"CBDT", b"CBLC", b"EBDT", b"EBLC", b"EBSC", b"bdat", b"bloc", b"COLR", b"CPAL"];
 const DEFAULT_FONT_FAMILY: &str = "Noto Sans";
 const DEFAULT_FONT: &[u8] = include_bytes!("fonts/NotoSans.ttf");
 
 pub(crate) fn rasterize(image: &Image, fonts: &[Arc<[u8]>]) -> Option<Arc<[u8]>> {
     if !image.extension.eq_ignore_ascii_case("svg") || image.bytes.len() > MAX_SVG_BYTES { return None; }
-    if !valid_svg(&image.bytes) || fonts.iter().any(|font| !outline_font(font)) { return None; }
+    let source = validate::prepare(&image.bytes)?;
+    if fonts.iter().any(|font| !outline_font(font)) { return None; }
     let font_bytes = fonts.iter().try_fold(0usize, |total, font| total.checked_add(font.len()))?;
     if font_bytes > MAX_FONT_BYTES { return None; }
     let blocked = AtomicBool::new(false);
     let used = Mutex::new(0usize);
+    let nesting = AtomicUsize::new(0);
     let data_resolver = usvg::ImageHrefResolver::default_data_resolver();
     let fallback = usvg::FontResolver::default_fallback_selector();
     let mut options = usvg::Options { font_family: DEFAULT_FONT_FAMILY.into(), fontdb: default_fonts(), ..usvg::Options::default() };
@@ -37,8 +42,19 @@ pub(crate) fn rasterize(image: &Image, fonts: &[Arc<[u8]>]) -> Option<Arc<[u8]>>
         });
         if !within_budget { blocked.store(true, Ordering::Relaxed); return None; }
         let is_svg = mime == "image/svg+xml" || (mime == "text/plain" && imagesize::blob_size(&data).is_err());
-        if is_svg && !valid_svg(&data) { blocked.store(true, Ordering::Relaxed); return None; }
-        let Some(kind) = data_resolver(mime, data, options) else { blocked.store(true, Ordering::Relaxed); return None };
+        let data = if is_svg {
+            let Some(prepared) = validate::prepare(&data) else { blocked.store(true, Ordering::Relaxed); return None };
+            Arc::new(prepared)
+        } else { data };
+        let depth = nesting.fetch_add(1, Ordering::Relaxed);
+        if depth >= MAX_RENDER_DEPTH {
+            nesting.fetch_sub(1, Ordering::Relaxed);
+            blocked.store(true, Ordering::Relaxed);
+            return None;
+        }
+        let kind = data_resolver(mime, data, options);
+        nesting.fetch_sub(1, Ordering::Relaxed);
+        let Some(kind) = kind else { blocked.store(true, Ordering::Relaxed); return None };
         let bytes = match &kind {
             usvg::ImageKind::JPEG(bytes) | usvg::ImageKind::PNG(bytes) | usvg::ImageKind::GIF(bytes) | usvg::ImageKind::WEBP(bytes) => Some(bytes),
             usvg::ImageKind::SVG(_) => None,
@@ -55,15 +71,18 @@ pub(crate) fn rasterize(image: &Image, fonts: &[Arc<[u8]>]) -> Option<Arc<[u8]>>
         if font.is_none() { blocked.store(true, Ordering::Relaxed); }
         font
     });
-    let tree = usvg::Tree::from_data(&image.bytes, &options).ok()?;
+    let tree = usvg::Tree::from_data(&source, &options).ok()?;
     if blocked.load(Ordering::Relaxed) { return None; }
     let size = tree.size();
-    let scale = (MAX_SIDE as f32 / size.width()).min(MAX_SIDE as f32 / size.height()).min(1.0);
-    let width = (size.width() * scale).ceil().max(1.0) as u32;
-    let height = (size.height() * scale).ceil().max(1.0) as u32;
-    let transform = tiny_skia::Transform::from_scale(scale, scale);
-    let mut budget = u64::from(width) * u64::from(height);
-    render_budget(tree.root(), transform, (width, height), 0, &mut budget)?;
+    let mut scale = (MAX_SIDE as f32 / size.width()).min(MAX_SIDE as f32 / size.height()).min(1.0);
+    let (width, height, transform) = loop {
+        let width = (size.width() * scale).ceil().max(1.0) as u32;
+        let height = (size.height() * scale).ceil().max(1.0) as u32;
+        let transform = tiny_skia::Transform::from_scale(scale, scale);
+        if budget::check(&tree, transform, (width, height)).is_some() { break (width, height, transform); }
+        if width.max(height) <= MIN_PREVIEW_SIDE { return None; }
+        scale *= 0.5;
+    };
     let mut pixels = tiny_skia::Pixmap::new(width, height)?;
     resvg::render(&tree, transform, &mut pixels.as_mut());
     Some(Arc::from(pixels.encode_png().ok()?))
@@ -79,23 +98,6 @@ fn default_fonts() -> Arc<usvg::fontdb::Database> {
         fonts.set_monospace_family(DEFAULT_FONT_FAMILY);
         Arc::new(fonts)
     }).clone()
-}
-
-fn valid_svg(bytes: &[u8]) -> bool {
-    let Ok(text) = std::str::from_utf8(bytes) else { return false };
-    if text.contains("<!DOCTYPE") || text.contains("<!ENTITY") { return false; }
-    let options = usvg::roxmltree::ParsingOptions { nodes_limit: MAX_SVG_NODES, ..Default::default() };
-    let Ok(document) = usvg::roxmltree::Document::parse_with_options(text, options) else { return false };
-    document.descendants().filter(|node| node.is_element()).all(|node| {
-        let name = node.tag_name().name();
-        if UNSUPPORTED_ELEMENTS.contains(&name) { return false; }
-        if !["image", "feImage", "use"].contains(&name) { return true; }
-        node.attributes().filter(|attribute| attribute.name() == "href").all(|attribute| {
-            let href = attribute.value();
-            if name == "use" { return href.starts_with('#'); }
-            href.get(..5).is_some_and(|scheme| scheme.eq_ignore_ascii_case("data:"))
-        })
-    })
 }
 
 // Embedded SVG and bitmap font glyphs use separate decoder paths with their own resource rules.
@@ -115,36 +117,4 @@ fn outline_font(bytes: &[u8]) -> bool {
         has_outline |= [b"glyf", b"CFF ", b"CFF2"].contains(&name) && length > 0;
     }
     has_outline
-}
-
-// Count surfaces before rendering; nested SVGs and isolated groups allocate extra pixmaps.
-fn render_budget(group: &usvg::Group, transform: tiny_skia::Transform, canvas: (u32, u32), depth: usize, budget: &mut u64) -> Option<()> {
-    if depth > MAX_RENDER_DEPTH { return None; }
-    let transform = transform.pre_concat(group.transform());
-    let mut canvas = canvas;
-    if group.should_isolate() {
-        if group.clip_path().is_some() || group.mask().is_some() || !group.filters().is_empty() { return None; }
-        let bounds = group.layer_bounding_box().transform(transform)?;
-        let width = (bounds.width().ceil() as u64).checked_add(4)?;
-        let height = (bounds.height().ceil() as u64).checked_add(4)?;
-        charge_pixels(width, height, budget)?;
-        canvas = (u32::try_from(width).ok()?, u32::try_from(height).ok()?);
-    }
-    for node in group.children() {
-        match node {
-            usvg::Node::Group(group) => render_budget(group, transform, canvas, depth + 1, budget)?,
-            usvg::Node::Text(text) => render_budget(text.flattened(), transform, canvas, depth + 1, budget)?,
-            usvg::Node::Image(image) => if let usvg::ImageKind::SVG(tree) = image.kind() {
-                charge_pixels(u64::from(canvas.0), u64::from(canvas.1), budget)?;
-                render_budget(tree.root(), transform, canvas, depth + 1, budget)?;
-            },
-            usvg::Node::Path(_) => {}
-        }
-    }
-    Some(())
-}
-
-fn charge_pixels(width: u64, height: u64, budget: &mut u64) -> Option<()> {
-    *budget = budget.checked_add(width.checked_mul(height)?)?;
-    (*budget <= MAX_RENDER_PIXELS).then_some(())
 }
