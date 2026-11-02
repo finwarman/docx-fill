@@ -12,6 +12,7 @@ fn reads_every_option() {
         "modulePrefixes": ["$"],
         "dropStyleParagraphs": true,
         "comments": { "author": "Jane", "initials": "J", "date": "2026-11-02T09:00:00Z" },
+        "paragraphPlaceholder": { "expandToShape": false, "expandSoftBreaksInShapes": true },
         "document": {
             "readOnly": true,
             "language": "en-GB",
@@ -28,6 +29,8 @@ fn reads_every_option() {
     assert_eq!(options.extensions, Extensions { table_merge: false, ..Extensions::ALL });
     assert_eq!(options.module_prefixes, ["$"]);
     assert_eq!((options.comments.author.as_str(), options.comments.initials.as_deref()), ("Jane", Some("J")));
+    assert!(!options.paragraph_placeholder.expand_to_shape);
+    assert_eq!(options.paragraph_placeholder.soft_breaks, docx_fill::SoftBreakScope::Shapes);
     let document = &options.document;
     assert!(document.read_only);
     assert_eq!(document.language.as_deref(), Some("en-GB"));

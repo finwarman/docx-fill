@@ -52,6 +52,20 @@ impl FillOptions {
                 "modulePrefixes" => self.module_prefixes = read_array(value, key)?.iter().map(|each| read_string(each, key)).collect::<Result<_, _>>()?,
                 "dropStyleParagraphs" => self.drop_style_paragraphs = read_bool(value, key)?,
                 "comments" => self.comments = read_comment_defaults(value)?,
+                "paragraphPlaceholder" => {
+                    for (name, value) in read_object(value, key)? {
+                        match name.as_str() {
+                            "expandToShape" => self.paragraph_placeholder.expand_to_shape = read_bool(value, name)?,
+                            "expandSoftBreaks" => self.paragraph_placeholder.soft_breaks = if read_bool(value, name)? { crate::SoftBreakScope::All } else { crate::SoftBreakScope::None },
+                            "expandSoftBreaksInShapes" => {
+                                if read_bool(value, name)? {
+                                    if self.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::All { self.paragraph_placeholder.soft_breaks = crate::SoftBreakScope::Shapes; }
+                                } else if self.paragraph_placeholder.soft_breaks == crate::SoftBreakScope::Shapes { self.paragraph_placeholder.soft_breaks = crate::SoftBreakScope::None; }
+                            }
+                            _ => return Err(unknown(name)),
+                        }
+                    }
+                }
                 "document" => self.document = read_document_edits(value)?,
                 "fillProperties" => self.fill_properties = read_bool(value, key)?,
                 "continuedBookmarks" => self.continued_bookmarks = Some(read_string(value, key)?),

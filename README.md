@@ -82,6 +82,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 ## Other options
 
+Paragraph placeholders inside text boxes expand to the whole shape by default. Set `paragraphPlaceholder: { expandToShape: false }` to target only the paragraph. `expandSoftBreaksInShapes: true` targets individual soft lines within shapes; `expandSoftBreaks: true` also enables this outside shapes. Surviving lines remain joined by soft breaks. In this opt-in mode, parser paragraph positions count logical soft lines.
+
 `FilledDocument::bookmarks` lists named bookmarks across package parts. `get_xml` reads their raw content and `replace_xml` replaces it while retaining the boundary marks. Replacements must leave balanced XML and paired bookmarks. JSON edits use `getBookmarks`, `getXml` and `replaceXml`; the latter two take `bookmark` and an optional `part` to disambiguate names.
 
 `FilledDocument` also supports `set_hyperlink_base`, `page_breaks`, `drop_content_between`, `loop_tags`, `search_regex` and `replace_all_regex`. Page-range removal accepts `ContentBoundary::{Start, End, PageBreak(index)}` and removes the boundary breaks. Its endpoints must be in body paragraphs, not tables or text boxes. Automatic page layout is not counted. Loop tags are read before filling. Regex methods use Rust regex syntax and capture replacements; look-around and backreferences in patterns are not supported.

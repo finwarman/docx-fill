@@ -26,6 +26,7 @@ mod images;
 mod includes;
 mod json;
 mod part_kinds;
+mod placeholder_lines;
 mod properties;
 mod sections;
 mod protection;
@@ -51,6 +52,7 @@ pub use document_edits::{DocumentEdits, Margins, Watermark, WatermarkLayout};
 pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
 pub use comments::CommentDefaults;
+pub use placeholder_lines::{ParagraphPlaceholderOptions, SoftBreakScope};
 pub use images::{Image, ImageLength, ImageSize};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
@@ -205,6 +207,7 @@ pub struct FillOptions {
     /// Drops the paragraphs holding `{::stylepar}` tags.
     pub drop_style_paragraphs: bool,
     pub comments: CommentDefaults,
+    pub paragraph_placeholder: ParagraphPlaceholderOptions,
     /// A bookmark prefix such as `tag_`. When rich text turns a tag's paragraph into several, and
     /// the tag's paragraph has a bookmark named this prefix and a number (`tag_3`), each later
     /// paragraph gets its own bookmark `tag_3_1`, `tag_3_2`, …, so a reader can find them all.
@@ -238,6 +241,7 @@ impl Default for FillOptions {
             document: DocumentEdits::default(),
             drop_style_paragraphs: false,
             comments: CommentDefaults::default(),
+            paragraph_placeholder: ParagraphPlaceholderOptions::default(),
             continued_bookmarks: None,
             fill_properties: true,
             expressions: false,
