@@ -13,6 +13,8 @@ use crate::{DOCUMENT_PART, FillError};
 
 mod bookmarks;
 pub use bookmarks::Bookmark;
+mod document;
+pub use document::{ContentBoundary, PageBreak};
 
 /// A place in the body's text: a paragraph, counted from 0 in document order with paragraphs in
 /// tables and text boxes included, and a character offset in its text.
@@ -67,7 +69,10 @@ struct Piece {
 struct Paragraph {
     text: String,
     pieces: Vec<Piece>,
+    insertion: Option<Insertion>,
 }
+
+enum Insertion { BeforeClose(usize), EmptyElement(usize, usize, String) }
 
 /// A comment range mark's place, in the body XML and its text.
 struct Mark {
@@ -124,6 +129,45 @@ impl FilledDocument {
         let edits = ranges.iter().flat_map(|range| replacement_edits(&xml, &body.paragraphs[range.start.paragraph], range, text, &mut opens)).collect();
         self.write_document(apply(&xml, edits));
         ranges.len()
+    }
+
+    /// Regex matches within each paragraph, with Unicode character offsets.
+    pub fn search_regex(&self, pattern: &str) -> Result<Vec<TextRange>, FillError> {
+        let expression = regex::Regex::new(pattern).map_err(|error| FillError::new(error.to_string()))?;
+        let body = read_body_text(&self.read_document());
+        Ok(body.paragraphs.iter().enumerate().flat_map(|(paragraph, text)| {
+            expression.find_iter(&text.text).map(move |found| TextRange {
+                start: TextPosition { paragraph, offset: text.text[..found.start()].chars().count() },
+                end: TextPosition { paragraph, offset: text.text[..found.end()].chars().count() },
+                text: found.as_str().to_string(),
+            })
+        }).collect())
+    }
+
+    /// Replace every regex match. Replacement strings support `$1` and `${name}` captures.
+    pub fn replace_all_regex(&mut self, pattern: &str, replacement: &str) -> Result<usize, FillError> {
+        let expression = regex::Regex::new(pattern).map_err(|error| FillError::new(error.to_string()))?;
+        let xml = self.read_document();
+        let body = read_body_text(&xml);
+        let mut edits = Vec::new();
+        let mut opens = BTreeSet::new();
+        let mut count = 0;
+        for (index, paragraph) in body.paragraphs.iter().enumerate() {
+            for captures in expression.captures_iter(&paragraph.text) {
+                let found = captures.get(0).expect("regex matches have group zero");
+                let range = TextRange {
+                    start: TextPosition { paragraph: index, offset: paragraph.text[..found.start()].chars().count() },
+                    end: TextPosition { paragraph: index, offset: paragraph.text[..found.end()].chars().count() },
+                    text: found.as_str().to_string(),
+                };
+                let mut text = String::new();
+                captures.expand(replacement, &mut text);
+                edits.extend(replacement_edits(&xml, paragraph, &range, &text, &mut opens));
+                count += 1;
+            }
+        }
+        self.write_document(apply(&xml, edits));
+        Ok(count)
     }
 
     /// Adds a comment around a range, written by `by`'s author, initials and date. The comment's id.
@@ -211,8 +255,10 @@ fn read_body_text(xml: &str) -> BodyText {
                 open.push((body.paragraphs.len(), runs.len()));
                 body.paragraphs.push(Paragraph::default());
             }
-            Token::Element { kind: ElementKind::SelfClosing, name: "w:p", .. } => body.paragraphs.push(Paragraph::default()),
-            Token::Element { kind: ElementKind::Close, name: "w:p", .. } => _ = open.pop(),
+            Token::Element { kind: ElementKind::SelfClosing, name: "w:p", raw } => body.paragraphs.push(Paragraph { insertion: Some(Insertion::EmptyElement(at, at + length, raw.to_string())), ..Paragraph::default() }),
+            Token::Element { kind: ElementKind::Close, name: "w:p", .. } => {
+                if let Some((index, _)) = open.pop() { body.paragraphs[index].insertion = Some(Insertion::BeforeClose(at)); }
+            }
             Token::Element { kind: ElementKind::Open, name: "w:r", .. } => runs.push(None),
             Token::Element { kind: ElementKind::Close, name: "w:r", .. } => _ = runs.pop(),
             Token::Element { kind: ElementKind::Open, name: "w:rPr", .. } if in_run && runs.last() == Some(&None) => run_props_start = Some(at),
@@ -296,6 +342,16 @@ fn check_range(body: &BodyText, range: &TextRange) -> Result<(), FillError> {
 fn replacement_edits(xml: &str, paragraph: &Paragraph, range: &TextRange, text: &str, opens: &mut BTreeSet<usize>) -> Vec<XmlEdit> {
     let (start, end) = (range.start.offset, range.end.offset);
     let mut edits = Vec::new();
+    if paragraph.pieces.is_empty() && start == 0 && end == 0 && !text.is_empty() {
+        let mut escaped = String::new();
+        escape(text, &mut escaped);
+        let run = format!("<w:r><w:t xml:space=\"preserve\">{escaped}</w:t></w:r>");
+        return match &paragraph.insertion {
+            Some(Insertion::BeforeClose(at)) => vec![(*at, *at, run)],
+            Some(Insertion::EmptyElement(start, end, raw)) => vec![(*start, *end, format!("{}>{run}</w:p>", raw.trim_end_matches("/>")))],
+            None => Vec::new(),
+        };
+    }
     let mut is_written = false;
     for piece in &paragraph.pieces {
         let length = piece.text.chars().count();
@@ -310,7 +366,12 @@ fn replacement_edits(xml: &str, paragraph: &Paragraph, range: &TextRange, text: 
             is_written = true;
         }
         let Some(open) = piece.text_open else {
-            // A tab or break: removed, or swapped for a text element holding the replacement.
+            // A tab or break: kept beside an insertion, else removed or swapped for the replacement.
+            if start == end {
+                let at = if start == piece.offset { piece.raw.0 } else { piece.raw.1 };
+                if !written.is_empty() { edits.push((at, at, format!("<w:t xml:space=\"preserve\">{written}</w:t>"))); }
+                continue;
+            }
             let replacement = if written.is_empty() { String::new() } else { format!("<w:t xml:space=\"preserve\">{written}</w:t>") };
             edits.push((piece.raw.0, piece.raw.1, replacement));
             continue;

@@ -167,6 +167,7 @@ pub struct Template {
     pub(crate) top: Vec<usize>,
     pub(crate) linebreaks: bool,
     pub(crate) html_extras: bool,
+    pub(crate) soft_placeholders: bool,
     pub(crate) table_resize: crate::TableResize,
     pub(crate) html_style_sheet: String,
     pub(crate) drop_style_paragraphs: bool,
@@ -282,6 +283,11 @@ impl Template {
 
     pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout) -> Result<Template, FillError> {
         options.tag_prefixes.validate()?;
+        let expanded;
+        let xml = if options.extensions.paragraph_placeholder && options.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::None {
+            expanded = crate::placeholder_lines::expand(xml, options.paragraph_placeholder.soft_breaks);
+            expanded.as_str()
+        } else { xml };
         let tokens = tokenize(xml).map_err(|message| FillError::new(message).with_id(crate::FillErrorId::MalformedXml))?;
         check_balanced(&tokens).map_err(|message| FillError::new(message).with_id(crate::FillErrorId::MalformedXml))?;
         let (paragraph_tokens, text_tokens) = scan_paragraphs(&tokens, layout);
@@ -404,6 +410,7 @@ impl Template {
             top: Vec::new(),
             linebreaks: options.linebreaks && layout == TextLayout::Paragraphs,
             html_extras: options.extensions.html_extras,
+            soft_placeholders: options.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::None,
             table_resize: options.table.resize,
             html_style_sheet: options.html_style_sheet.clone(),
             drop_style_paragraphs: options.drop_style_paragraphs,
@@ -957,7 +964,12 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                 });
             }
             TagKind::Placeholder => {
-                let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;
+                let paragraph = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;
+                let line = matches!(&parts[paragraph.0], Part::Element { raw, .. } if crate::placeholder_lines::is_line(raw));
+                let shape = if options.paragraph_placeholder.expand_to_shape && !line && find_enclosing(parts, tag.part, "w:txbxContent").is_some() {
+                    find_enclosing(parts, tag.part, "v:shape").or_else(|| find_enclosing(parts, tag.part, "w:drawing"))
+                } else { None };
+                let (start, end) = shape.unwrap_or(paragraph);
                 // One block per paragraph, naming each of its placeholders.
                 if let Some(Block { kind: BlockKind::Placeholder { names }, .. }) = blocks.iter_mut().find(|block| block.start == start && matches!(block.kind, BlockKind::Placeholder { .. })) {
                     names.push(tag.name.clone());
