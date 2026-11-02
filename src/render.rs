@@ -9,6 +9,7 @@ use crate::styling::{RANGE_END, RANGE_START, RANGE_START_END, Style, StyleKind, 
 use crate::table_merge::{Merge, merge_table};
 use crate::full_table::{Grid, write_table};
 use crate::images::{Image, MediaUse, body_or_default, drawing_size, drawing_xml};
+use crate::images::replacement::{PictureFrame, PictureReplacement, replace_picture};
 use crate::rich_text::{self, RichValue};
 use crate::template::{Block, BlockKind, LoopPageBreaks, Part, StyleTarget, TagKind, Template};
 use crate::cell_styling;
@@ -173,6 +174,7 @@ struct Render<'a, 'h> {
     computed: ComputedEnd<'a>,
     /// Each array loop item's index, innermost last.
     loop_indexes: Vec<usize>,
+    pictures: Vec<PictureFrame>,
 }
 
 impl Template {
@@ -232,6 +234,7 @@ impl Template {
             links: Vec::new(),
             computed: computed.end(),
             loop_indexes: Vec::new(),
+            pictures: Vec::new(),
         };
         let mut scopes = vec![data];
         render.render_range(0, self.parts.len(), &self.top, &mut scopes);
@@ -424,7 +427,14 @@ impl<'a> Render<'a, '_> {
         let template = self.template;
         for part in &template.parts[from..to] {
             match part {
-                Part::Element { kind, name, raw } => self.print_element(*kind, name, raw),
+                Part::Element { kind, name, raw } => {
+                    if name == "w:drawing" && *kind == ElementKind::Open {
+                        self.pictures.push(PictureFrame { start: self.out.len(), replacement: None });
+                    }
+                    if name == "wp:docPr" { self.prepare_picture(raw, scopes); }
+                    self.print_element(*kind, name, raw);
+                    if name == "w:drawing" && *kind == ElementKind::Close { self.finish_picture(); }
+                }
                 Part::Text(text) => self.out.push_str(text),
                 Part::Tag(index) => {
                     let tag = &template.tags[*index];
@@ -520,6 +530,30 @@ impl<'a> Render<'a, '_> {
     fn print_style_text(&mut self, value: Option<&Value>, run_props: Option<&str>) {
         if let Some(text) = value.and_then(|value| value.get("text")).and_then(Value::as_str) {
             self.print_text(text, run_props);
+        }
+    }
+
+    fn prepare_picture(&mut self, raw: &str, scopes: &[&'a Value]) {
+        if self.pictures.is_empty() { return; }
+        let tag = ["descr", "name"].iter().filter_map(|name| read_attribute(raw, name)).map(crate::xml::unescape)
+            .find_map(|text| self.template.picture_tags.get(&text));
+        let Some(tag) = tag else { return };
+        let Some(value) = self.look_up(scopes, &tag.name).filter(|value| is_truthy(value)) else { return };
+        let Some(image) = self.hooks.image(self.part, value) else { return };
+        let size = self.hooks.image_size(self.part, value, &image);
+        self.pictures.last_mut().expect("checked above").replacement = Some(PictureReplacement { image, size, tag: tag.literal.clone() });
+    }
+
+    fn finish_picture(&mut self) {
+        let Some(PictureFrame { start, replacement: Some(replacement) }) = self.pictures.pop() else { return };
+        let id = self.state.next_drawing_id;
+        self.state.next_drawing_id += 1;
+        let mut media = MediaUse::for_image(replacement.image);
+        media.relationship_id = format!("rIdDocxFillReplacement_{id}");
+        media.target = format!("media/replacements/{id}.{}", media.image.extension);
+        if let Some(xml) = replace_picture(&self.out[start..], &media.relationship_id, replacement.size, &replacement.tag) {
+            self.out.replace_range(start.., &xml);
+            self.media.push(media);
         }
     }
 

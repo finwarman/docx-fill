@@ -86,6 +86,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
 
+An image tag in an existing picture's alt text or name replaces that picture through `FillHooks::image`. Its size, position, crop and rotation stay unchanged unless `image_size` returns explicit dimensions. Tags use the configured delimiters and prefixes and resolve in the current loop scope. A missing value keeps the original picture.
+
 Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
 
 ```rust
