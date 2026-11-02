@@ -2,6 +2,8 @@ use crate::properties::{find_element_end, find_starts, set_attribute};
 use crate::xml::{ElementKind, Token, read_attribute, tokenize};
 
 const LINE_GROUP: &str = "data-docx-fill-line";
+/// Follows each split paragraph, so loop copies of it stay separate paragraphs.
+const LINE_END: &str = "<!--data-docx-fill-line-end-->";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SoftBreakScope { #[default] None, Shapes, All }
@@ -84,7 +86,7 @@ fn split_lines(paragraph: &str, group: usize) -> Option<String> {
         at += length;
     }
     if !split { return None; }
-    out.push_str(&paragraph[from..]);
+    out.push_str(&paragraph[from..]); out.push_str(LINE_END);
     Some(out)
 }
 
@@ -123,7 +125,7 @@ pub(crate) fn collapse(xml: &str) -> String {
         out.push_str("</w:p>"); from = end;
     }
     out.push_str(&xml[from..]);
-    out
+    out.replace(LINE_END, "")
 }
 
 fn paragraph_end(xml: &str, from: usize) -> Option<usize> {

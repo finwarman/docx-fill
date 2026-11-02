@@ -69,3 +69,13 @@ fn repeats_soft_lines() {
     assert_eq!(xml.matches("<w:br/>").count(), 3);
     assert!(xml.contains(">A</w:t>") && xml.contains(">B</w:t>"));
 }
+
+#[test]
+fn keeps_loop_copies_of_soft_lines_apart() {
+    let body = "<w:p><w:r><w:t>{#items}</w:t></w:r></w:p><w:p><w:r><w:t>{name}</w:t><w:br/><w:t>{?x}extra</w:t></w:r></w:p><w:p><w:r><w:t>{/items}</w:t></w:r></w:p>";
+    let xml = fill(body, json!({"items":[{"name":"A"},{"name":"B"}],"x":true}), json!({"paragraphPlaceholder":{"expandSoftBreaks":true}}));
+
+    assert_eq!(xml.matches("<w:p>").count(), 2);
+    assert_eq!(xml.matches("<w:br/>").count(), 2);
+    assert!(!xml.contains("data-docx-fill"));
+}
