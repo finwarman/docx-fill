@@ -119,6 +119,8 @@ Scatter charts accept `{"series":[{"title":"Points","data":[{"x":1,"y":2},{"x":3
 
 Office 2016 ChartEx sunburst, treemap, waterfall and region-map charts accept one series. Sunburst and treemap data can use recursive `categories: [{name, categories: [...]}]`, with a numeric `value` on each leaf. Waterfalls also accept `{categories: [...], data: [...]}`. Region maps update values only when category names and order match the template, preserving its geography cache and entity IDs. New regions need resolution by Office or the geographic provider and leave the template unchanged here.
 
+ChartEx elements and chart references accept namespace aliases and default namespaces. `AlternateContent` uses the first supported chart choice for binding. Fallback chart and image assets remain unchanged; previews for older readers are not regenerated.
+
 `FillOptions::footnotes` controls inserted footnotes. `FootnoteContent::Raw` accepts complete Word runs. `ref_properties`, `ref_run`, `paragraph_properties` and `run_properties` customize the note marker, separator and text. JSON uses `footnotes: { raw, refProperties, refRun, paragraphProperties, runProperties }`. XML fragments must be valid WordprocessingML.
 
 `FillOptions::table` accepts `TableValidation::Ignore` to drop other text around a full-table tag, and `TableResize::KeepColumns` to resize vertical tables while retaining column widths. JSON uses `table: { paragraphValidation: "ignore", autoResizeTable: true }`. Table data can supply `fixedColumns`, with non-null entries spanning the body rows of each table chunk. Headers remain separate; cell spans stop before a fixed column.

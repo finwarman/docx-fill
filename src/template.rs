@@ -897,6 +897,7 @@ fn read_run_props(parts: &[Part], at: usize) -> Option<String> {
 
 /// Pairs each loop's tags and works out the parts every loop and raw tag replaces.
 fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: &FillOptions, errors: &mut Vec<FillError>) -> Vec<Block> {
+    let chart_parts = if tags.iter().any(|tag| tag.kind == TagKind::Chart) { crate::charts::chart_parts(parts) } else { Default::default() };
     let mut blocks = Vec::new();
     let mut open: Vec<usize> = Vec::new();
     for (index, tag) in tags.iter().enumerate() {
@@ -1008,12 +1009,12 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
             }
             TagKind::Chart => {
                 let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;
-                let chart_count = |items: &[Part]| items.iter().filter(|part| matches!(part, Part::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name, .. } if name == "c:chart" || name == "cx:chart")).count();
-                let has_chart = chart_count(&parts[start..tag.part]) > 0;
+                let chart_count = |start, end| chart_parts.range(start..end).count();
+                let has_chart = chart_count(start, tag.part) > 0;
                 if !has_chart {
                     let previous = parts[..start].iter().rposition(|part| matches!(part, Part::Element { kind: ElementKind::Open, name, .. } if name == PARAGRAPH));
-                    let previous_count = previous.map_or(0, |previous| chart_count(&parts[previous..start]));
-                    let has_later = chart_count(&parts[tag.part..=end]) > 0;
+                    let previous_count = previous.map_or(0, |previous| chart_count(previous, start));
+                    let has_later = chart_count(tag.part, end + 1) > 0;
                     if !has_later && tag.is_alone && previous_count > 1 {
                         return Err(FillError::new(format!("The chart tag \"{}\" is ambiguous because the preceding paragraph contains multiple charts", tag.text)));
                     }
