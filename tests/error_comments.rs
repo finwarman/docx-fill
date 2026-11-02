@@ -93,3 +93,16 @@ fn keeps_empty_paragraph_indices() {
     assert_eq!(comments[0].range.start.paragraph, 1);
     assert_eq!(comments[0].range.text, "{bad");
 }
+
+#[test]
+fn skips_expanded_line_locations() {
+    let body = "<w:p><w:r><w:t>one</w:t><w:br/><w:t>two</w:t></w:r></w:p><w:p><w:r><w:t>{bad</w:t></w:r></w:p>";
+    let parts = parts(body, "");
+    let mut options = FillOptions::default();
+    options.paragraph_placeholder.soft_breaks = docx_fill::SoftBreakScope::All;
+    let error = PackageTemplate::parse(parts.clone(), &options).unwrap_err();
+    let mut document = FilledDocument::new(parts);
+
+    assert!(error.diagnostics().iter().all(|error| error.paragraph.is_none() && error.offset.is_none()));
+    assert_eq!(document.annotate_errors(&error, &CommentDefaults::default()).unwrap(), 0);
+}

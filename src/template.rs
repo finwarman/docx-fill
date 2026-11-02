@@ -289,11 +289,10 @@ impl Template {
 
     pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout) -> Result<Template, FillError> {
         options.tag_prefixes.validate()?;
-        let expanded;
-        let xml = if options.extensions.paragraph_placeholder && options.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::None {
-            expanded = crate::placeholder_lines::expand(xml, options.paragraph_placeholder.soft_breaks);
-            expanded.as_str()
-        } else { xml };
+        let expanded = (options.extensions.paragraph_placeholder && options.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::None)
+            .then(|| crate::placeholder_lines::expand(xml, options.paragraph_placeholder.soft_breaks));
+        let source_changed = expanded.as_deref().is_some_and(|expanded| expanded != xml);
+        let xml = expanded.as_deref().unwrap_or(xml);
         let tokens = tokenize(xml).map_err(|message| FillError::new(message).with_id(crate::FillErrorId::MalformedXml))?;
         check_balanced(&tokens).map_err(|message| FillError::new(message).with_id(crate::FillErrorId::MalformedXml))?;
         let (paragraph_tokens, text_tokens) = scan_paragraphs(&tokens, layout);
@@ -426,7 +425,13 @@ impl Template {
             footnotes: options.footnotes.clone(),
         };
         template.nest_blocks(&mut errors);
-        if !errors.is_empty() { return Err(FillError::many(errors)); }
+        if !errors.is_empty() {
+            // Expanded soft lines do not have coordinates in the original document.
+            if source_changed {
+                for error in &mut errors { error.paragraph = None; error.offset = None; }
+            }
+            return Err(FillError::many(errors));
+        }
         Ok(template)
     }
 

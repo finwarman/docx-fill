@@ -99,6 +99,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 Parse failures expose a stable `FillErrorId`, the tag and its paragraph and byte offset when known. `FillError::diagnostics()` lists all collected errors, including errors in other package parts. Offsets count bytes in each paragraph's joined XML text before entity decoding. The existing `part` and `message` fields remain available.
 
 With expressions enabled, assignments store values for the current fill and print nothing: `{total = price * count}{total}`. Semicolon-separated expressions print their last result. Bare names are assigned on the current loop item; property assignments update the visible object. The caller's JSON remains unchanged. Object values are copied, and array assignments are limited to index 1,000,000.
+Paragraph placeholders inside text boxes expand to the whole shape by default. Set `paragraphPlaceholder: { expandToShape: false }` to target only the paragraph. `expandSoftBreaksInShapes: true` targets individual soft lines within shapes; `expandSoftBreaks: true` also enables this outside shapes. Surviving lines remain joined by soft breaks. When this mode expands a paragraph, parse errors retain their IDs and tags but omit source positions.
+
 
 Place `{$sales}` alone in the paragraph after a bar chart, in the chart's paragraph, or in its title. Package rendering accepts `{"sales":{"categories":["A","B"],"series":[{"title":"Revenue","data":[10,20]}]}}`. Series titles are optional; omitted titles keep the template title. Numeric data and `null` gaps must match the category count. Chart layout, series formatting and number formats are preserved. Loops create separate chart parts for each value.
 
