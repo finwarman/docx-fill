@@ -84,9 +84,17 @@ pub trait FillHooks {
     }
 
     /// A PNG preview for an SVG image, used by readers without SVG support.
+    /// The `svg-preview` feature rasterizes by default. An override can return `None` to keep SVG only.
     fn svg_fallback(&mut self, _part: &str, _value: &Value, _image: &Image) -> Option<std::sync::Arc<[u8]>> {
-        None
+        #[cfg(feature = "svg-preview")]
+        { crate::images::svg::rasterize(_image, &self.svg_fonts(_part, _value)) }
+        #[cfg(not(feature = "svg-preview"))]
+        { None }
     }
+
+    /// Additional font files for automatic SVG previews. Noto Sans is included by default.
+    /// Font data stays in memory; the rasterizer does not read fonts or images from disk.
+    fn svg_fonts(&mut self, _part: &str, _value: &Value) -> Vec<std::sync::Arc<[u8]>> { Vec::new() }
 
     fn image_properties(&mut self, _part: &str, _value: &Value, _image: &Image) -> crate::ImageProperties {
         crate::ImageProperties::default()

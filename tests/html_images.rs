@@ -123,7 +123,7 @@ fn reads_sources_as_browsers_do() {
     let parts = render(&format!("<p><img src='{unpadded}'><svg width='8' height='4'><path d='M0 0h8v4z'/></svg></p>"), &FillOptions::default(), &mut NoHooks);
     let svg = parts.iter().find(|(name, _)| name.ends_with(".svg")).unwrap().1;
 
-    assert_eq!(parts.keys().filter(|name| name.starts_with("word/media/")).count(), 2);
+    assert_eq!(parts.keys().filter(|name| name.starts_with("word/media/") && !name.contains("/svg_fallback/")).count(), 2);
     assert!(String::from_utf8_lossy(svg).starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
 }
 
