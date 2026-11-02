@@ -81,3 +81,15 @@ fn annotates_tags_across_breaks() {
         assert_eq!(document.comments()[0].range.text, text);
     }
 }
+
+#[test]
+fn keeps_empty_paragraph_indices() {
+    let parts = parts("<w:p/><w:p><w:r><w:t>{bad</w:t></w:r></w:p>", "");
+    let error = PackageTemplate::parse(parts.clone(), &FillOptions::default()).unwrap_err();
+    let mut document = FilledDocument::new(parts);
+
+    assert_eq!(document.annotate_errors(&error, &CommentDefaults::default()).unwrap(), 1);
+    let comments = document.comments();
+    assert_eq!(comments[0].range.start.paragraph, 1);
+    assert_eq!(comments[0].range.text, "{bad");
+}
