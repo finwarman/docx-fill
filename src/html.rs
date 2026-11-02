@@ -3,7 +3,14 @@
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum HtmlBlockMode { Block, #[default] Inline, Error }
+pub enum HtmlBlockMode {
+    Block,
+    #[default]
+    Inline,
+    Error,
+    /// Keep surrounding template text in sibling paragraphs when HTML inserts blocks.
+    Preserve,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HtmlTagKind { Inline, Block }
