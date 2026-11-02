@@ -82,6 +82,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 ## Other options
 
+`FilledDocument::bookmarks` lists named bookmarks across package parts. `get_xml` reads their raw content and `replace_xml` replaces it while retaining the boundary marks. Replacements must leave balanced XML and paired bookmarks. JSON edits use `getBookmarks`, `getXml` and `replaceXml`; the latter two take `bookmark` and an optional `part` to disambiguate names.
+
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
 
 Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
