@@ -18,6 +18,8 @@ const CHART_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.
 const EXTENDED_RELATIONSHIP: &str = "http://schemas.microsoft.com/office/2014/relationships/chartEx";
 const EXTENDED_CONTENT_TYPE: &str = "application/vnd.ms-office.chartex+xml";
 const MAX_HIERARCHY_DEPTH: usize = 128;
+const MAX_MAP_ID_BYTES: usize = 32767;
+const MAX_GEOGRAPHY_BYTES: usize = 8 * 1024 * 1024;
 const BAR_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:invertIfNegative", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:shape", "c:extLst"];
 const LINE_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:marker", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:smooth", "c:extLst"];
 const AREA_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:extLst"];
@@ -75,6 +77,28 @@ struct ChartData {
     categories: Option<Vec<String>>,
     paths: Option<Vec<Vec<String>>>,
     series: Vec<Series>,
+    map: Option<MapData>,
+}
+
+#[derive(Debug)]
+struct MapData {
+    ids: Vec<String>,
+    geography: String,
+}
+
+impl MapData {
+    fn read(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        if object.keys().any(|key| !matches!(key.as_str(), "entityIds" | "geography")) { return None; }
+        let geography = value.get("geography")?.as_str()?;
+        if geography.len() > MAX_GEOGRAPHY_BYTES { return None; }
+        let ids = value.get("entityIds")?.as_array()?.iter().map(|id| {
+            let id = id.as_str()?;
+            (!id.trim().is_empty() && id.len() <= MAX_MAP_ID_BYTES && id.chars().all(crate::xml::is_xml_char)).then(|| id.to_string())
+        }).collect::<Option<Vec<_>>>()?;
+        if ids.iter().collect::<BTreeSet<_>>().len() != ids.len() { return None; }
+        Some(Self { ids, geography: geography.to_string() })
+    }
 }
 
 #[derive(Debug)]
@@ -91,7 +115,10 @@ enum DataKind<'a> { Text, Number(&'a str) }
 impl ChartData {
     fn read(value: &Value) -> Option<Self> {
         if let Some(categories) = value.get("categories").and_then(Value::as_array)
-            && categories.iter().any(Value::is_object) { return Self::hierarchy(categories); }
+            && categories.iter().any(Value::is_object) {
+            if value.get("map").is_some() { return None; }
+            return Self::hierarchy(categories);
+        }
         let categories = match value.get("categories") {
             Some(value) => Some(value.as_array()?.iter().map(|value| match value {
                 Value::String(text) => Some(text.clone()),
@@ -135,7 +162,9 @@ impl ChartData {
             }
             series.push(Series { title, values, x_values, sizes, names });
         }
-        Some(Self { categories, paths: None, series })
+        let map = match value.get("map") { Some(value) => Some(MapData::read(value)?), None => None };
+        if map.as_ref().is_some_and(|map| categories.as_ref().is_none_or(|categories| categories.is_empty() || categories.len() != map.ids.len())) { return None; }
+        Some(Self { categories, paths: None, series, map })
     }
 
     fn hierarchy(categories: &[Value]) -> Option<Self> {
@@ -158,7 +187,7 @@ impl ChartData {
             }
         }
         let categories = paths.iter().map(|path| path.last().cloned().unwrap_or_default()).collect();
-        Some(Self { categories: Some(categories), paths: Some(paths), series: vec![Series { title: None, values, x_values: None, sizes: None, names: None }] })
+        Some(Self { categories: Some(categories), paths: Some(paths), series: vec![Series { title: None, values, x_values: None, sizes: None, names: None }], map: None })
     }
 
     fn matches(&self, kind: ChartKind) -> bool {
@@ -326,6 +355,7 @@ fn chart_change(parts: &[(String, Cow<[u8]>)], part: &str, used: &ChartUse, titl
 
 fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<String> {
     if !find_starts(xml, "cx:chartSpace").is_empty() { return extended::fill(xml, data, title_tag); }
+    if data.map.is_some() { return None; }
     let names: Vec<_> = tokenize(xml).ok()?.iter().filter_map(|token| match token {
         Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name, .. } if name.starts_with("c:") && name.ends_with("Chart") => Some(*name),
         _ => None,

@@ -1,0 +1,3 @@
+Map geography comes from Microsoft’s public [Map Chart samples workbook](https://download.microsoft.com/download/5/3/C/53C9D26C-B87D-45BE-A76C-FFCF78703940/Map%20Chart%20samples.xlsx), linked by [Create a Map chart in Excel](https://support.microsoft.com/en-us/excel/create-a-map-chart-in-excel).
+
+The Barbados (entity 18) and Vatican City (entity 253) query results were extracted from the first chart’s raw-deflate geography cache. Coordinates and encoded polygon rings are unchanged. Namespace declarations were serialized on the root; entityType uses the schema spelling CountryRegion; unrelated query results were omitted.

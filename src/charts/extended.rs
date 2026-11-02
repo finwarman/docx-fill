@@ -1,6 +1,8 @@
-use super::{ChartData, element_text};
+use super::ChartData;
 use crate::properties::{find_element_end, find_starts, set_child};
 use crate::xml::{escape, read_attribute, unescape};
+
+mod geography;
 
 const SERIES_ORDER: &[&str] = &["cx:tx", "cx:spPr", "cx:valueColors", "cx:valueColorPositions", "cx:dataPt", "cx:dataLabels", "cx:dataId", "cx:layoutPr", "cx:axisId", "cx:extLst"];
 
@@ -21,6 +23,7 @@ pub(super) fn fill(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Opti
         "regionMap" => Layout::Map,
         _ => return None,
     };
+    if !matches!(layout, Layout::Map) && data.map.is_some() { return None; }
     if matches!(layout, Layout::Hierarchy) && series.values.iter().flatten().any(|value| value.parse::<f64>().map_or(true, |value| value < 0.0)) { return None; }
     if !matches!(layout, Layout::Hierarchy) && data.paths.is_some() { return None; }
     let id_start = *find_starts(series_xml, "cx:dataId").first()?;
@@ -28,7 +31,7 @@ pub(super) fn fill(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Opti
     let data_start = find_starts(xml, "cx:data").into_iter().find(|start| read_attribute(&xml[*start..], "id") == Some(id))?;
     let data_end = find_element_end(xml, data_start, "cx:data")?;
     let original = &xml[data_start..data_end];
-    if matches!(layout, Layout::Map) && !matches_regions(original, categories) { return None; }
+    let map = if matches!(layout, Layout::Map) { Some(geography::prepare(original, categories, data.map.as_ref())?) } else { None };
     let levels = match &data.paths {
         Some(paths) => {
             let depth = paths.iter().map(Vec::len).max().unwrap_or(1);
@@ -42,13 +45,19 @@ pub(super) fn fill(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Opti
     let mut format = unescape(format);
     let mut escaped = String::new(); escape(&format, &mut escaped); format = escaped;
     let numeric = format!("<cx:numDim type=\"{numeric_type}\"><cx:lvl ptCount=\"{}\" formatCode=\"{format}\">{}</cx:lvl></cx:numDim>", series.values.len(), number_points(&series.values));
-    let mut updated = replace_dimension(original, "cx:numDim", numeric_type, &numeric);
+    let mut updated = replace_dimension(map.as_ref().map_or(original, |map| map.data.as_str()), "cx:numDim", numeric_type, &numeric);
     if !matches!(layout, Layout::Map) {
         let strings = levels.iter().map(|level| format!("<cx:lvl ptCount=\"{}\">{}</cx:lvl>", level.len(), string_points(level))).collect::<String>();
         updated = replace_dimension(&updated, "cx:strDim", "cat", &format!("<cx:strDim type=\"cat\">{strings}</cx:strDim>"));
     }
     let mut out = xml.to_string();
     out.replace_range(data_start..data_end, &updated);
+    if let Some(geography) = map.and_then(|map| map.geography) {
+        let start = *find_starts(&out, "cx:series").first()?;
+        let end = find_element_end(&out, start, "cx:series")?;
+        let updated = geography::install(&out[start..end], &geography)?;
+        out.replace_range(start..end, &updated);
+    }
     if let Some(title) = &series.title {
         let start = *find_starts(&out, "cx:series").first()?;
         let end = find_element_end(&out, start, "cx:series")?;
@@ -88,21 +97,4 @@ fn string_points(values: &[String]) -> String {
         let mut escaped = String::new(); escape(value, &mut escaped);
         format!("<cx:pt idx=\"{index}\">{escaped}</cx:pt>")
     }).collect()
-}
-
-fn matches_regions(xml: &str, wanted: &[String]) -> bool {
-    let Some((start, end)) = dimension(xml, "cx:strDim", "cat") else { return false };
-    let xml = &xml[start..end];
-    let Some(start) = find_starts(xml, "cx:lvl").first().copied() else { return false };
-    if read_attribute(&xml[start..], "ptCount").and_then(|value| value.parse::<usize>().ok()) != Some(wanted.len()) { return false; }
-    let Some(end) = find_element_end(xml, start, "cx:lvl") else { return false };
-    let xml = &xml[start..end];
-    let mut found = vec![String::new(); wanted.len()];
-    for start in find_starts(xml, "cx:pt") {
-        let Some(end) = find_element_end(xml, start, "cx:pt") else { return false };
-        let Some(index) = read_attribute(&xml[start..end], "idx").and_then(|value| value.parse::<usize>().ok()).filter(|index| *index < found.len()) else { return false };
-        let Some(value) = element_text(&xml[start..end], "cx:pt") else { return false };
-        found[index] = value;
-    }
-    found == wanted
 }
