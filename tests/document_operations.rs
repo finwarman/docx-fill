@@ -90,3 +90,21 @@ fn exposes_document_json_edits() {
     assert!(output[0].is_null() && output[1].as_array().unwrap().is_empty());
     assert_eq!(output[2].as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn keeps_tabs_beside_empty_regex_matches() {
+    let mut document = doc("<w:p><w:r><w:tab/></w:r></w:p>");
+    assert_eq!(document.replace_all_regex("x*", "-").unwrap(), 2);
+    assert!(xml(document, "word/document.xml").contains("<w:r><w:t xml:space=\"preserve\">-</w:t><w:tab/><w:t xml:space=\"preserve\">-</w:t></w:r>"));
+}
+
+#[test]
+fn keeps_comment_references_outside_dropped_pages() {
+    let mut document = doc(&format!("{PAGES}<w:p><w:r><w:commentReference w:id=\"5\"/></w:r></w:p>"));
+    document.drop_content_between(ContentBoundary::Start, ContentBoundary::PageBreak(0)).unwrap();
+    assert!(xml(document, "word/document.xml").contains("<w:commentReference w:id=\"5\"/>"));
+
+    let mut cut = doc("<w:p><w:commentRangeStart w:id=\"7\"/><w:r><w:t>a</w:t><w:br w:type=\"page\"/><w:t>b</w:t></w:r><w:commentRangeEnd w:id=\"7\"/><w:r><w:commentReference w:id=\"7\"/></w:r></w:p>");
+    cut.drop_content_between(ContentBoundary::Start, ContentBoundary::PageBreak(0)).unwrap();
+    assert!(!xml(cut, "word/document.xml").contains("w:id=\"7\""));
+}

@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use super::{FilledDocument, TextPosition, read_body_text};
 use crate::properties::{find_element_end, set_child};
@@ -81,7 +81,7 @@ impl FilledDocument {
                 && let Some(end) = find_element_end(&xml, at, properties) { changed.push_str(&xml[at..end]); }
         }
         changed.push_str(&xml[end..]);
-        let changed = prune_marks(&changed);
+        let changed = prune_marks(&changed, &xml[start..end]);
         check_balanced(&tokenize(&changed).map_err(FillError::new)?).map_err(FillError::new)?;
         self.write_document(crate::structure::repair_structure(&changed).unwrap_or(changed));
         Ok(())
@@ -178,22 +178,20 @@ fn update_child(parts: &mut Vec<(String, Cow<[u8]>)>, path: &str, root: &str, na
     parts[index].1 = Cow::Owned(format!("{}{inner}{}", &xml[..start], &xml[end..]).into_bytes());
 }
 
-fn prune_marks(xml: &str) -> String {
+/// Drops bookmark and comment marks whose id also had a mark in the removed XML.
+fn prune_marks(xml: &str, removed: &str) -> String {
     let Ok(tokens) = tokenize(xml) else { return xml.to_string() };
-    let mut counts = BTreeMap::new();
-    for token in &tokens {
-        let Token::Element { name, raw, .. } = token else { continue };
-        let family = match *name { "w:bookmarkStart" | "w:bookmarkEnd" => "bookmark", "w:commentRangeStart" | "w:commentRangeEnd" | "w:commentReference" => "comment", _ => continue };
-        if let Some(id) = read_attribute(raw, "w:id") { *counts.entry((family, id)).or_insert(0) += i32::from(*name != "w:commentReference"); }
-    }
-    let orphaned: BTreeSet<_> = counts.into_iter().filter_map(|(key, count)| (count != 2).then_some(key)).collect();
+    let orphaned: BTreeSet<_> = tokenize(removed).unwrap_or_default().into_iter().filter_map(|token| mark_key(&token)).collect();
     let mut out = String::new();
     for token in tokens {
-        if let Token::Element { name, raw, .. } = token {
-            let family = match name { "w:bookmarkStart" | "w:bookmarkEnd" => "bookmark", "w:commentRangeStart" | "w:commentRangeEnd" | "w:commentReference" => "comment", _ => "" };
-            if read_attribute(raw, "w:id").is_some_and(|id| orphaned.contains(&(family, id))) { continue; }
-        }
+        if mark_key(&token).is_some_and(|key| orphaned.contains(&key)) { continue; }
         match token { Token::Text(raw) | Token::Element { raw, .. } => out.push_str(raw) }
     }
     out
+}
+
+fn mark_key<'a>(token: &Token<'a>) -> Option<(&'static str, &'a str)> {
+    let Token::Element { name, raw, .. } = token else { return None };
+    let family = match *name { "w:bookmarkStart" | "w:bookmarkEnd" => "bookmark", "w:commentRangeStart" | "w:commentRangeEnd" | "w:commentReference" => "comment", _ => return None };
+    Some((family, read_attribute(raw, "w:id")?))
 }

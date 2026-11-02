@@ -366,7 +366,12 @@ fn replacement_edits(xml: &str, paragraph: &Paragraph, range: &TextRange, text: 
             is_written = true;
         }
         let Some(open) = piece.text_open else {
-            // A tab or break: removed, or swapped for a text element holding the replacement.
+            // A tab or break: kept beside an insertion, else removed or swapped for the replacement.
+            if start == end {
+                let at = if start == piece.offset { piece.raw.0 } else { piece.raw.1 };
+                if !written.is_empty() { edits.push((at, at, format!("<w:t xml:space=\"preserve\">{written}</w:t>"))); }
+                continue;
+            }
             let replacement = if written.is_empty() { String::new() } else { format!("<w:t xml:space=\"preserve\">{written}</w:t>") };
             edits.push((piece.raw.0, piece.raw.1, replacement));
             continue;
