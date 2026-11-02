@@ -230,16 +230,19 @@ fn error_range(xml: &str, body: &BodyText, error: &FillError) -> Option<TextRang
     let start = start?;
     let chars: Vec<_> = paragraph.text.chars().collect();
     if start >= chars.len() { return None; }
-    let tail: String = chars[start..].iter().collect();
-    let length = match error.tag.as_deref().filter(|tag| !tag.is_empty()) {
+    // Parser tags join text runs without Word tabs or breaks. Keep their paragraph positions.
+    let text: Vec<_> = paragraph.pieces.iter().filter(|piece| piece.text_open.is_some())
+        .flat_map(|piece| piece.text.chars().enumerate().map(move |(index, ch)| (piece.offset + index, ch)))
+        .filter(|(offset, _)| *offset >= start).collect();
+    let tail: String = text.iter().map(|(_, ch)| ch).collect();
+    let end = match error.tag.as_deref().filter(|tag| !tag.is_empty()) {
         Some(tag) => match tail.find(tag) {
-            Some(at) => tail[..at + tag.len()].chars().count(),
-            None if matches!(error.id, crate::FillErrorId::UnopenedTag | crate::FillErrorId::DuplicateCloseTag) => 1,
+            Some(at) => text.get(tail[..at + tag.len()].chars().count() - 1)?.0 + 1,
+            None if matches!(error.id, crate::FillErrorId::UnopenedTag | crate::FillErrorId::DuplicateCloseTag) => start + 1,
             None => return None,
         },
-        None => 1,
+        None => start + 1,
     };
-    let end = (start + length).min(chars.len());
     Some(TextRange { start: TextPosition { paragraph: index, offset: start }, end: TextPosition { paragraph: index, offset: end }, text: chars[start..end].iter().collect() })
 }
 

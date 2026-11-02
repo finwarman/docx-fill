@@ -68,3 +68,16 @@ fn respects_tabs_between_runs() {
     assert_eq!(document.annotate_errors(&error, &CommentDefaults::default()).unwrap(), 1);
     assert_eq!(document.comments()[0].range.text, "{bad");
 }
+
+#[test]
+fn annotates_tags_across_breaks() {
+    for (element, text) in [("<w:tab/>", "{ba\td"), ("<w:br/>", "{ba\nd")] {
+        let body = format!("<w:p><w:r><w:t>{{ba</w:t>{element}<w:t>d</w:t></w:r></w:p>");
+        let parts = parts(&body, "");
+        let error = PackageTemplate::parse(parts.clone(), &FillOptions::default()).unwrap_err();
+        let mut document = FilledDocument::new(parts);
+
+        assert_eq!(document.annotate_errors(&error, &CommentDefaults::default()).unwrap(), 1);
+        assert_eq!(document.comments()[0].range.text, text);
+    }
+}
