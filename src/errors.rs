@@ -6,7 +6,7 @@ use std::fmt;
 pub enum FillErrorId {
     TemplateError, MultiError, MalformedXml, InvalidDelimiter,
     UnclosedTag, UnopenedTag, DuplicateOpenTag, DuplicateCloseTag,
-    UnclosedLoop, UnopenedLoop, ClosingTagMismatch, LoopPositionInvalid,
+    UnclosedLoop, UnopenedLoop, ClosingTagMismatch, LoopPositionInvalid, UnbalancedLoopTags,
     RawTagNotAlone, ImageTagNotAlone, TableTagNotAlone, SegmentTagNotAlone,
     UndefinedSegment, ScopeParserCompilation, NoXmlTagFound,
     HtmlUnknownTag, HtmlCssInvalid, HtmlBlockInvalid,
@@ -23,8 +23,9 @@ impl FillErrorId {
             Self::ClosingTagMismatch => "closing_tag_does_not_match_opening_tag", Self::LoopPositionInvalid => "loop_position_invalid",
             Self::RawTagNotAlone => "raw_xml_tag_should_be_only_text_in_paragraph", Self::ImageTagNotAlone => "centered_image_should_be_in_paragraph",
             Self::TableTagNotAlone => "table_tag_should_be_only_text_in_paragraph", Self::SegmentTagNotAlone => "segment_tag_should_be_only_text_in_paragraph",
+            Self::UnbalancedLoopTags => "unbalanced_loop_tags",
             Self::UndefinedSegment => "undefined_subsegment", Self::ScopeParserCompilation => "scopeparser_compilation_failed",
-            Self::NoXmlTagFound => "no_xml_tag_found", Self::HtmlUnknownTag => "html_tag_name_unsupported",
+            Self::NoXmlTagFound => "no_xml_tag_found_at_left", Self::HtmlUnknownTag => "html_tag_name_unsupported",
             Self::HtmlCssInvalid => "style_property_invalid", Self::HtmlBlockInvalid => "html_tag_invalid_type",
         }
     }

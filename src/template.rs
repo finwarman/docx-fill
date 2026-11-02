@@ -496,6 +496,10 @@ fn scan_paragraphs(tokens: &[Token], layout: TextLayout) -> (Vec<ParagraphTokens
                 paragraphs.push((index, None));
                 texts.push(Vec::new());
             }
+            Token::Element { kind: ElementKind::SelfClosing, name: PARAGRAPH, .. } => {
+                paragraphs.push((index, Some(index)));
+                texts.push(Vec::new());
+            }
             Token::Element { kind: ElementKind::Close, name: PARAGRAPH, .. } => {
                 if let Some(paragraph) = open.pop() {
                     paragraphs[paragraph].1 = Some(index);
@@ -1159,7 +1163,7 @@ fn check_cell_loops(parts: &[Part], tags: &[Tag], opening: usize, closing: usize
     let pair = |name: &str| format!("{start}#{name}{end}{start}/{name}{end}");
     let (loop_name, other_name) = (&tags[opening].name, &other.name);
     let written = if before.is_some() { pair(other_name) + &pair(loop_name) } else { pair(loop_name) + &pair(other_name) };
-    Err(FillError::new(format!("Unbalanced loop tags {written}: a loop across table cells cannot share its first or last cell with another loop")))
+    Err(FillError::new(format!("Unbalanced loop tags {written}: a loop across table cells cannot share its first or last cell with another loop")).with_id(crate::FillErrorId::UnbalancedLoopTags))
 }
 
 fn not_inside(tag: &Tag, element: &str) -> FillError {
