@@ -593,8 +593,9 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions, par
         } else if let Some(length) = end.find(rest).filter(|_| !identical) {
             let Some((opened, name)) = open.take() else {
                 if !options.allow_unopened_tag {
-                    let context_start = tags.last().map_or(0, |tag| tag.end);
-                    errors.push(unopened_tag(text, &tags, at, length).at(unescape(&text[context_start..at]), at, paragraph));
+                    // A duplicate close names the tag it follows.
+                    let tag = match tags.last() { Some(tag) if tag.end == at => tag.name.clone(), last => last.map_or(0, |tag| tag.end)..at };
+                    errors.push(unopened_tag(text, &tags, at, length).at(unescape(&text[tag]), at, paragraph));
                 }
                 at += length;
                 continue;

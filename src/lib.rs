@@ -365,6 +365,7 @@ impl PackageTemplate {
     /// [`FillOptions::fill_properties`] the core, app and custom document properties.
     pub fn parse(parts: impl IntoIterator<Item = (String, Vec<u8>)>, options: &FillOptions) -> Result<PackageTemplate, FillError> {
         options.document.check()?;
+        options.tag_prefixes.validate()?;
         let mut parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
         let chart_titles = if options.extensions.charts { charts::prepare(&mut parts, options) } else { BTreeMap::new() };
         let content_types = parts.iter().find(|(name, _)| name == CONTENT_TYPES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes));

@@ -88,3 +88,25 @@ fn counts_empty_paragraphs() {
     assert_eq!(error.paragraph, Some(3));
     assert_eq!(error.offset, Some(0));
 }
+
+#[test]
+fn reports_bad_prefixes_once() {
+    let parts = [
+        ("word/document.xml".into(), document(&paragraph(&["{a}"])).into_bytes()),
+        ("word/header1.xml".into(), b"<w:hdr xmlns:w=\"w\"><w:p><w:r><w:t>{b}</w:t></w:r></w:p></w:hdr>".to_vec()),
+    ];
+    let mut options = FillOptions::default();
+    options.tag_prefixes.raw = "#".into();
+    let error = PackageTemplate::parse(parts, &options).err().unwrap();
+
+    assert_eq!(error.diagnostics().len(), 1);
+    assert_eq!(error.part, None);
+}
+
+#[test]
+fn names_duplicate_close_tag() {
+    let error = Template::parse(&document(&paragraph(&["{x}}"])), &FillOptions::default()).err().unwrap();
+    let duplicate = error.diagnostics().into_iter().find(|error| error.id == FillErrorId::DuplicateCloseTag).unwrap();
+
+    assert_eq!(duplicate.tag.as_deref(), Some("x"));
+}

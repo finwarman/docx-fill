@@ -98,7 +98,7 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 Parse failures expose a stable `FillErrorId`, the tag and its paragraph and byte offset when known. `FillError::diagnostics()` lists all collected errors, including errors in other package parts. Offsets count bytes in each paragraph's joined XML text before entity decoding. The existing `part` and `message` fields remain available.
 
-With expressions enabled, assignments store values for the current fill and print nothing: `{total = price * count}{total}`. Semicolon-separated expressions print their last result. Bare names are assigned on the current loop item; property assignments update the visible object. The caller's JSON remains unchanged. Object values are copied, and array assignments are limited to index 1,000,000.
+With expressions enabled, assignments store values for the current fill and print nothing: `{total = price * count}{total}`. Semicolon-separated expressions print their last result. Bare names are assigned on the current loop item, or on the nearest object scope inside a loop over plain values; filters apply after the assignment, so `{a = b | upper}` stores `b` and prints it upper-cased; property assignments update the visible object. The caller's JSON remains unchanged. Object values are copied, and array assignments are limited to index 1,000,000.
 Paragraph placeholders inside text boxes expand to the whole shape by default. Set `paragraphPlaceholder: { expandToShape: false }` to target only the paragraph. `expandSoftBreaksInShapes: true` targets individual soft lines within shapes; `expandSoftBreaks: true` also enables this outside shapes. Surviving lines remain joined by soft breaks. When this mode expands a paragraph, parse errors retain their IDs and tags but omit source positions.
 
 
@@ -167,7 +167,7 @@ With `FillOptions::expressions` on, a tag's name is an expression, as in docxtem
 
 A filter is named in `FillOptions::filters` and applied by `FillHooks::filter`. A name is looked up from the innermost scope out, and a missing result is tried again from the parent scope.
 
-A syntax error or unknown filter is an error when parsing. Names such as `table:abc.value` are not expressions, so turn this on per template. Assignments (`{a = 1}`) are refused, and calls give nothing, as JSON holds no functions.
+A syntax error or unknown filter is an error when parsing. Names such as `table:abc.value` are not expressions, so turn this on per template. Calls give nothing, as JSON holds no functions.
 
 ## Listing tags
 
