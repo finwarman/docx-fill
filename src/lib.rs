@@ -26,6 +26,7 @@ mod images;
 mod includes;
 mod json;
 mod part_kinds;
+mod placeholder_lines;
 mod properties;
 mod sections;
 mod protection;
@@ -51,6 +52,7 @@ pub use document_edits::{DocumentEdits, Margins, Watermark, WatermarkLayout};
 pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
 pub use comments::CommentDefaults;
+pub use placeholder_lines::{ParagraphPlaceholderOptions, SoftBreakScope};
 pub use footnotes::{FootnoteContent, FootnoteOptions};
 pub use full_table::{TableOptions, TableResize, TableValidation};
 pub use images::{Image, ImageAlignment, ImageBorder, ImageCaption, ImageFloat, ImageLayer, ImageLength, ImageProperties, ImageRelative, ImageSize, ImageWrap};
@@ -241,6 +243,7 @@ pub struct FillOptions {
     /// Drops the paragraphs holding `{::stylepar}` tags.
     pub drop_style_paragraphs: bool,
     pub comments: CommentDefaults,
+    pub paragraph_placeholder: ParagraphPlaceholderOptions,
     /// Content mode and formatting of inserted footnotes.
     pub footnotes: FootnoteOptions,
     pub table: TableOptions,
@@ -280,6 +283,7 @@ impl Default for FillOptions {
             document: DocumentEdits::default(),
             drop_style_paragraphs: false,
             comments: CommentDefaults::default(),
+            paragraph_placeholder: ParagraphPlaceholderOptions::default(),
             footnotes: FootnoteOptions::default(),
             table: TableOptions::default(),
             continued_bookmarks: None,
