@@ -36,11 +36,12 @@ impl ChartData {
         let categories = value.get("categories")?.as_array()?.iter().map(|value| match value {
             Value::String(text) => Some(text.clone()),
             Value::Number(number) => Some(number.to_string()),
+            Value::Null => Some(String::new()),
             _ => None,
         }).collect::<Option<Vec<_>>>()?;
         let mut series = Vec::new();
         for value in value.get("series")?.as_array()? {
-            let title = match value.get("title") { Some(title) => Some(title.as_str()?.to_string()), None => None };
+            let title = match value.get("title") { None | Some(Value::Null) => None, Some(title) => Some(title.as_str()?.to_string()) };
             let values = value.get("data")?.as_array()?.iter().map(|value| match value {
                 Value::Null => Some(None),
                 Value::Number(number) => Some(Some(number.to_string())),
@@ -101,6 +102,16 @@ pub(crate) fn prepare(parts: &mut [(String, Vec<u8>)], options: &FillOptions) ->
 }
 
 pub(crate) fn apply(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)], titles: &BTreeMap<String, String>) {
+    fill_charts(parts, uses, titles);
+    // A chart left unfilled still shows its title, so its tag goes too.
+    for (path, literal) in titles {
+        let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == path) else { continue };
+        let Ok(xml) = std::str::from_utf8(bytes) else { continue };
+        *bytes = Cow::Owned(strip_title_tag(xml, literal).into_bytes());
+    }
+}
+
+fn fill_charts(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)], titles: &BTreeMap<String, String>) {
     let mut next = 1;
     for (part, used) in uses {
         let sources: BTreeMap<_, _> = parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())).collect();
@@ -149,7 +160,7 @@ fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<St
     let start = plots[0];
     let end = find_element_end(xml, start, "c:barChart")?;
     let plot = &xml[start..end];
-    let templates: Vec<_> = find_starts(plot, "c:ser").into_iter().filter_map(|start| find_element_end(plot, start, "c:ser").map(|end| (start, end))).collect();
+    let templates: Vec<_> = find_starts(plot, "c:ser").into_iter().filter_map(|start| find_element_end(plot, start, "c:ser").map(|end| (start, end))).filter(|&(start, end)| plot[start..end].ends_with("</c:ser>")).collect();
     let &(first, _) = templates.first()?;
     let mut series = String::new();
     for (index, value) in data.series.iter().enumerate() {
@@ -157,6 +168,8 @@ fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<St
         let template = &plot[start..end];
         let open = template.find('>')? + 1;
         let mut inner = template[open..template.len() - "</c:ser>".len()].to_string();
+        // An added series takes the theme's next colour, not a copy of the first one's.
+        if index >= templates.len() { inner = remove_children(&inner, &["c:spPr", "c:dPt", "c:extLst"]); }
         inner = set_child(&inner, "c:idx", &format!("<c:idx val=\"{index}\"/>"), SERIES_ORDER);
         inner = set_child(&inner, "c:order", &format!("<c:order val=\"{index}\"/>"), SERIES_ORDER);
         if let Some(title) = value.title.clone().or_else(|| series_title(template)) {
@@ -165,7 +178,7 @@ fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<St
         }
         let points: Vec<_> = data.categories.iter().cloned().map(Some).collect();
         inner = set_child(&inner, "c:cat", &format!("<c:cat>{}</c:cat>", literal(DataKind::Text, &points)), SERIES_ORDER);
-        let format = element_text(template, "c:formatCode").unwrap_or_else(|| "General".to_string());
+        let format = find_starts(template, "c:val").first().and_then(|&at| element_text(&template[at..], "c:formatCode")).unwrap_or_else(|| "General".to_string());
         inner = set_child(&inner, "c:val", &format!("<c:val>{}</c:val>", literal(DataKind::Number(&format), &value.values)), SERIES_ORDER);
         series.push_str(&format!("{}{}{}", &template[..open], inner, "</c:ser>"));
     }
@@ -179,6 +192,27 @@ fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<St
     }
     if let Some(literal) = title_tag { out = strip_title_tag(&out, literal); }
     Some(out)
+}
+
+/// `xml` without its own `names` children; descendants of other children stay.
+fn remove_children(xml: &str, names: &[&str]) -> String {
+    let Ok(tokens) = tokenize(xml) else { return xml.to_string() };
+    let mut out = String::new();
+    let (mut depth, mut skip_from) = (0usize, None);
+    for token in tokens {
+        let raw = match &token { Token::Element { raw, .. } => *raw, Token::Text(text) => *text };
+        if let Token::Element { kind, name, .. } = &token {
+            let is_removed = depth == 0 && names.contains(name);
+            match kind {
+                ElementKind::Open => { if is_removed { skip_from = Some(depth); } depth += 1; }
+                ElementKind::Close => { depth -= 1; if skip_from == Some(depth) { skip_from = None; continue; } }
+                ElementKind::SelfClosing if is_removed => continue,
+                _ => {}
+            }
+        }
+        if skip_from.is_none() { out.push_str(raw); }
+    }
+    out
 }
 
 fn literal(kind: DataKind, values: &[Option<String>]) -> String {

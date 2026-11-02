@@ -139,3 +139,43 @@ fn avoids_relationship_overlap() {
     assert!(String::from_utf8_lossy(&parts["word/document.xml"]).contains("r:id=\"rIdDocxFillChart2\""));
     assert!(parts.contains_key("word/charts/docxFillChart2.xml"));
 }
+
+#[test]
+fn clears_title_tag_when_unfilled() {
+    let chart = CHART.replace("Sales", "Sales {$sales}");
+    let parts = render(&template(drawing(), &chart, &json!({})), json!({}));
+
+    assert!(chart_xml(&parts).is_empty());
+    assert!(!String::from_utf8_lossy(&parts["word/charts/chart1.xml"]).contains("{$sales}"));
+}
+
+#[test]
+fn reads_value_format_from_values() {
+    let chart = CHART.replace("<c:cat><c:strRef><c:f>Sheet1!A2:A3</c:f><c:strCache>", "<c:cat><c:numRef><c:f>Sheet1!A2:A3</c:f><c:numCache><c:formatCode>m/d/yyyy</c:formatCode>").replace("</c:strCache></c:strRef></c:cat>", "</c:numCache></c:numRef></c:cat>");
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &chart, &json!({})), json!({"sales":{"categories":[null],"series":[{"title":null,"data":[1]}]}}));
+    let chart = &chart_xml(&parts)[0];
+
+    assert!(chart.contains("<c:numLit><c:formatCode>0.00</c:formatCode>"));
+    assert!(chart.contains("<c:tx><c:v>Original</c:v></c:tx>"));
+}
+
+#[test]
+fn gives_added_series_their_own_style() {
+    let chart = CHART.replace("<c:spPr>", "<c:extLst><c:ext uri=\"u\"/></c:extLst><c:spPr>").replace("</c:val></c:ser>", "</c:val><c:extLst><c:ext uri=\"id\"/></c:extLst></c:ser>");
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &chart, &json!({})), json!({"sales":{"categories":["A"],"series":[{"data":[1]},{"data":[2]}]}}));
+    let chart = &chart_xml(&parts)[0];
+
+    assert_eq!(chart.matches("00AA00").count(), 1);
+    assert_eq!(chart.matches("uri=\"id\"").count(), 1);
+}
+
+#[test]
+fn skips_empty_series_templates() {
+    let chart = CHART.replace("<c:gapWidth", "<c:ser/><c:gapWidth");
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &chart, &json!({})), json!({"sales":{"categories":["A"],"series":[{"data":[1]},{"data":[2]}]}}));
+
+    assert_eq!(chart_xml(&parts)[0].matches("<c:ser>").count(), 2);
+}
