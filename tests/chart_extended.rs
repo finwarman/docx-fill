@@ -63,6 +63,24 @@ fn fills_sunburst_hierarchy() {
 }
 
 #[test]
+fn fills_treemap_flat_values() {
+    let source = chart("treemap", "size");
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&body, &source, json!({"sales":{"categories":["A","B"],"series":[{"data":[7,8]}]}}));
+    let chart = output_chart(&parts);
+    assert!(chart.contains("layoutId=\"treemap\"") && chart.contains("<cx:numDim type=\"size\">"));
+    assert!(chart.contains("<cx:pt idx=\"0\">7</cx:pt><cx:pt idx=\"1\">8</cx:pt>"));
+}
+
+#[test]
+fn preserves_waterfall_subtotals() {
+    let source = chart("waterfall", "val").replace("<cx:layoutPr></cx:layoutPr>", "<cx:layoutPr><cx:subtotals><cx:idx val=\"1\"/></cx:subtotals></cx:layoutPr>");
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&body, &source, json!({"sales":{"categories":["A","Total"],"data":[7,7]}}));
+    assert!(output_chart(&parts).contains("<cx:subtotals><cx:idx val=\"1\"/></cx:subtotals>"));
+}
+
+#[test]
 fn preserves_known_map_geometry() {
     let source = chart("regionMap", "colorVal");
     let body = drawing().to_string() + &paragraph(&["{$sales}"]);
