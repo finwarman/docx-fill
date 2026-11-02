@@ -104,6 +104,8 @@ Paragraph placeholders inside text boxes expand to the whole shape by default. S
 
 Place `{$sales}` alone in the paragraph after a bar chart, in the chart's paragraph, or in its title. Package rendering accepts `{"sales":{"categories":["A","B"],"series":[{"title":"Revenue","data":[10,20]}]}}`. Series titles are optional; omitted titles keep the template title. Numeric data and `null` gaps must match the category count. Chart layout, series formatting and number formats are preserved. Loops create separate chart parts for each value.
 
+An inline chart tag targets the nearest preceding chart in its paragraph. A tag in the following paragraph requires exactly one chart in the preceding paragraph; multiple charts are ambiguous and cause a parse error. A tag before a chart drawing cannot target a chart in an earlier paragraph.
+
 Only standard `c:barChart` charts are filled. Title tags need one chart in their drawing paragraph. Other chart types and invalid data keep the original chart. The generated chart uses literal data; its embedded workbook stays unchanged and is detached from the generated chart. JSON can disable this feature with `extensions.charts`.
 
 `FillOptions::footnotes` controls inserted footnotes. `FootnoteContent::Raw` accepts complete Word runs. `ref_properties`, `ref_run`, `paragraph_properties` and `run_properties` customize the note marker, separator and text. JSON uses `footnotes: { raw, refProperties, refRun, paragraphProperties, runProperties }`. XML fragments must be valid WordprocessingML.
