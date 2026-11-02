@@ -550,7 +550,14 @@ impl<'a> Render<'a, '_> {
                         TagKind::Footnote => self.print_footnote(value, tag.run_props.as_deref()),
                         TagKind::RichText { is_block } => {
                             let html = value.and_then(Value::as_str).unwrap_or_default().to_string();
-                            let prepared = rich_text::prepare_html(&html, &self.template.html_options, &self.template.html_style_sheet, self.hooks);
+                            let image_mode = if self.template.html_images { rich_text::ImageMode::Embed } else { rich_text::ImageMode::Ignore };
+                            let mut prepared = rich_text::prepare_html(&html, &self.template.html_options, &self.template.html_style_sheet, image_mode, self.hooks);
+                            for request in &prepared.images {
+                                match self.html_image(request) {
+                                    Ok(fragment) => prepared.raw[request.slot] = fragment,
+                                    Err(error) => prepared.errors.push(error),
+                                }
+                            }
                             let mut errors = prepared.errors;
                             if is_block && !tag.is_alone && self.template.html_options.on_invalid_block == crate::HtmlBlockMode::Error {
                                 errors.push(crate::FillError::new("HTML block tag must be alone in its paragraph").with_id(crate::FillErrorId::HtmlBlockInvalid));
@@ -745,9 +752,6 @@ impl<'a> Render<'a, '_> {
         if let (true, Some(paragraph)) = (is_centered, self.paragraphs.last_mut()) {
             paragraph.style.get_or_insert_with(Style::default).align = Some("center");
         }
-        if let (Some(align), Some(paragraph)) = (properties.alignment(), self.paragraphs.last_mut()) {
-            paragraph.style.get_or_insert_with(Style::default).align = Some(align);
-        }
 
         let (width, height) = match self.hooks.image_size(self.part, value, &image) {
             Some(size) => size.dimensions(),
@@ -758,6 +762,33 @@ impl<'a> Render<'a, '_> {
                 drawing_size(&image, width, cell_width.is_some(), height)
             }
         };
+        let xml = self.image_xml(image, value, &properties, (width, height), None);
+        // The tag sits inside <w:t>; a drawing belongs beside it.
+        self.out.push_str("</w:t>");
+        self.out.push_str(&xml);
+        self.out.push_str("<w:t xml:space=\"preserve\">");
+    }
+
+    fn html_image(&mut self, request: &rich_text::images::HtmlImage) -> Result<crate::HtmlFragment, crate::FillError> {
+        let value = Value::String(request.source.clone());
+        let image = match self.hooks.image(self.part, &value) {
+            Some(image) => image,
+            None => request.embedded().map_err(crate::FillError::new)?.ok_or_else(|| crate::FillError::new("HTML image source was not resolved"))?,
+        };
+        let body = body_or_default(self.template.body.or(self.state.body));
+        let size = self.hooks.image_size(self.part, &value, &image).or_else(|| request.size(&image, body.0))
+            .ok_or_else(|| crate::FillError::new("Invalid HTML image dimensions"))?;
+        let properties = self.hooks.image_properties(self.part, &value, &image);
+        let xml = self.image_xml(image, &value, &properties, size.dimensions(), Some(&request.properties()));
+        let xml = xml.replacen("<w:drawing>", "<w:drawing xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">", 1);
+        Ok(crate::HtmlFragment::inline(format!("<w:r>{xml}</w:r>")))
+    }
+
+    fn image_xml(&mut self, image: Image, value: &Value, properties: &crate::ImageProperties, dimensions: (f64, f64), defaults: Option<&crate::ImageProperties>) -> String {
+        let (width, height) = dimensions;
+        if let (Some(align), Some(paragraph)) = (properties.alignment(), self.paragraphs.last_mut()) {
+            paragraph.style.get_or_insert_with(Style::default).align = Some(align);
+        }
         let fallback = if image.extension.eq_ignore_ascii_case("svg") {
             self.hooks.svg_fallback(self.part, value, &image).map(|bytes| MediaUse::svg_fallback(&image, bytes))
         } else { None };
@@ -765,8 +796,6 @@ impl<'a> Render<'a, '_> {
         let id = self.state.next_drawing_id;
         self.state.next_drawing_id += 1;
 
-        // The tag sits inside <w:t>; a drawing belongs in the run beside it.
-        self.out.push_str("</w:t>");
         let displayed = fallback.as_ref().unwrap_or(&media);
         let svg = fallback.as_ref().map(|_| media.relationship_id.as_str());
         let link = properties.link_target().map(|target| {
@@ -774,8 +803,9 @@ impl<'a> Render<'a, '_> {
             self.links.push(target.to_string());
             id
         });
-        self.out.push_str(&properties.apply(drawing_xml(id, &displayed.relationship_id, width, height, svg), link.as_deref()));
-        self.out.push_str("<w:t xml:space=\"preserve\">");
+        let mut xml = drawing_xml(id, &displayed.relationship_id, width, height, svg);
+        if let Some(defaults) = defaults { xml = defaults.apply(xml, None); }
+        let xml = properties.apply(xml, link.as_deref());
         if let (Some(caption), Some(paragraph)) = (properties.caption_xml(self.state.next_caption), self.paragraphs.last_mut()) {
             paragraph.captions.push(caption);
             self.state.next_caption += 1;
@@ -785,6 +815,7 @@ impl<'a> Render<'a, '_> {
                 self.media.push(media);
             }
         }
+        xml
     }
 
     /// Prints a value. With line breaks on, each `\n` ends the tag's run, adds a run holding a

@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 
 pub(crate) mod numbering;
 mod css;
+pub(crate) mod images;
 use numbering::Numberings;
 
 // Stands in for a value in the filled XML until its paragraph closes.
@@ -44,6 +45,7 @@ const DEFAULT_FONT_POINTS: f64 = 11.0;
 const CELL_SIDES: [&str; 4] = ["top", "left", "bottom", "right"];
 const RAW_INLINE: &str = "docx-fill-inline";
 const RAW_BLOCK: &str = "docx-fill-block";
+const RAW_TAG_ATTRIBUTE: &str = "data-docx-fill-tag";
 const STYLE_ATTRIBUTE: &str = "data-docx-fill-style";
 const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
 // Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
@@ -64,7 +66,10 @@ pub(crate) struct RichValue {
     pub raw: Vec<crate::HtmlFragment>,
 }
 
+pub(crate) enum ImageMode { Embed, Ignore }
+
 pub(crate) struct PreparedHtml {
+    pub images: Vec<images::HtmlImage>,
     pub html: String,
     pub raw: Vec<crate::HtmlFragment>,
     pub errors: Vec<crate::FillError>,
@@ -826,13 +831,18 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges, style_sheet: &str
             HtmlToken::Tag { is_closing, name, attributes } => (is_closing, name.to_ascii_lowercase(), attributes),
         };
         if !is_closing && matches!(tag.as_str(), RAW_INLINE | RAW_BLOCK) {
+            if let Some(original) = read_attribute(&attributes, RAW_TAG_ATTRIBUTE) {
+                cascade.open(original, &attributes);
+                cascade.close(original);
+            }
             if let Some(fragment) = read_attribute(&attributes, "index").and_then(|index| index.parse::<usize>().ok()).and_then(|index| raw.get(index)) {
                 match fragment.kind {
                     crate::HtmlTagKind::Block => { reader.start_block(Block { raw_xml: Some(fragment.xml.clone()), ..Block::default() }); reader.current = None; }
                     crate::HtmlTagKind::Inline => {
                         if reader.current.is_none() { reader.start_block(Block::default()); }
                         let index = reader.current.unwrap();
-                        reader.blocks()[index].runs.push(Run { raw_xml: Some(fragment.xml.clone()), ..Run::default() });
+                        let format = reader.format();
+                        reader.blocks()[index].runs.push(Run { raw_xml: Some(fragment.xml.clone()), format, ..Run::default() });
                     }
                 }
             }
@@ -928,8 +938,8 @@ const KNOWN_HTML: &[&str] = &["p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "st
 const BLOCK_HTML: &[&str] = &["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "table"];
 const VOID_HTML: &[&str] = &["br", "hr", "input", "img", "col"];
 
-pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str, hooks: &mut dyn crate::FillHooks) -> PreparedHtml {
-    let mut prepared = PreparedHtml { html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false };
+pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str, image_mode: ImageMode, hooks: &mut dyn crate::FillHooks) -> PreparedHtml {
+    let mut prepared = PreparedHtml { images: Vec::new(), html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false };
     if !options.ignore_css_errors {
         for sheet in std::iter::once(sheet.to_string()).chain(embedded_sheets(html)) {
             if let Err(error) = css::validate_sheet(&sheet) { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::HtmlCssInvalid)); }
@@ -937,7 +947,9 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
     }
     let mut rest = html;
     let mut renamed: Vec<(String, String)> = Vec::new();
-    let mut context = css::Cascade::new(&[]);
+    let embedded = embedded_sheets(html);
+    let sheets: Vec<_> = std::iter::once(sheet).chain(embedded.iter().map(String::as_str)).collect();
+    let mut context = css::Cascade::new(&sheets);
     while let Some(start) = rest.find('<') {
         prepared.html.push_str(&rest[..start]);
         rest = &rest[start..];
@@ -971,7 +983,7 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
             if let Err(error) = valid { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::MalformedXml)); }
             else {
                 let tag = match fragment.kind { crate::HtmlTagKind::Inline => RAW_INLINE, crate::HtmlTagKind::Block => { prepared.has_block = true; RAW_BLOCK } };
-                prepared.html.push_str(&format!("<{tag} index=\"{}\"/>", prepared.raw.len()));
+                write_raw_marker(&mut prepared.html, tag, prepared.raw.len(), &name, &attributes);
                 prepared.raw.push(fragment);
             }
             let consumed = if self_closing { 0 } else { element_inner(&name, body).1 };
@@ -991,6 +1003,25 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
         attributes.retain(|(name, _)| name != "style" && name != STYLE_ATTRIBUTE);
         if !style.is_empty() { attributes.push(("style".to_string(), style)); }
         if let Some(style) = custom.paragraph_style.or(transformed) { attributes.push((STYLE_ATTRIBUTE.to_string(), style)); }
+        if matches!(name.as_str(), "img" | "svg") {
+            let consumed = if name == "svg" && !self_closing { element_inner(&name, body).1 } else { 0 };
+            if matches!(image_mode, ImageMode::Embed) {
+                let declarations = vec![("style".into(), context.style_current(&attributes))];
+                for dimension in ["width", "height"] {
+                    if let Some(value) = read_style(&declarations, dimension) {
+                        attributes.retain(|(name, _)| name != dimension);
+                        attributes.push((dimension.to_string(), value.to_string()));
+                    }
+                }
+                let source = if name == "svg" { rest[..length + consumed].to_string() } else { read_attribute(&attributes, "src").unwrap_or_default().to_string() };
+                let slot = prepared.raw.len();
+                write_raw_marker(&mut prepared.html, RAW_INLINE, slot, &name, &attributes);
+                prepared.raw.push(crate::HtmlFragment::inline(""));
+                prepared.images.push(images::HtmlImage { slot, source, attributes });
+            }
+            context.close(&name);
+            rest = &rest[length + consumed..]; continue;
+        }
         let emitted = if known { name.clone() } else if options.custom_tags.get(&name) == Some(&crate::HtmlTagKind::Block) { "p".into() } else { "span".into() };
         prepared.has_block |= BLOCK_HTML.contains(&emitted.as_str());
         prepared.html.push('<'); prepared.html.push_str(&emitted);
@@ -1006,6 +1037,15 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
     }
     prepared.html.push_str(rest);
     prepared
+}
+
+fn write_raw_marker(html: &mut String, kind: &str, index: usize, tag: &str, attributes: &[(String, String)]) {
+    html.push_str(&format!("<{kind} index=\"{index}\" {RAW_TAG_ATTRIBUTE}=\"{tag}\""));
+    for (name, value) in attributes {
+        if name == "index" || name == RAW_TAG_ATTRIBUTE { continue; }
+        html.push(' '); html.push_str(name); html.push_str("=\""); escape(value, html); html.push('"');
+    }
+    html.push_str("/>");
 }
 
 pub(crate) fn element_inner<'a>(name: &str, body: &'a str) -> (&'a str, usize) {
@@ -1556,11 +1596,6 @@ fn write_runs(block: &Block, run_props: &str, links: &mut Vec<String>, number: O
     };
     let mut open_link: Option<&str> = None;
     for run in &block.runs {
-        if let Some(raw) = &run.raw_xml {
-            if open_link.take().is_some() { out.push_str("</w:hyperlink>"); }
-            out.push_str(raw);
-            continue;
-        }
         let link = run.format.link.as_deref();
         if link != open_link {
             if open_link.is_some() {
@@ -1571,6 +1606,7 @@ fn write_runs(block: &Block, run_props: &str, links: &mut Vec<String>, number: O
             }
             open_link = link;
         }
+        if let Some(raw) = &run.raw_xml { out.push_str(raw); continue; }
         let props = write_run_props(run_props, run.is_bold || (block.heading_level.is_some() && block.paragraph_style.is_none()), run.is_italic, run.is_underlined, size, &run.format);
         out.push_str("<w:r>");
         out.push_str(&props);

@@ -58,6 +58,9 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 
 Package rendering writes HTML lists as native Word lists, with numbering definitions, nesting, ordered starts and item-value resets. Existing numbering IDs are preserved. Word supports nine nesting levels; deeper HTML lists use the ninth level. Standalone `Template` and `fill_part` rendering keep literal markers because they do not return package parts.
 
+
+HTML `<img>` data URLs support PNG, JPEG, GIF and SVG. Inline `<svg>` also embeds its source. Width and height come from CSS or attributes, then intrinsic dimensions; one supplied dimension preserves the aspect ratio. CSS pixels, points, inches, centimeters, millimeters and picas are accepted. Percentage dimensions use the document body width. `FillHooks::image` can resolve a `src` string, and `image_size`, `image_properties` and `svg_fallback` also apply. External URLs require a hook; the library does not fetch them. Image captions follow the containing template paragraph.
+
 HTML table cells support combined `rowspan` and `colspan`. Vertical spans keep later cells in their columns and stop at the table's final row.
 
 HTML CSS maps margins and padding to paragraph spacing/indents or table-cell margins. It also reads line height, text indentation, cell vertical alignment, page-break boundaries, `white-space: pre` and `direction`. Lengths accept `px`, `pt` and `em`; line height also accepts a multiplier or percentage. This is a Word layout mapping, not a full CSS box model.

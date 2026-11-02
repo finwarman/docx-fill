@@ -35,6 +35,11 @@ impl Cascade {
         let index = self.nodes.len();
         self.nodes.push(Node { tag: tag.to_string(), attributes: attributes.to_vec(), parent, previous: self.last_children.insert(parent, index) });
         if !VOID_TAGS.contains(&tag) { self.stack.push(index); }
+        self.style_current(attributes)
+    }
+
+    pub(super) fn style_current(&self, attributes: &[(String, String)]) -> String {
+        let index = self.nodes.len() - 1;
         let mut values = BTreeMap::new();
         for (order, rule) in self.rules.iter().enumerate() {
             if !matches_selector(&rule.selector, &self.nodes, index) { continue; }
