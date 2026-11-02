@@ -76,3 +76,13 @@ fn keeps_picture_without_a_value() {
     assert!(xml.contains("r:embed=\"rIdOld\""));
     assert!(!parts.keys().any(|name| name.contains("/replacements/")));
 }
+
+#[test]
+fn resizes_the_transform_not_doc_properties() {
+    let body = picture("{%photo}").replace("descr=\"Before {%photo} after\"/>", "descr=\"Before {%photo} after\"><a:extLst><a:ext uri=\"{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}\"/></a:extLst></wp:docPr>");
+    let parts = render(&body, json!({}), json!({"photo":"resize"}));
+    let xml = String::from_utf8_lossy(&parts["word/document.xml"]);
+
+    assert!(xml.contains("<a:ext uri=\"{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}\"/>"));
+    assert!(xml.contains("<a:ext cx=\"142875\" cy=\"190500\"/>"));
+}

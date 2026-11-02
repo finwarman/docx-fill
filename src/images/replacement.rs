@@ -20,8 +20,11 @@ pub(crate) fn replace_picture(xml: &str, relationship: &str, size: Option<ImageS
     let mut out = format!("{}<a:blip r:embed=\"{relationship}\"/>{}", &xml[..start], &xml[end..]);
     if let Some(size) = size {
         let (width, height) = size.dimensions();
-        for name in ["wp:extent", "a:ext"] {
-            if let Some(start) = find_starts(&out, name).first().copied()
+        // The picture's `a:ext` is the one in `a:xfrm`; `wp:docPr` can hold an `a:ext` of its own.
+        let transform = find_starts(&out, "a:xfrm").first().copied();
+        for (name, after) in [("wp:extent", Some(0)), ("a:ext", transform)] {
+            let Some(after) = after else { continue };
+            if let Some(start) = find_starts(&out, name).into_iter().find(|start| *start >= after)
                 && let Some(end) = out[start..].find('>').map(|at| start + at + 1) {
                 let raw = set_attribute(&out[start..end], "cx", &(width * EMU_PER_PX).round().to_string());
                 let raw = set_attribute(&raw, "cy", &(height * EMU_PER_PX).round().to_string());
