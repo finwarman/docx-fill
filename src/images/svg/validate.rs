@@ -13,6 +13,8 @@ const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
 const MAX_SELECTOR_BYTES: usize = 1024;
 const MAX_CSS_MATCHES: usize = 1_000_000;
 const MAX_CSS_BYTES: usize = 8 * 1024 * 1024;
+// usvg lays text out in quadratic time.
+const MAX_TEXT_BYTES: usize = 64 * 1024;
 const RESOURCE_PROPERTIES: &[&str] = &["fill", "stroke", "filter", "mask", "clip-path", "marker", "marker-start", "marker-mid", "marker-end"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,10 @@ fn inspect(bytes: &[u8], normalization: Normalization) -> Option<Vec<u8>> {
         if depth > MAX_RENDER_DEPTH { return None; }
         max_depth = max_depth.max(depth);
     }
+    let text_bytes = document.descendants()
+        .filter(|node| node.is_text() && node.ancestors().any(|parent| parent.tag_name().name() == "text"))
+        .try_fold(0usize, |total, node| total.checked_add(node.text().map_or(0, str::len)))?;
+    if text_bytes > MAX_TEXT_BYTES { return None; }
     let mut ids = BTreeMap::new();
     for (index, node) in nodes.iter().enumerate() {
         for attribute in node.attributes().filter(|attribute| attribute.name() == "id") {

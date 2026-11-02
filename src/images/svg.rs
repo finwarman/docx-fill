@@ -30,18 +30,22 @@ pub(crate) fn rasterize(image: &Image, fonts: &[Arc<[u8]>]) -> Option<Arc<[u8]>>
     let blocked = AtomicBool::new(false);
     let used = Mutex::new(0usize);
     let nesting = AtomicUsize::new(0);
+    let nested_nodes = AtomicUsize::new(0);
     let data_resolver = usvg::ImageHrefResolver::default_data_resolver();
     let fallback = usvg::FontResolver::default_fallback_selector();
     let mut options = usvg::Options { font_family: DEFAULT_FONT_FAMILY.into(), fontdb: default_fonts(), ..usvg::Options::default() };
     for font in fonts { options.fontdb_mut().load_font_data(font.to_vec()); }
     options.image_href_resolver.resolve_data = Box::new(|mime, data, options| {
+        if blocked.load(Ordering::Relaxed) { return None; }
         let within_budget = used.lock().is_ok_and(|mut total| {
             let Some(next) = total.checked_add(data.len()).filter(|next| *next <= MAX_RESOURCE_BYTES) else { return false };
             *total = next;
             true
         });
         if !within_budget { blocked.store(true, Ordering::Relaxed); return None; }
-        let is_svg = mime == "image/svg+xml" || (mime == "text/plain" && imagesize::blob_size(&data).is_err());
+        // Matches usvg's own sniff, so nothing it reads as SVG skips validation.
+        let is_bitmap = matches!(imagesize::image_type(&data), Ok(imagesize::ImageType::Jpeg | imagesize::ImageType::Png | imagesize::ImageType::Gif | imagesize::ImageType::Webp));
+        let is_svg = mime == "image/svg+xml" || (mime == "text/plain" && !is_bitmap);
         let data = if is_svg {
             let Some(prepared) = validate::prepare(&data) else { blocked.store(true, Ordering::Relaxed); return None };
             Arc::new(prepared)
@@ -57,7 +61,12 @@ pub(crate) fn rasterize(image: &Image, fonts: &[Arc<[u8]>]) -> Option<Arc<[u8]>>
         let Some(kind) = kind else { blocked.store(true, Ordering::Relaxed); return None };
         let bytes = match &kind {
             usvg::ImageKind::JPEG(bytes) | usvg::ImageKind::PNG(bytes) | usvg::ImageKind::GIF(bytes) | usvg::ImageKind::WEBP(bytes) => Some(bytes),
-            usvg::ImageKind::SVG(_) => None,
+            usvg::ImageKind::SVG(tree) => {
+                // Each use of a nested SVG builds its own tree, so their sizes add up.
+                let total = nested_nodes.fetch_add(count_nodes(tree.root()), Ordering::Relaxed);
+                if total > MAX_SVG_NODES as usize { blocked.store(true, Ordering::Relaxed); return None; }
+                None
+            }
         };
         if let Some(bytes) = bytes {
             let valid = imagesize::blob_size(bytes).ok().is_some_and(|size| size.width.checked_mul(size.height).is_some_and(|pixels| pixels <= MAX_IMAGE_PIXELS));
@@ -74,7 +83,10 @@ pub(crate) fn rasterize(image: &Image, fonts: &[Arc<[u8]>]) -> Option<Arc<[u8]>>
     let tree = usvg::Tree::from_data(&source, &options).ok()?;
     if blocked.load(Ordering::Relaxed) { return None; }
     let size = tree.size();
-    let mut scale = (MAX_SIDE as f32 / size.width()).min(MAX_SIDE as f32 / size.height()).min(1.0);
+    // An icon with only a viewBox is drawn at its inserted size, not its own.
+    let inserted = (image.width as f32 / size.width()).max(image.height as f32 / size.height());
+    let wanted = if inserted.is_finite() { inserted.max(1.0) } else { 1.0 };
+    let mut scale = (MAX_SIDE as f32 / size.width()).min(MAX_SIDE as f32 / size.height()).min(wanted);
     let (width, height, transform) = loop {
         let width = (size.width() * scale).ceil().max(1.0) as u32;
         let height = (size.height() * scale).ceil().max(1.0) as u32;
@@ -86,6 +98,13 @@ pub(crate) fn rasterize(image: &Image, fonts: &[Arc<[u8]>]) -> Option<Arc<[u8]>>
     let mut pixels = tiny_skia::Pixmap::new(width, height)?;
     resvg::render(&tree, transform, &mut pixels.as_mut());
     Some(Arc::from(pixels.encode_png().ok()?))
+}
+
+fn count_nodes(group: &usvg::Group) -> usize {
+    group.children().iter().map(|node| match node {
+        usvg::Node::Group(group) => 1 + count_nodes(group),
+        _ => 1,
+    }).sum()
 }
 
 fn default_fonts() -> Arc<usvg::fontdb::Database> {
