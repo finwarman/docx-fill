@@ -1,6 +1,6 @@
 mod common;
 
-use common::{document, paragraph};
+use common::{cell, document, paragraph, row, table};
 use docx_fill::{FillErrorId, FillOptions, PackageTemplate, Template};
 
 #[test]
@@ -56,4 +56,26 @@ fn identifies_malformed_xml() {
     let error = Template::parse("<w:p><w:r></w:p>", &FillOptions::default()).err().unwrap();
 
     assert_eq!(error.id, FillErrorId::MalformedXml);
+}
+
+#[test]
+fn identifies_unbalanced_table_loops() {
+    let xml = document(&table(&[row(&[cell(&["{#a}1{/a}{#b}"]), cell(&["2{/b}"])])]));
+    let error = Template::parse(&xml, &FillOptions::default()).err().unwrap();
+
+    assert_eq!(error.id.as_str(), "unbalanced_loop_tags");
+    assert_eq!(error.tag.as_deref(), Some("/b"));
+}
+
+#[test]
+fn collects_picture_attribute_errors() {
+    let picture = r#"<w:p><w:r><w:drawing xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:docPr id="1" name="{%x+}" descr="{%y+}"/></w:drawing></w:r></w:p>"#;
+    let xml = document(&(paragraph(&["{z+}"]) + picture));
+    let options = FillOptions { expressions: true, ..FillOptions::default() };
+    let error = Template::parse(&xml, &options).err().unwrap();
+    let errors = error.diagnostics();
+
+    assert_eq!(errors.len(), 3);
+    assert!(errors.iter().all(|error| error.id == FillErrorId::ScopeParserCompilation));
+    assert!(errors.iter().all(|error| error.tag.is_some()));
 }
