@@ -961,13 +961,14 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
             TagKind::Chart => {
                 let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;
                 let has_chart = parts[start..tag.part].iter().any(|part| matches!(part, Part::Element { name, .. } if name == "c:chart"));
-                if has_chart { continue; }
-                let previous = parts[..start].iter().rposition(|part| matches!(part, Part::Element { kind: ElementKind::Open, name, .. } if name == PARAGRAPH));
-                let has_previous = previous.is_some_and(|previous| parts[previous..start].iter().any(|part| matches!(part, Part::Element { name, .. } if name == "c:chart")));
-                if !tag.is_alone || !has_previous {
-                    return Err(FillError::new(format!("The chart tag \"{}\" must be in its chart's paragraph or alone immediately after it", tag.text)));
+                if !has_chart {
+                    let previous = parts[..start].iter().rposition(|part| matches!(part, Part::Element { kind: ElementKind::Open, name, .. } if name == PARAGRAPH));
+                    let has_previous = previous.is_some_and(|previous| parts[previous..start].iter().any(|part| matches!(part, Part::Element { name, .. } if name == "c:chart")));
+                    if !tag.is_alone || !has_previous {
+                        return Err(FillError::new(format!("The chart tag \"{}\" must be in its chart's paragraph or alone immediately after it", tag.text)));
+                    }
+                    blocks.push(Block { kind: BlockKind::Chart { name: tag.name.clone() }, start, end: end + 1, body_start: end + 1, body_end: end + 1, children: Vec::new(), open_tag: index });
                 }
-                blocks.push(Block { kind: BlockKind::Chart { name: tag.name.clone() }, start, end: end + 1, body_start: end + 1, body_end: end + 1, children: Vec::new(), open_tag: index });
             }
             TagKind::Value
             | TagKind::Module(_)
