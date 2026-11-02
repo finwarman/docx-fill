@@ -57,7 +57,7 @@ pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
 pub use tag_list::{TagType, TemplateTag};
 pub use template::Template;
-pub use text::{Bookmark, CommentedText, FilledDocument, TextPosition, TextRange};
+pub use text::{Bookmark, CommentedText, ContentBoundary, FilledDocument, PageBreak, TextPosition, TextRange};
 
 use images::MediaUse;
 use part_kinds::{PartKind, PartKinds};
