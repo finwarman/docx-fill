@@ -206,10 +206,7 @@ fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut 
         }
         write_block(&mut out, open, paragraph_props, bookmarks, block, run_props, links);
     }
-    // A table cannot end a cell; the tag paragraph's look follows it.
-    if blocks.last().is_some_and(|block| block.table.is_some()) {
-        out.push_str(&format!("{open}{paragraph_props}</w:p>"));
-    }
+    // The final structure pass adds a trailing paragraph only where required.
     out
 }
 
