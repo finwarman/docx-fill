@@ -256,4 +256,19 @@ mod enabled {
         assert!(error.message.contains("structure-protected"));
     }
 
+    #[test]
+    fn accepts_xml_declarations() {
+        let mut workbook = workbook("Template");
+        for path in ["xl/workbook.xml", "xl/_rels/workbook.xml.rels", "_rels/.rels", "[Content_Types].xml"] {
+            workbook = change_part(workbook, path, |xml| format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- workbook metadata -->\n{xml}"));
+        }
+        let body = format!("{DRAWING}<w:p><w:r><w:t>{{$sales}}</w:t></w:r></w:p>");
+        let template = PackageTemplate::parse(parts(&body, workbook, &relation()), &options()).unwrap();
+        let rendered: BTreeMap<_, _> = template.try_render(&data()).unwrap().into_iter().map(|(name, bytes)| (name, bytes.into_owned())).collect();
+        let workbook = unzip(&rendered["word/embeddings/docxFillWorkbook1.xlsx"]);
+        assert!(text(&workbook, "xl/workbook.xml").starts_with("<?xml"));
+        assert!(text(&workbook, "xl/workbook.xml").contains("<!-- workbook metadata -->"));
+        assert!(text(&workbook, "xl/worksheets/docxFillData1.xml").contains("Revenue"));
+    }
+
 }

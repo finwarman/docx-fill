@@ -281,7 +281,7 @@ fn root<'a>(xml: &'a str, name: &str, namespace: &str) -> Result<Element<'a>, Fi
     let mut roots = Vec::new();
     for token in tokens {
         if let Token::Element { kind, name, .. } = token {
-            if depth == 0 && kind != ElementKind::Close { roots.push(name); }
+            if depth == 0 && matches!(kind, ElementKind::Open | ElementKind::SelfClosing) { roots.push(name); }
             match kind { ElementKind::Open => depth += 1, ElementKind::Close => depth = depth.saturating_sub(1), _ => {} }
         }
     }

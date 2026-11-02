@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 
 pub(crate) mod numbering;
 mod css;
+mod preserve;
 pub(crate) mod images;
 use numbering::Numberings;
 
@@ -284,6 +285,9 @@ pub(crate) fn mark(index: usize) -> String {
 /// gives the bookmark prefix whose later paragraphs get numbered bookmarks, and the next free id.
 pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>) -> String {
     let paragraph = without_empty_marks(paragraph, values);
+    if preserve::has_blocks(&paragraph, values) {
+        return preserve::write(&paragraph, values, links, continued, numbering);
+    }
     let mut paragraph = write_earlier_marks(&paragraph, values, links);
     while let Some((mark, index)) = find_mark(&paragraph) {
         // Only printed values hold marks by accident, and those have no value to print.
