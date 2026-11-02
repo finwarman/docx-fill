@@ -548,3 +548,10 @@ fn reads_names_from_the_innermost_scope_when_trying_an_outer_one() {
 fn adds_two_missing_values_as_the_right_one() {
     assert_all(&[("{n + n === null}", "true"), ("{q + n === null}", "true"), ("{n + q === null}", "false"), ("{n + q === undefined}", "true"), ("{q + n >= 0}", "true"), ("{o.q + n === null}", "true")]);
 }
+
+#[test]
+fn keeps_the_innermost_loop_index_when_trying_an_outer_scope() {
+    let data = json!({ "l": [{ "m": [{}, {}] }, { "m": [{}, {}] }] });
+
+    assert_eq!(fill_text("{#l}{#m}[{$index ? 'Y' : q.r}]{/m}{/l}", &data), "[][Y][][Y]");
+}

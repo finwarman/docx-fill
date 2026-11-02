@@ -164,8 +164,8 @@ struct Render<'a, 'h> {
     links: Vec<String>,
     /// Expressions' results, which live as long as the data does.
     computed: ComputedEnd<'a>,
-    /// Each array loop item's position in the scopes and its index, innermost last.
-    loop_indexes: Vec<(usize, usize)>,
+    /// Each array loop item's index, innermost last.
+    loop_indexes: Vec<usize>,
 }
 
 impl Template {
@@ -372,7 +372,7 @@ impl<'a> Render<'a, '_> {
                         _ if *is_inverted => {}
                         Some(Value::Array(items)) => {
                             for (index, item) in items.iter().enumerate() {
-                                self.loop_indexes.push((scopes.len(), index));
+                                self.loop_indexes.push(index);
                                 scopes.push(item);
                                 self.render_item(block, *page_breaks, scopes);
                                 scopes.pop();
