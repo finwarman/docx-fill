@@ -16,6 +16,7 @@ fn reads_every_option() {
         "footnotes": { "raw": true, "refProperties": "<w:b/>", "refRun": "<w:r/>", "paragraphProperties": "<w:keepNext/>", "runProperties": "<w:i/>" },
         "table": { "paragraphValidation": "ignore", "autoResizeTable": true },
         "htmlStyleSheet": "p { color: red }",
+        "html": { "ignoreUnknownTags": true, "ignoreCssErrors": true, "onInvalidBlock": "error", "customTags": { "box": "block" } },
         "document": {
             "readOnly": true,
             "language": "en-GB",
@@ -49,6 +50,9 @@ fn reads_every_option() {
     assert_eq!(options.table.paragraph_validation, docx_fill::TableValidation::Ignore);
     assert_eq!(options.table.resize, docx_fill::TableResize::KeepColumns);
     assert_eq!(options.html_style_sheet, "p { color: red }");
+    assert!(options.html.ignore_unknown_tags && options.html.ignore_css_errors);
+    assert_eq!(options.html.on_invalid_block, docx_fill::HtmlBlockMode::Error);
+    assert_eq!(options.html.custom_tags["box"], docx_fill::HtmlTagKind::Block);
     let document = &options.document;
     assert!(document.read_only);
     assert_eq!(document.language.as_deref(), Some("en-GB"));

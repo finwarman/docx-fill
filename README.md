@@ -64,6 +64,10 @@ HTML CSS maps margins and padding to paragraph spacing/indents or table-cell mar
 
 `FillOptions::html_style_sheet` (`htmlStyleSheet` in JSON) and HTML `<style>` elements provide style rules. Selectors support elements, `*`, classes, IDs, selector lists, descendants, children, adjacent siblings and attribute tests. Cascade order, specificity and `!important` apply; inline styles win at equal importance. Pseudo-selectors, namespace selectors and CSS escapes are not supported. Selector chains are limited to 64 steps.
 
+HTML validation is available through `Template::try_render[_with]` and `PackageTemplate::try_render[_with]`. These return `FillError` diagnostics for unknown tags, malformed CSS and invalid block placement, including errors in templated includes. Existing `render[_with]` methods keep their best-effort behavior. `html: {ignoreUnknownTags: true, ignoreCssErrors: true, onInvalidBlock: "inline"}` controls validation. Block modes are `inline` (the default, joining paragraphs with breaks), `block` (replace the containing paragraph), and `error`.
+
+`FillHooks::html_customize` returns `HtmlCustomization` with CSS or a paragraph style. `html_style_transform` maps an element to a paragraph style. `HtmlElement` exposes its name, attributes, inner HTML, text and `matches` for supported selectors with ancestor and sibling context. Register custom element kinds in `html.customTags` (`inline` or `block`), then return Word XML from `html_custom_tag` using `HtmlFragment::inline` or `HtmlFragment::block`. A registered tag with no fragment renders its children. Custom XML must be balanced; callers supply valid Word structure and existing style IDs. The callbacks are synchronous.
+
 Inline HTML keeps spaces needed to separate surrounding text, including adjacent HTML values. Normal HTML whitespace collapses at line boundaries; the template's own spaces remain unchanged.
 
 A style value looks like this. `fontSize` is in half-points. It can also include `text`, which is printed at the styling tag and escaped as Word text.

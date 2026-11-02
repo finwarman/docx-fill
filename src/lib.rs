@@ -445,8 +445,10 @@ impl PackageTemplate {
         self.render_result(data, hooks).0
     }
 
+    /// Renders once and returns HTML validation errors from this package and its includes.
     pub fn try_render(&self, data: &Value) -> Result<Vec<(String, Cow<'_, [u8]>)>, FillError> { self.try_render_with(data, &mut NoHooks) }
 
+    /// Checked rendering with callbacks, each invoked once per element.
     pub fn try_render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Result<Vec<(String, Cow<'_, [u8]>)>, FillError> {
         let (parts, errors) = self.render_result(data, hooks);
         check_html_errors(errors)?;
@@ -509,8 +511,8 @@ impl PackageTemplate {
         if let Some(numbering) = state.numbering {
             numbering.write(&mut out, &self.main_part);
         }
-        let count = includes::print_includes(&mut out, &includes, &self.includes, hooks);
-        sections::apply_sections(&mut out, &sections, &self.includes, hooks, count);
+        let count = includes::print_includes(&mut out, &includes, &self.includes, hooks, &mut errors);
+        sections::apply_sections(&mut out, &sections, &self.includes, hooks, count, &mut errors);
         self.finish_template_parts(&mut out);
         apply_theme_colors(&mut out, &self.theme_colors);
         self.document.apply(&mut out);

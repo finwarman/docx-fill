@@ -128,7 +128,7 @@ impl FillOptions {
                 _ => return Err(unknown(key)),
             }
         }
-        if !self.html.ignore_css_errors { crate::rich_text::validate_style_sheet(&self.html_style_sheet).map_err(FillError::new)?; }
+        if !self.html.ignore_css_errors { crate::rich_text::validate_style_sheet(&self.html_style_sheet).map_err(|error| FillError::new(error).with_id(crate::FillErrorId::HtmlCssInvalid))?; }
         Ok(self)
     }
 }

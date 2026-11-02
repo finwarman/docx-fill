@@ -21,15 +21,16 @@ pub struct HtmlElement<'a> {
     name: &'a str,
     attributes: &'a [(String, String)],
     body: &'a str,
+    matches: &'a dyn Fn(&str) -> bool,
 }
 
 impl<'a> HtmlElement<'a> {
-    pub(crate) fn new(name: &'a str, attributes: &'a [(String, String)], body: &'a str) -> Self { Self { name, attributes, body } }
+    pub(crate) fn new(name: &'a str, attributes: &'a [(String, String)], body: &'a str, matches: &'a dyn Fn(&str) -> bool) -> Self { Self { name, attributes, body, matches } }
     pub fn name(&self) -> &str { self.name }
     pub fn attribute(&self, name: &str) -> Option<&str> { self.attributes.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str()) }
     pub fn inner_html(&self) -> &str { crate::rich_text::element_inner(self.name, self.body).0 }
     pub fn text(&self) -> String { crate::rich_text::plain_html(self.inner_html()) }
-    pub fn matches(&self, selector: &str) -> bool { crate::rich_text::matches_element(selector, self.name, self.attributes) }
+    pub fn matches(&self, selector: &str) -> bool { (self.matches)(selector) }
 }
 
 #[derive(Debug, Clone, Default)]

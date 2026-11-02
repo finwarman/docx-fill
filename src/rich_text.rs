@@ -923,7 +923,6 @@ fn is_html_space(c: char) -> bool {
 }
 
 pub(crate) fn validate_style_sheet(sheet: &str) -> Result<(), String> { css::validate_sheet(sheet) }
-pub(crate) fn matches_element(selector: &str, name: &str, attributes: &[(String, String)]) -> bool { css::matches_element(selector, name, attributes) }
 
 const KNOWN_HTML: &[&str] = &["p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b", "em", "i", "u", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "input", "table", "tr", "td", "th", "thead", "tbody", "tfoot", "col", "colgroup", "caption", "img", "svg", "script", "style", "template", "cite", "var", "ins", "s", "strike", "del", "sup", "sub", "mark", "code", "kbd", "samp", "tt", "a", "span", "font", "small", "big", "abbr", "q"];
 const BLOCK_HTML: &[&str] = &["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "table"];
@@ -933,11 +932,12 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
     let mut prepared = PreparedHtml { html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false };
     if !options.ignore_css_errors {
         for sheet in std::iter::once(sheet.to_string()).chain(embedded_sheets(html)) {
-            if let Err(error) = css::validate_sheet(&sheet) { prepared.errors.push(crate::FillError::new(error)); }
+            if let Err(error) = css::validate_sheet(&sheet) { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::HtmlCssInvalid)); }
         }
     }
     let mut rest = html;
     let mut renamed: Vec<(String, String)> = Vec::new();
+    let mut context = css::Cascade::new(&[]);
     while let Some(start) = rest.find('<') {
         prepared.html.push_str(&rest[..start]);
         rest = &rest[start..];
@@ -949,40 +949,45 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
         let HtmlToken::Tag { is_closing, name, mut attributes } = token else { unreachable!() };
         let name = name.to_ascii_lowercase();
         if is_closing {
+            context.close(&name);
             let emitted = if let Some(at) = renamed.iter().rposition(|(original, _)| original == &name) { renamed.remove(at).1 } else { name };
             prepared.html.push_str(&format!("</{emitted}>"));
             rest = &rest[length..]; continue;
         }
+        context.open(&name, &attributes);
         if is_hidden(&name) {
+            context.close(&name);
             let skip = find_closing_tag(&rest[length..], &name).unwrap_or(rest.len() - length);
             prepared.html.push_str(&rest[..length + skip]);
             rest = &rest[length + skip..]; continue;
         }
         let self_closing = rest[..length].ends_with("/>") || VOID_HTML.contains(&name.as_str());
         let body = if self_closing { "" } else { &rest[length..] };
-        let element = crate::HtmlElement::new(&name, &attributes, body);
+        let matches = |selector: &str| context.matches_current(selector);
+        let element = crate::HtmlElement::new(&name, &attributes, body, &matches);
         if options.custom_tags.contains_key(&name)
             && let Some(fragment) = hooks.html_custom_tag(&element) {
             let valid = tokenize(&fragment.xml).and_then(|tokens| crate::xml::check_balanced(&tokens));
-            if let Err(error) = valid { prepared.errors.push(crate::FillError::new(error)); }
+            if let Err(error) = valid { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::MalformedXml)); }
             else {
                 let tag = match fragment.kind { crate::HtmlTagKind::Inline => RAW_INLINE, crate::HtmlTagKind::Block => { prepared.has_block = true; RAW_BLOCK } };
                 prepared.html.push_str(&format!("<{tag} index=\"{}\"/>", prepared.raw.len()));
                 prepared.raw.push(fragment);
             }
             let consumed = if self_closing { 0 } else { element_inner(&name, body).1 };
+            context.close(&name);
             rest = &rest[length + consumed..]; continue;
         }
         let transformed = hooks.html_style_transform(&element);
         let custom = hooks.html_customize(&element);
         let known = KNOWN_HTML.contains(&name.as_str());
         if !known && !options.ignore_unknown_tags && !options.custom_tags.contains_key(&name) && transformed.is_none() {
-            prepared.errors.push(crate::FillError::new(format!("Unsupported HTML tag {name}")));
+            prepared.errors.push(crate::FillError::new(format!("Unsupported HTML tag {name}")).with_id(crate::FillErrorId::HtmlUnknownTag));
         }
         let mut style = read_attribute(&attributes, "style").unwrap_or_default().to_string();
         if !custom.css.is_empty() { style.push(';'); style.push_str(&custom.css); }
         if !options.ignore_css_errors
-            && let Err(error) = css::validate_style(&style) { prepared.errors.push(crate::FillError::new(error)); }
+            && let Err(error) = css::validate_style(&style) { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::HtmlCssInvalid)); }
         attributes.retain(|(name, _)| name != "style" && name != STYLE_ATTRIBUTE);
         if !style.is_empty() { attributes.push(("style".to_string(), style)); }
         if let Some(style) = custom.paragraph_style.or(transformed) { attributes.push((STYLE_ATTRIBUTE.to_string(), style)); }
@@ -994,6 +999,7 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
         }
         prepared.html.push('>');
         if self_closing {
+            context.close(&name);
             if !VOID_HTML.contains(&emitted.as_str()) { prepared.html.push_str(&format!("</{emitted}>")); }
         } else { renamed.push((name, emitted)); }
         rest = &rest[length..];
@@ -1436,7 +1442,7 @@ fn find_closing_tag(html: &str, name: &str) -> Option<usize> {
 fn read_html_tag(text: &str, has_extras: bool) -> Option<(HtmlToken<'_>, usize)> {
     let is_closing = text[1..].starts_with('/');
     let name_start = if is_closing { 2 } else { 1 };
-    let name_length = text[name_start..].bytes().take_while(u8::is_ascii_alphanumeric).count();
+    let name_length = text[name_start..].bytes().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_')).count();
     if name_length == 0 {
         return None;
     }

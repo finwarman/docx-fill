@@ -198,8 +198,10 @@ impl Template {
         self.render_result(data, hooks).0
     }
 
+    /// Renders once and returns HTML validation errors instead of partial output.
     pub fn try_render(&self, data: &Value) -> Result<String, crate::FillError> { self.try_render_with(data, &mut NoHooks) }
 
+    /// Checked rendering with callbacks, each invoked once per element.
     pub fn try_render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Result<String, crate::FillError> {
         let (xml, errors) = self.render_result(data, hooks);
         crate::check_html_errors(errors)?;
@@ -533,13 +535,19 @@ impl<'a> Render<'a, '_> {
                         TagKind::RichText { is_block } => {
                             let html = value.and_then(Value::as_str).unwrap_or_default().to_string();
                             let prepared = rich_text::prepare_html(&html, &self.template.html_options, &self.template.html_style_sheet, self.hooks);
-                            self.html_errors.extend(prepared.errors.into_iter().map(|mut error| { error.part = (!self.part.is_empty()).then(|| self.part.to_string()); error }));
+                            let mut errors = prepared.errors;
                             if is_block && !tag.is_alone && self.template.html_options.on_invalid_block == crate::HtmlBlockMode::Error {
-                                self.html_errors.push(crate::FillError::new("HTML block tag must be alone in its paragraph"));
+                                errors.push(crate::FillError::new("HTML block tag must be alone in its paragraph").with_id(crate::FillErrorId::HtmlBlockInvalid));
                             }
                             if !is_block && prepared.has_block && self.template.html_options.on_invalid_block == crate::HtmlBlockMode::Error {
-                                self.html_errors.push(crate::FillError::new("Inline HTML contains block elements"));
+                                errors.push(crate::FillError::new("Inline HTML contains block elements").with_id(crate::FillErrorId::HtmlBlockInvalid));
                             }
+                            self.html_errors.extend(errors.into_iter().map(|mut error| {
+                                error.part = (!self.part.is_empty()).then(|| self.part.to_string());
+                                error.tag = Some(tag.name.clone().into_boxed_str());
+                                error.paragraph = Some(tag.paragraph);
+                                error
+                            }));
                             let is_block = is_block || (prepared.has_block && self.template.html_options.on_invalid_block == crate::HtmlBlockMode::Block);
                             self.out.push_str(&rich_text::mark(self.rich_values.len()));
                             self.rich_values.push(RichValue { html: prepared.html, raw: prepared.raw, is_block, block_mode: self.template.html_options.on_invalid_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone() });
