@@ -8,7 +8,7 @@ fn reads_every_option() {
         "linebreaks": false,
         "tagPrefixes": { "loopStart": "if ", "loopEnd": "endif", "invertedLoop": "unless ", "raw": "raw ", "image": "img ", "centeredImage": "centerImg ", "html": "html ", "blockHtml": "blockHtml ", "wordRun": "wordRun " },
         "delimiters": { "start": "[[", "end": "]]" },
-        "extensions": { "tableMerge": false, "sections": true, "charts": false },
+        "extensions": { "tableMerge": false, "sections": true, "charts": false, "qrCodes": false },
         "dropEmptyLastPage": false,
         "modulePrefixes": ["$"],
         "dropStyleParagraphs": true,
@@ -40,7 +40,7 @@ fn reads_every_option() {
     assert_eq!(options.tag_prefixes.block_html, "blockHtml ");
     assert_eq!(options.tag_prefixes.word_run, "wordRun ");
     assert_eq!((options.delimiters.start.as_str(), options.delimiters.end.as_str()), ("[[", "]]"));
-    assert_eq!(options.extensions, Extensions { table_merge: false, charts: false, ..Extensions::ALL });
+    assert_eq!(options.extensions, Extensions { table_merge: false, charts: false, qr_codes: false, ..Extensions::ALL });
     assert_eq!(options.module_prefixes, ["$"]);
     assert_eq!((options.comments.author.as_str(), options.comments.initials.as_deref()), ("Jane", Some("J")));
     assert!(!options.paragraph_placeholder.expand_to_shape);

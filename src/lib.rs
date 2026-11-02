@@ -31,6 +31,8 @@ mod json;
 mod part_kinds;
 mod placeholder_lines;
 mod properties;
+#[cfg(feature = "qr-codes")]
+mod qr_codes;
 mod sections;
 mod protection;
 mod render;
@@ -143,6 +145,9 @@ pub struct Extensions {
     pub images: bool,
     /// `{$name}`: category and series data for an existing bar chart.
     pub charts: bool,
+    /// Decode image tags held in raster QR codes before filling the package. Needs the
+    /// `qr-codes` cargo feature.
+    pub qr_codes: bool,
     /// `{:merge-cells-col 1,2}`, `{:merge-cells-col rtl 1,2}` and `{:merge-cells-row 1,-1}`: merges
     /// neighbouring cells of the tag's table that print the same, non-empty text.
     pub table_merge: bool,
@@ -192,6 +197,7 @@ impl Extensions {
         rich_text: true,
         images: true,
         charts: true,
+        qr_codes: true,
         table_merge: true,
         styling: true,
         word_run: true,
@@ -210,6 +216,7 @@ impl Extensions {
         rich_text: false,
         images: false,
         charts: false,
+        qr_codes: false,
         table_merge: false,
         styling: false,
         word_run: false,
@@ -368,6 +375,8 @@ impl PackageTemplate {
         options.tag_prefixes.validate()?;
         let mut parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
         let chart_titles = if options.extensions.charts { charts::prepare(&mut parts, options) } else { BTreeMap::new() };
+        #[cfg(feature = "qr-codes")]
+        if options.extensions.qr_codes && options.extensions.images { qr_codes::prepare(&mut parts, options); }
         let content_types = parts.iter().find(|(name, _)| name == CONTENT_TYPES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes));
         let kinds = PartKinds::read(content_types.as_deref());
         let main_part = parts.iter().map(|(name, _)| name).find(|name| kinds.kind(name) == PartKind::Main).cloned().unwrap_or_else(|| DOCUMENT_PART.to_string());

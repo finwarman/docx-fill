@@ -130,6 +130,8 @@ JSON edit names are `setHyperlinkBase` (`url`), `getPageBreaks`, `dropContentBet
 
 An image tag in an existing picture's alt text or name replaces that picture through `FillHooks::image`. Its size, position, crop and rotation stay unchanged unless `image_size` returns explicit dimensions. Tags use the configured delimiters and prefixes and resolve in the current loop scope. A missing value keeps the original picture.
 
+With the `qr-codes` cargo feature, `Extensions::qr_codes` also reads image tags encoded in QR pictures. The feature is off by default because it adds an image decoder. JSON uses `extensions.qrCodes`. PNG, JPEG, GIF, BMP and TIFF sources are supported, up to 8192 pixels per side and 128 MiB of decoder allocation. An existing alt-text tag takes precedence. Ambiguous QR payloads, unreadable images, non-image tags and drawings with more than one picture keep the original picture. A decoded tag replaces the picture's alt text, so a picture left unfilled shows the tag there.
+
 Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
 
 ```rust
