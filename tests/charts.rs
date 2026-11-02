@@ -32,6 +32,77 @@ fn chart_xml(parts: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
     parts.iter().filter(|(path, _)| path.contains("/docxFillChart") && path.ends_with(".xml")).map(|(_, bytes)| String::from_utf8(bytes.clone()).unwrap()).collect()
 }
 
+fn category_chart(name: &str, properties: &str) -> String {
+    let start = CHART.find("<c:ser>").unwrap();
+    let end = CHART.find("</c:ser>").unwrap() + "</c:ser>".len();
+    let mut tail = String::new();
+    let mut axes = String::new();
+    if name == "c:doughnutChart" { tail.push_str("<c:holeSize val=\"65\"/>"); }
+    if !matches!(name, "c:pieChart" | "c:pie3DChart" | "c:ofPieChart" | "c:doughnutChart") {
+        tail.push_str("<c:axId val=\"1\"/><c:axId val=\"2\"/>");
+        let start = CHART.find("<c:catAx>").unwrap();
+        let end = CHART.find("</c:valAx>").unwrap() + "</c:valAx>".len();
+        axes.push_str(&CHART[start..end]);
+    }
+    if matches!(name, "c:surfaceChart" | "c:surface3DChart") {
+        tail.push_str("<c:axId val=\"3\"/>");
+        axes.push_str("<c:serAx><c:axId val=\"3\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:axPos val=\"b\"/><c:crossAx val=\"1\"/></c:serAx>");
+    }
+    format!(r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:view3D><c:rotX val="15"/><c:rotY val="20"/></c:view3D><c:plotArea><{name}>{properties}{}{tail}</{name}>{axes}</c:plotArea></c:chart></c:chartSpace>"#, &CHART[start..end])
+}
+
+#[test]
+fn fills_category_chart_types() {
+    let cases = [
+        ("c:bar3DChart", "<c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>"),
+        ("c:lineChart", "<c:grouping val=\"standard\"/>"),
+        ("c:line3DChart", "<c:grouping val=\"standard\"/>"),
+        ("c:areaChart", "<c:grouping val=\"standard\"/>"),
+        ("c:area3DChart", "<c:grouping val=\"standard\"/>"),
+        ("c:radarChart", "<c:radarStyle val=\"standard\"/>"),
+        ("c:pieChart", "<c:varyColors val=\"1\"/>"),
+        ("c:pie3DChart", "<c:varyColors val=\"1\"/>"),
+        ("c:ofPieChart", "<c:ofPieType val=\"pie\"/><c:varyColors val=\"1\"/>"),
+        ("c:doughnutChart", "<c:varyColors val=\"1\"/>"),
+        ("c:surfaceChart", "<c:wireframe val=\"0\"/>"),
+        ("c:surface3DChart", "<c:wireframe val=\"0\"/>"),
+    ];
+    for (name, properties) in cases {
+        let source = category_chart(name, properties);
+        let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+        let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"categories":["One","Two"],"series":[{"title":"Updated","data":[3,null]}]}}));
+        let charts = chart_xml(&parts);
+        assert_eq!(charts.len(), 1, "{name}");
+        let chart = &charts[0];
+        assert!(chart.contains(properties) && chart.contains("<c:rotY val=\"20\"/>"), "{name}");
+        assert!(chart.contains("<c:tx><c:v>Updated</c:v></c:tx>") && chart.contains(">Two</c:v>"), "{name}");
+        assert!(chart.contains("<c:ptCount val=\"2\"/>") && chart.contains("<c:pt idx=\"0\"><c:v>3</c:v></c:pt>"), "{name}");
+        assert!(chart.contains("00AA00") && chart.contains("<c:formatCode>0.00</c:formatCode>"), "{name}");
+        if name == "c:doughnutChart" { assert!(chart.contains("<c:holeSize val=\"65\"/>")); }
+    }
+}
+
+#[test]
+fn preserves_line_marker_options() {
+    let source = category_chart("c:lineChart", "<c:grouping val=\"standard\"/>")
+        .replace("</c:spPr>", "</c:spPr><c:marker><c:symbol val=\"diamond\"/><c:size val=\"8\"/></c:marker>")
+        .replace("</c:val>", "</c:val><c:smooth val=\"1\"/>");
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"categories":["A"],"series":[{"data":[7]}]}}));
+    let chart = &chart_xml(&parts)[0];
+    assert!(chart.contains("<c:symbol val=\"diamond\"/>") && chart.contains("<c:smooth val=\"1\"/>"));
+    assert!(chart.find("<c:marker>").unwrap() < chart.find("<c:cat>").unwrap());
+    assert!(chart.find("</c:val>").unwrap() < chart.find("<c:smooth").unwrap());
+}
+
+#[test]
+fn pie_requires_one_series() {
+    let source = category_chart("c:pieChart", "<c:varyColors val=\"1\"/>");
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"categories":["A"],"series":[{"data":[7]},{"data":[8]}]}}));
+    assert!(chart_xml(&parts).is_empty());
+}
+
 fn two_charts(body: &str) -> Result<PackageTemplate, docx_fill::FillError> {
     let parts = [
         ("word/document.xml".into(), document(body).into_bytes()),
@@ -157,8 +228,8 @@ fn keeps_invalid_or_missing_data() {
 }
 
 #[test]
-fn keeps_other_chart_types() {
-    let chart = CHART.replace("barChart", "lineChart");
+fn keeps_unknown_chart_types() {
+    let chart = CHART.replace("barChart", "stockChart");
     let body = drawing().to_string() + &paragraph(&["{$sales}"]);
     let parts = render(&template(&body, &chart, &json!({})), json!({"sales":{"categories":["A"],"series":[{"data":[1]}]}}));
     assert!(chart_xml(&parts).is_empty());

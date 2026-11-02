@@ -9,7 +9,37 @@ use crate::{FillOptions, CONTENT_TYPES_PART, add_relationship, insert_before_las
 
 const CHART_RELATIONSHIP: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
 const CHART_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
-const SERIES_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:invertIfNegative", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:shape", "c:extLst"];
+const BAR_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:invertIfNegative", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:shape", "c:extLst"];
+const LINE_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:marker", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:smooth", "c:extLst"];
+const AREA_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:extLst"];
+const RADAR_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:pictureOptions", "c:marker", "c:dPt", "c:dLbls", "c:cat", "c:val", "c:extLst"];
+const PIE_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:pictureOptions", "c:explosion", "c:dPt", "c:dLbls", "c:cat", "c:val", "c:extLst"];
+const SURFACE_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:cat", "c:val", "c:extLst"];
+
+#[derive(Clone, Copy)]
+enum ChartKind { Bar, Line, Area, Radar, Pie, Doughnut, Surface }
+
+impl ChartKind {
+    fn read(name: &str) -> Option<Self> {
+        match name {
+            "c:barChart" | "c:bar3DChart" => Some(Self::Bar),
+            "c:lineChart" | "c:line3DChart" => Some(Self::Line),
+            "c:areaChart" | "c:area3DChart" => Some(Self::Area),
+            "c:radarChart" => Some(Self::Radar),
+            "c:pieChart" | "c:pie3DChart" | "c:ofPieChart" => Some(Self::Pie),
+            "c:doughnutChart" => Some(Self::Doughnut),
+            "c:surfaceChart" | "c:surface3DChart" => Some(Self::Surface),
+            _ => None,
+        }
+    }
+
+    fn series_order(self) -> &'static [&'static str] {
+        match self {
+            Self::Bar => BAR_ORDER, Self::Line => LINE_ORDER, Self::Area => AREA_ORDER,
+            Self::Radar => RADAR_ORDER, Self::Pie | Self::Doughnut => PIE_ORDER, Self::Surface => SURFACE_ORDER,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct ChartUse {
@@ -154,11 +184,18 @@ fn fill_charts(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)]
 }
 
 fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<String> {
-    if tokenize(xml).ok()?.iter().any(|token| matches!(token, Token::Element { name, .. } if name.ends_with("Chart") && *name != "c:barChart")) { return None; }
-    let plots = find_starts(xml, "c:barChart");
+    let names: Vec<_> = tokenize(xml).ok()?.iter().filter_map(|token| match token {
+        Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name, .. } if name.starts_with("c:") && name.ends_with("Chart") => Some(*name),
+        _ => None,
+    }).collect();
+    let [name] = names.as_slice() else { return None };
+    let kind = ChartKind::read(name)?;
+    if matches!(kind, ChartKind::Pie) && data.series.len() > 1 { return None; }
+    let order = kind.series_order();
+    let plots = find_starts(xml, name);
     if plots.len() != 1 { return None; }
     let start = plots[0];
-    let end = find_element_end(xml, start, "c:barChart")?;
+    let end = find_element_end(xml, start, name)?;
     let plot = &xml[start..end];
     let templates: Vec<_> = find_starts(plot, "c:ser").into_iter().filter_map(|start| find_element_end(plot, start, "c:ser").map(|end| (start, end))).filter(|&(start, end)| plot[start..end].ends_with("</c:ser>")).collect();
     let &(first, _) = templates.first()?;
@@ -170,16 +207,16 @@ fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<St
         let mut inner = template[open..template.len() - "</c:ser>".len()].to_string();
         // An added series takes the theme's next colour, not a copy of the first one's.
         if index >= templates.len() { inner = remove_children(&inner, &["c:spPr", "c:dPt", "c:extLst"]); }
-        inner = set_child(&inner, "c:idx", &format!("<c:idx val=\"{index}\"/>"), SERIES_ORDER);
-        inner = set_child(&inner, "c:order", &format!("<c:order val=\"{index}\"/>"), SERIES_ORDER);
+        inner = set_child(&inner, "c:idx", &format!("<c:idx val=\"{index}\"/>"), order);
+        inner = set_child(&inner, "c:order", &format!("<c:order val=\"{index}\"/>"), order);
         if let Some(title) = value.title.clone().or_else(|| series_title(template)) {
             let mut escaped = String::new(); escape(&title, &mut escaped);
-            inner = set_child(&inner, "c:tx", &format!("<c:tx><c:v>{escaped}</c:v></c:tx>"), SERIES_ORDER);
+            inner = set_child(&inner, "c:tx", &format!("<c:tx><c:v>{escaped}</c:v></c:tx>"), order);
         }
         let points: Vec<_> = data.categories.iter().cloned().map(Some).collect();
-        inner = set_child(&inner, "c:cat", &format!("<c:cat>{}</c:cat>", literal(DataKind::Text, &points)), SERIES_ORDER);
+        inner = set_child(&inner, "c:cat", &format!("<c:cat>{}</c:cat>", literal(DataKind::Text, &points)), order);
         let format = find_starts(template, "c:val").first().and_then(|&at| element_text(&template[at..], "c:formatCode")).unwrap_or_else(|| "General".to_string());
-        inner = set_child(&inner, "c:val", &format!("<c:val>{}</c:val>", literal(DataKind::Number(&format), &value.values)), SERIES_ORDER);
+        inner = set_child(&inner, "c:val", &format!("<c:val>{}</c:val>", literal(DataKind::Number(&format), &value.values)), order);
         series.push_str(&format!("{}{}{}", &template[..open], inner, "</c:ser>"));
     }
     let mut changed = plot.to_string();
