@@ -92,11 +92,17 @@ Parse failures expose a stable `FillErrorId`, the tag and its paragraph and byte
 
 With expressions enabled, assignments store values for the current fill and print nothing: `{total = price * count}{total}`. Semicolon-separated expressions print their last result. Bare names are assigned on the current loop item; property assignments update the visible object. The caller's JSON remains unchanged. Object values are copied, and array assignments are limited to index 1,000,000.
 
+Paragraph placeholders inside text boxes expand to the whole shape by default. Set `paragraphPlaceholder: { expandToShape: false }` to target only the paragraph. `expandSoftBreaksInShapes: true` targets individual soft lines within shapes; `expandSoftBreaks: true` also enables this outside shapes. Surviving lines remain joined by soft breaks. In this opt-in mode, parser paragraph positions count logical soft lines.
+
 `FillOptions::footnotes` controls inserted footnotes. `FootnoteContent::Raw` accepts complete Word runs. `ref_properties`, `ref_run`, `paragraph_properties` and `run_properties` customize the note marker, separator and text. JSON uses `footnotes: { raw, refProperties, refRun, paragraphProperties, runProperties }`. XML fragments must be valid WordprocessingML.
 
 `FillOptions::table` accepts `TableValidation::Ignore` to drop other text around a full-table tag, and `TableResize::KeepColumns` to resize vertical tables while retaining column widths. JSON uses `table: { paragraphValidation: "ignore", autoResizeTable: true }`. Table data can supply `fixedColumns`, with non-null entries spanning the body rows of each table chunk. Headers remain separate; cell spans stop before a fixed column.
 
 `FilledDocument::bookmarks` lists named bookmarks across package parts. `get_xml` reads their raw content and `replace_xml` replaces it while retaining the boundary marks. Replacements must leave balanced XML and paired bookmarks. JSON edits use `getBookmarks`, `getXml` and `replaceXml`; the latter two take `bookmark` and an optional `part` to disambiguate names.
+
+`FilledDocument` also supports `set_hyperlink_base`, `page_breaks`, `drop_content_between`, `loop_tags`, `search_regex` and `replace_all_regex`. Page-range removal accepts `ContentBoundary::{Start, End, PageBreak(index)}` and removes the boundary breaks. Its endpoints must be in body paragraphs, not tables or text boxes. Automatic page layout is not counted. Loop tags are read before filling. Regex methods use Rust regex syntax and capture replacements; look-around and backreferences in patterns are not supported.
+
+JSON edit names are `setHyperlinkBase` (`url`), `getPageBreaks`, `dropContentBetween` (`start`/`end`, each `"start"`, `"end"` or a break index), `getLoopTags`, `searchRegex` (`pattern`) and `replaceAllRegex` (`pattern`, `text`).
 
 `FillOptions::tag_prefixes` configures loop, inverted-loop, raw XML, image, HTML and raw-run prefixes. JSON accepts the same fields under `tagPrefixes` with camelCase names. Core prefixes must be nonempty, and all prefixes must be distinct. An empty extension prefix handles otherwise unmatched tags; the longest enabled prefix wins. Existing prefixes remain the defaults.
 
