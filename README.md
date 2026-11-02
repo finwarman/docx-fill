@@ -172,7 +172,7 @@ Run `cargo test` and `cargo clippy --all-targets -- -D warnings`. See [CONTRIBUT
 
 Behaviour comes from the WordprocessingML spec (ECMA-376), docxtemplater's public tag syntax and documentation, and black-box runs of the MIT-licensed docxtemplater core. Extension tags follow the paid modules' public documentation. No code is taken from docxtemplater, and nothing is tuned against the paid modules' output. Password hash test vectors come from black-box runs of Apache POI; for characters over 0x7F the crate follows the spec's unsigned bytes where POI sign-extends them.
 
-There is no link module, since docxtemplater's site has none. HTML `<a>` links cover it.
+HTML `<a>` elements create hyperlinks.
 
 Not affiliated with docxtemplater.
 
