@@ -180,6 +180,29 @@ pub struct Template {
     pub(crate) continued_bookmarks: Option<String>,
     /// Page width and height in pixels, less margins, from the part's last section.
     pub(crate) body: Option<(f64, f64)>,
+    pub(crate) picture_tags: BTreeMap<String, PictureTag>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PictureTag {
+    pub name: String,
+    pub literal: String,
+}
+
+/// An image tag inside a picture's decoded alt text or name.
+pub(crate) fn read_image_tag(text: &str, options: &FillOptions) -> Option<PictureTag> {
+    let mut from = 0;
+    while let Some(start) = text[from..].find(&options.delimiters.start).map(|at| from + at) {
+        let name_start = start + options.delimiters.start.len();
+        let close = text[name_start..].find(&options.delimiters.end).map(|at| name_start + at)?;
+        let end = close + options.delimiters.end.len();
+        let (kind, name) = read_tag(text[name_start..close].trim(), options);
+        if matches!(kind, TagKind::Image { .. }) && !name.is_empty() {
+            return Some(PictureTag { name, literal: text[start..end].to_string() });
+        }
+        from = end;
+    }
+    None
 }
 
 /// A tag found in a paragraph's joined text: byte offsets of its opening delimiter, its name, and
@@ -342,9 +365,26 @@ impl Template {
 
         let blocks = pair_blocks(&parts, &tags, &paragraphs, options)?;
         let has_cell_loops = blocks.iter().any(|block| matches!(&tags[block.open_tag].kind, TagKind::Open { element: Some(element), .. } if element == CELL));
-        let expressions = parse_expressions(&tags, options)?;
+        let mut expressions = parse_expressions(&tags, options)?;
+        let mut picture_tags = BTreeMap::new();
+        if options.extensions.images {
+            for part in &parts {
+                let Part::Element { name, raw, .. } = part else { continue };
+                if name != "wp:docPr" { continue; }
+                for attribute in ["descr", "name"] {
+                    let Some(text) = read_attribute(raw, attribute).map(unescape) else { continue };
+                    let Some(tag) = read_image_tag(&text, options) else { continue };
+                    if options.expressions {
+                        let expression = Expression::parse(&tag.name, &options.filters).map_err(|reason| FillError::new(format!("The tag \"{}\" is not a valid expression: {reason}", tag.name)))?;
+                        expressions.insert(tag.name.clone(), expression);
+                    }
+                    picture_tags.insert(text, tag);
+                }
+            }
+        }
         let mut template = Template {
             has_cell_loops,
+            picture_tags,
             expressions,
             max_drawing_id: crate::images::read_max_drawing_id(xml),
             max_bookmark_id: crate::footnotes::read_max_element_id(xml, "w:bookmarkStart"),
