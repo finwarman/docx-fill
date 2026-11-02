@@ -418,6 +418,10 @@ impl PackageTemplate {
             next_comment_id: self.max_comment_id.map_or(0, |id| id + 1),
             next_bookmark_id: self.max_bookmark_id + 1,
             main_part: self.main_part.clone(),
+            numbering: Some(rich_text::numbering::Numberings::read(&self.main_part, self.parts.iter().filter_map(|(name, part)| match part {
+                PackagePart::Bytes(bytes) => Some((name.as_str(), bytes.as_slice())),
+                PackagePart::Template(_) => None,
+            }))),
         };
         let mut comments = Vec::new();
         let mut out: Vec<(String, Cow<[u8]>)> = Vec::with_capacity(self.parts.len());
@@ -455,6 +459,9 @@ impl PackageTemplate {
         restyle_definitions(&mut out, &definitions);
         footnotes::add_footnotes(&mut out, &notes);
         comments::add_comments(&mut out, &comments);
+        if let Some(numbering) = state.numbering {
+            numbering.write(&mut out, &self.main_part);
+        }
         let count = includes::print_includes(&mut out, &includes, &self.includes, hooks);
         sections::apply_sections(&mut out, &sections, &self.includes, hooks, count);
         self.finish_template_parts(&mut out);

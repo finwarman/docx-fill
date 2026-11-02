@@ -56,6 +56,8 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 | `sections` | `{:subsection name}`, `{:replacesection name}`, `{:page props}` | Takes headers and footers from a subtemplate, or sets page size and margins | Subsection |
 | `comments` | `{name}` with `{ "text", "comment" }` | Prints text with Word comments on it | |
 
+Package rendering writes HTML lists as native Word lists, with numbering definitions, nesting, ordered starts and item-value resets. Existing numbering IDs are preserved. Word supports nine nesting levels; deeper HTML lists use the ninth level. Standalone `Template` and `fill_part` rendering keep literal markers because they do not return package parts.
+
 A style value looks like this. `fontSize` is in half-points. It can also include `text`, which is printed at the styling tag and escaped as Word text.
 
 ```json
