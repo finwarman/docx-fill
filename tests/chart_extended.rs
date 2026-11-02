@@ -126,6 +126,7 @@ fn map_source() -> String {
         .replace(CAT, "<cx:strDim type=\"cat\"><cx:lvl ptCount=\"1\"><cx:pt idx=\"0\">Barbados</cx:pt></cx:lvl></cx:strDim>")
         .replace("<cx:pt idx=\"0\">FR</cx:pt><cx:pt idx=\"1\">ES</cx:pt>", "<cx:pt idx=\"0\">18</cx:pt>")
         .replace("<cx:strDim type=\"entityId\"><cx:lvl ptCount=\"2\">", "<cx:strDim type=\"entityId\"><cx:lvl ptCount=\"1\">")
+        .replace("<cx:lvl ptCount=\"2\" formatCode=\"0.00\"><cx:pt idx=\"0\">1</cx:pt><cx:pt idx=\"1\">2</cx:pt>", "<cx:lvl ptCount=\"1\" formatCode=\"0.00\"><cx:pt idx=\"0\">1</cx:pt>")
 }
 
 fn new_region(geography: &str) -> Value {
