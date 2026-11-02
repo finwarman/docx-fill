@@ -51,6 +51,82 @@ fn category_chart(name: &str, properties: &str) -> String {
     format!(r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:view3D><c:rotX val="15"/><c:rotY val="20"/></c:view3D><c:plotArea><{name}>{properties}{}{tail}</{name}>{axes}</c:plotArea></c:chart></c:chartSpace>"#, &CHART[start..end])
 }
 
+enum XyKind { Scatter, Bubble }
+
+fn xy_chart(kind: XyKind) -> String {
+    let (name, properties, size, marker, tail) = match kind {
+        XyKind::Scatter => ("c:scatterChart", "<c:scatterStyle val=\"lineMarker\"/>", "", "<c:marker><c:symbol val=\"diamond\"/></c:marker>", "<c:smooth val=\"1\"/>"),
+        XyKind::Bubble => ("c:bubbleChart", "", "<c:bubbleSize><c:numLit><c:formatCode>0%</c:formatCode><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>1</c:v></c:pt></c:numLit></c:bubbleSize>", "", "<c:bubble3D val=\"1\"/>"),
+    };
+    format!(r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><{name}>{properties}<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>Original</c:v></c:tx><c:spPr><a:solidFill><a:srgbClr val="00AA00"/></a:solidFill></c:spPr>{marker}<c:dLbls><c:dLbl><c:idx val="0"/><c:spPr><a:solidFill><a:srgbClr val="AA0000"/></a:solidFill></c:spPr><c:dLblPos val="t"/></c:dLbl></c:dLbls><c:xVal><c:numLit><c:formatCode>0.0</c:formatCode><c:ptCount val="1"/><c:pt idx="0"><c:v>9</c:v></c:pt></c:numLit></c:xVal><c:yVal><c:numLit><c:formatCode>0.00</c:formatCode><c:ptCount val="1"/><c:pt idx="0"><c:v>9</c:v></c:pt></c:numLit></c:yVal>{size}{tail}</c:ser><c:axId val="1"/><c:axId val="2"/></{name}><c:valAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/><c:crossAx val="2"/></c:valAx><c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/><c:crossAx val="1"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#)
+}
+
+#[test]
+fn fills_scatter_coordinates() {
+    let source = xy_chart(XyKind::Scatter);
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"series":[{"title":"XY","data":[{"x":1.5,"y":-2},null,{"x":4,"y":5},{"x":null,"y":8}]}]}}));
+    let chart = &chart_xml(&parts)[0];
+    assert!(chart.contains("<c:tx><c:v>XY</c:v></c:tx>"));
+    assert!(chart.contains("<c:xVal><c:numLit><c:formatCode>0.0</c:formatCode><c:ptCount val=\"4\"/><c:pt idx=\"0\"><c:v>1.5</c:v></c:pt><c:pt idx=\"2\"><c:v>4</c:v></c:pt>"));
+    assert!(chart.contains("<c:yVal><c:numLit><c:formatCode>0.00</c:formatCode><c:ptCount val=\"4\"/><c:pt idx=\"0\"><c:v>-2</c:v></c:pt><c:pt idx=\"2\"><c:v>5</c:v></c:pt>"));
+    assert!(chart.contains("<c:symbol val=\"diamond\"/>") && chart.contains("<c:smooth val=\"1\"/>"));
+}
+
+#[test]
+fn fills_bubble_sizes_and_names() {
+    let source = xy_chart(XyKind::Bubble);
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"series":[{"data":[{"x":1,"y":2,"size":0.5,"name":"A & B"},{"x":3,"y":4,"size":0.75,"name":"C"}]}]}}));
+    let chart = &chart_xml(&parts)[0];
+    assert!(chart.contains("<c:bubbleSize><c:numLit><c:formatCode>0%</c:formatCode><c:ptCount val=\"2\"/><c:pt idx=\"0\"><c:v>0.5</c:v></c:pt><c:pt idx=\"1\"><c:v>0.75</c:v></c:pt>"));
+    assert!(chart.contains("<a:t>A &amp; B</a:t>") && chart.contains("<a:t>C</a:t>"));
+    assert!(chart.contains("AA0000") && chart.contains("<c:dLblPos val=\"t\"/>"));
+    assert!(chart.contains("<c:bubble3D val=\"1\"/>"));
+}
+
+#[test]
+fn rejects_wrong_xy_data_shapes() {
+    for (kind, data) in [(XyKind::Scatter, json!([{ "x":1,"y":2,"size":3 }])), (XyKind::Bubble, json!([{ "x":1,"y":2 }])), (XyKind::Scatter, json!([1,2]))] {
+        let source = xy_chart(kind);
+        let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+        let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"series":[{"data":data}]}}));
+        assert!(chart_xml(&parts).is_empty());
+        assert_eq!(parts["word/charts/chart1.xml"], source.as_bytes());
+    }
+}
+
+#[test]
+fn repeats_xy_charts_with_scope() {
+    let source = xy_chart(XyKind::Scatter);
+    let body = paragraph(&["{#rows}"]) + drawing() + &paragraph(&["{$sales}"]) + &paragraph(&["{/rows}"]);
+    let parts = render(&template(&body, &source, &json!({})), json!({"rows":[{"sales":{"series":[{"data":[{"x":1,"y":2}]}]}},{"sales":{"series":[{"data":[{"x":3,"y":4}]}]}}]}));
+    let charts = chart_xml(&parts);
+    assert_eq!(charts.len(), 2);
+    assert!(charts[0].contains("<c:pt idx=\"0\"><c:v>1</c:v></c:pt>"));
+    assert!(charts[1].contains("<c:pt idx=\"0\"><c:v>3</c:v></c:pt>"));
+}
+
+#[test]
+fn keeps_empty_bubble_gaps() {
+    let source = xy_chart(XyKind::Bubble);
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"series":[{"data":[null,null]}]}}));
+    let chart = &chart_xml(&parts)[0];
+    assert!(chart.contains("<c:bubbleSize><c:numLit><c:formatCode>0%</c:formatCode><c:ptCount val=\"2\"/></c:numLit></c:bubbleSize>"));
+    assert!(!chart.contains("<c:pt idx="));
+}
+
+#[test]
+fn keeps_axis_formats_independent() {
+    let source = xy_chart(XyKind::Scatter).replace("<c:formatCode>0.0</c:formatCode>", "");
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"series":[{"data":[{"x":1,"y":2}]}]}}));
+    let chart = &chart_xml(&parts)[0];
+    assert!(chart.contains("<c:xVal><c:numLit><c:formatCode>General</c:formatCode>"));
+    assert!(chart.contains("<c:yVal><c:numLit><c:formatCode>0.00</c:formatCode>"));
+}
+
 #[test]
 fn fills_category_chart_types() {
     let cases = [
