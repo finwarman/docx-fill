@@ -532,8 +532,8 @@ fn compare(operator: BinaryOperator, left: &Evaluated, right: &Evaluated) -> boo
 
 fn add<'a>(left: Evaluated<'a>, right: Evaluated<'a>) -> Evaluated<'a> {
     match (left.is_missing(), right.is_missing()) {
-        (true, true) => Evaluated::Undefined,
-        (true, false) => right,
+        // `null + undefined` is undefined and `undefined + null` is null, as in core.
+        (true, _) => right,
         (false, true) => left,
         (false, false) if left.is_text_when_mixed() || right.is_text_when_mixed() => Evaluated::owned(Value::String(left.to_text() + &right.to_text())),
         (false, false) => Evaluated::Float(left.to_number() + right.to_number()),

@@ -543,3 +543,8 @@ fn reads_names_from_the_innermost_scope_when_trying_an_outer_one() {
     assert_eq!(fill(json!({ "o": { "y": null, "q": { "r": "M" }, "p": { "y": 1, "q": {} } } })), "[M]");
     assert_eq!(fill_text("{#o}[{w ? p.q : 2}]{/o}", &json!({ "o": { "p": {}, "w": 1 }, "w": null, "p": { "q": "Q" } })), "[Q]");
 }
+
+#[test]
+fn adds_two_missing_values_as_the_right_one() {
+    assert_all(&[("{n + n === null}", "true"), ("{q + n === null}", "true"), ("{n + q === null}", "false"), ("{n + q === undefined}", "true"), ("{q + n >= 0}", "true"), ("{o.q + n === null}", "true")]);
+}
