@@ -166,9 +166,12 @@ pub struct Template {
     pub(crate) top: Vec<usize>,
     pub(crate) linebreaks: bool,
     pub(crate) html_extras: bool,
+    pub(crate) table_resize: crate::TableResize,
+    pub(crate) html_style_sheet: String,
     pub(crate) drop_style_paragraphs: bool,
     /// With comments on, the comment author and date a value gives none of.
     pub(crate) comment_defaults: Option<CommentDefaults>,
+    pub(crate) footnotes: crate::FootnoteOptions,
     /// Tag names read as expressions, with expressions on.
     pub(crate) expressions: BTreeMap<String, Expression>,
     /// The largest drawing id the part uses, so new drawings take ids after it.
@@ -178,6 +181,29 @@ pub struct Template {
     pub(crate) continued_bookmarks: Option<String>,
     /// Page width and height in pixels, less margins, from the part's last section.
     pub(crate) body: Option<(f64, f64)>,
+    pub(crate) picture_tags: BTreeMap<String, PictureTag>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PictureTag {
+    pub name: String,
+    pub literal: String,
+}
+
+/// An image tag inside a picture's decoded alt text or name.
+pub(crate) fn read_image_tag(text: &str, options: &FillOptions) -> Option<PictureTag> {
+    let mut from = 0;
+    while let Some(start) = text[from..].find(&options.delimiters.start).map(|at| from + at) {
+        let name_start = start + options.delimiters.start.len();
+        let close = text[name_start..].find(&options.delimiters.end).map(|at| name_start + at)?;
+        let end = close + options.delimiters.end.len();
+        let (kind, name) = read_tag(text[name_start..close].trim(), options);
+        if matches!(kind, TagKind::Image { .. }) && !name.is_empty() {
+            return Some(PictureTag { name, literal: text[start..end].to_string() });
+        }
+        from = end;
+    }
+    None
 }
 
 /// A tag found in a paragraph's joined text: byte offsets of its opening delimiter, its name, and
@@ -255,6 +281,7 @@ impl Template {
     }
 
     pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout) -> Result<Template, FillError> {
+        options.tag_prefixes.validate()?;
         let tokens = tokenize(xml).map_err(FillError::new)?;
         check_balanced(&tokens).map_err(FillError::new)?;
         let (paragraph_tokens, text_tokens) = scan_paragraphs(&tokens, layout);
@@ -339,9 +366,26 @@ impl Template {
 
         let blocks = pair_blocks(&parts, &tags, &paragraphs, options)?;
         let has_cell_loops = blocks.iter().any(|block| matches!(&tags[block.open_tag].kind, TagKind::Open { element: Some(element), .. } if element == CELL));
-        let expressions = parse_expressions(&tags, options)?;
+        let mut expressions = parse_expressions(&tags, options)?;
+        let mut picture_tags = BTreeMap::new();
+        if options.extensions.images {
+            for part in &parts {
+                let Part::Element { name, raw, .. } = part else { continue };
+                if name != "wp:docPr" { continue; }
+                for attribute in ["descr", "name"] {
+                    let Some(text) = read_attribute(raw, attribute).map(unescape) else { continue };
+                    let Some(tag) = read_image_tag(&text, options) else { continue };
+                    if options.expressions {
+                        let expression = Expression::parse(&tag.name, &options.filters).map_err(|reason| FillError::new(format!("The tag \"{}\" is not a valid expression: {reason}", tag.name)))?;
+                        expressions.insert(tag.name.clone(), expression);
+                    }
+                    picture_tags.insert(text, tag);
+                }
+            }
+        }
         let mut template = Template {
             has_cell_loops,
+            picture_tags,
             expressions,
             max_drawing_id: crate::images::read_max_drawing_id(xml),
             max_bookmark_id: crate::footnotes::read_max_element_id(xml, "w:bookmarkStart"),
@@ -353,8 +397,11 @@ impl Template {
             top: Vec::new(),
             linebreaks: options.linebreaks && layout == TextLayout::Paragraphs,
             html_extras: options.extensions.html_extras,
+            table_resize: options.table.resize,
+            html_style_sheet: options.html_style_sheet.clone(),
             drop_style_paragraphs: options.drop_style_paragraphs,
             comment_defaults: options.extensions.comments.then(|| options.comments.clone()),
+            footnotes: options.footnotes.clone(),
         };
         template.nest_blocks()?;
         Ok(template)
@@ -632,19 +679,39 @@ fn read_tag(text: &str, options: &FillOptions) -> (TagKind, String) {
         return found;
     }
 
+    let prefixes = &options.tag_prefixes;
+    let kinds = [
+        (&prefixes.loop_start, true, TagKind::Open { is_inverted: false, element: None }),
+        (&prefixes.inverted_loop, true, TagKind::Open { is_inverted: true, element: None }),
+        (&prefixes.loop_end, true, TagKind::Close),
+        (&prefixes.raw, true, TagKind::Raw),
+        (&prefixes.word_run, options.extensions.word_run, TagKind::RawRun),
+        (&prefixes.html, options.extensions.rich_text, TagKind::RichText { is_block: false }),
+        (&prefixes.block_html, options.extensions.rich_text, TagKind::RichText { is_block: true }),
+        (&prefixes.image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: false }),
+        (&prefixes.centered_image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: options.extensions.centered_images }),
+    ];
+    let found = kinds.into_iter().filter(|(prefix, enabled, _)| *enabled && text.starts_with(prefix.as_str())).max_by_key(|(prefix, _, _)| prefix.len());
+    let named = |kind: TagKind, rest: &str| {
+        let name = if matches!(kind, TagKind::Image { .. } | TagKind::RawRun) { rest.trim() } else { rest };
+        (kind, name.to_string())
+    };
+    // An empty prefix only takes tags nothing else reads, element loops included.
+    let fallback = match found {
+        Some((prefix, _, kind)) if !prefix.is_empty() => return named(kind, &text[prefix.len()..]),
+        Some((_, _, kind)) => Some(kind),
+        None => None,
+    };
+
     let rest = text.get(1..).unwrap_or_default().to_string();
-    match text.as_bytes().first() {
-        Some(b'#') => (TagKind::Open { is_inverted: false, element: None }, rest),
-        Some(b'^') => (TagKind::Open { is_inverted: true, element: None }, rest),
-        Some(b'/') => (TagKind::Close, rest),
-        Some(b'@') => (TagKind::Raw, rest),
-        // `-w:tr rows`: the element, then the name. Without both, `-a` is a plain name.
-        Some(b'-') => match rest.split_once(char::is_whitespace) {
-            Some((element, name)) if !element.is_empty() => (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string()),
-            _ => (TagKind::Value, text.to_string()),
-        },
-        _ => (TagKind::Value, text.to_string()),
+    // `-w:tr rows`: the element, then the name. Without both, `-a` is a plain name.
+    if text.starts_with('-')
+        && let Some((element, name)) = rest.split_once(char::is_whitespace)
+        && !element.is_empty()
+    {
+        return (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string());
     }
+    fallback.map_or_else(|| (TagKind::Value, text.to_string()), |kind| named(kind, text))
 }
 
 fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, String)> {
@@ -721,11 +788,6 @@ fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, S
     {
         return Some((TagKind::Footnote, name.trim().to_string()));
     }
-    if extensions.word_run
-        && let Some(name) = text.strip_prefix("r@")
-    {
-        return Some((TagKind::RawRun, name.trim().to_string()));
-    }
     if extensions.paragraph_placeholder
         && let Some(name) = text.strip_prefix('?')
     {
@@ -744,21 +806,6 @@ fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, S
         && let Some(name) = text.strip_prefix(":stylecell ")
     {
         return Some((TagKind::CellStyle, name.trim().to_string()));
-    }
-    if extensions.rich_text {
-        if let Some(name) = text.strip_prefix("~~") {
-            return Some((TagKind::RichText { is_block: true }, name.to_string()));
-        }
-        if let Some(name) = text.strip_prefix('~') {
-            return Some((TagKind::RichText { is_block: false }, name.to_string()));
-        }
-    }
-    if extensions.images {
-        if let Some(name) = text.strip_prefix("%%") {
-            return Some((TagKind::Image { cell_width: None, is_centered: extensions.centered_images }, name.trim().to_string()));
-        }
-        let name = text.strip_prefix('%')?;
-        return Some((TagKind::Image { cell_width: None, is_centered: false }, name.trim().to_string()));
     }
     None
 }
@@ -875,7 +922,7 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                 blocks.push(Block { kind, start, end: end + 1, body_start: end + 1, body_end: end + 1, children: Vec::new(), open_tag: index });
             }
             TagKind::FullTable => {
-                if !tag.is_alone {
+                if !tag.is_alone && options.table.paragraph_validation == crate::TableValidation::Error {
                     return Err(FillError::new(format!("The table tag \"{}\" should be the only text in its paragraph", tag.text)));
                 }
                 let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;

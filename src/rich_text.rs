@@ -13,11 +13,12 @@
 //! font-size in px or pt, font-family, font-weight, font-style, text-decoration, text-align).
 
 use crate::cell_styling::{find_element_start, remove_first_element};
-use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_child};
+use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_attribute, set_child};
 use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
 
 pub(crate) mod numbering;
+mod css;
 use numbering::Numberings;
 
 // Stands in for a value in the filled XML until its paragraph closes.
@@ -36,6 +37,11 @@ const LINK_COLOR: &str = "0563C1";
 const CHECKED: &str = "\u{2612}";
 const UNCHECKED: &str = "\u{2610}";
 const OBJECT_REPLACEMENT: char = '\u{fffc}';
+const TWIPS_PER_POINT: f64 = 20.0;
+const POINTS_PER_CSS_PIXEL: f64 = 0.75;
+const LINE_HEIGHT_UNIT: f64 = 240.0;
+const DEFAULT_FONT_POINTS: f64 = 11.0;
+const CELL_SIDES: [&str; 4] = ["top", "left", "bottom", "right"];
 const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
 // Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
 const TABLE_COLUMN_TWIPS: u32 = 2000;
@@ -50,6 +56,7 @@ pub(crate) struct RichValue {
     pub html: String,
     pub is_block: bool,
     pub has_extras: bool,
+    pub style_sheet: String,
 }
 
 /// How a run looks beyond the tag run's own properties.
@@ -67,6 +74,8 @@ struct Format {
     font: Option<String>,
     shade: Option<String>,
     link: Option<String>,
+    pre_spaces: Option<bool>,
+    rtl: Option<bool>,
 }
 
 impl Format {
@@ -83,6 +92,8 @@ impl Format {
         self.font = over.font.clone().or(self.font);
         self.shade = over.shade.clone().or(self.shade);
         self.link = over.link.clone().or(self.link);
+        self.pre_spaces = over.pre_spaces.or(self.pre_spaces);
+        self.rtl = over.rtl.or(self.rtl);
         self
     }
 }
@@ -107,6 +118,36 @@ struct Block {
     quote_level: u32,
     is_rule: bool,
     table: Option<Vec<Vec<Cell>>>,
+    layout: ParagraphLayout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineHeight { Multiple(u32), Exact(u32) }
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ParagraphLayout {
+    left: Option<i64>, right: Option<i64>, before: Option<i64>, after: Option<i64>,
+    text_indent: Option<i64>, line_height: Option<LineHeight>, rtl: Option<bool>,
+    page_before: bool, page_after: bool,
+}
+
+impl ParagraphLayout {
+    fn and(self, over: Self) -> Self {
+        Self { left: over.left.or(self.left), right: over.right.or(self.right), before: over.before.or(self.before), after: over.after.or(self.after),
+            text_indent: over.text_indent.or(self.text_indent), line_height: over.line_height.or(self.line_height), rtl: over.rtl.or(self.rtl),
+            page_before: over.page_before || self.page_before, page_after: over.page_after || self.page_after }
+    }
+    fn inherited(self) -> Self { Self { before: None, after: None, page_before: false, page_after: false, ..self } }
+}
+
+#[derive(Debug, Clone, Default)]
+struct CellLayout { margins: [Option<i64>; 4], vertical: Option<CellVertical> }
+
+#[derive(Debug, Clone, Copy)]
+enum CellVertical { Top, Center, Bottom }
+
+impl CellVertical {
+    fn as_str(self) -> &'static str { match self { Self::Top => "top", Self::Center => "center", Self::Bottom => "bottom" } }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -157,7 +198,59 @@ impl ListWriter<'_> {
 #[derive(Debug, Clone, Default)]
 struct Cell {
     span: usize,
+    row_span: usize,
     blocks: Vec<Block>,
+    layout: CellLayout,
+}
+
+#[derive(Clone, Copy)]
+enum CellMerge { None, Start, Continue }
+
+struct PlacedCell<'a> {
+    span: usize,
+    merge: CellMerge,
+    blocks: &'a [Block],
+    layout: CellLayout,
+}
+
+fn place_cells(rows: &[Vec<Cell>]) -> Vec<Vec<PlacedCell<'_>>> {
+    let mut active = BTreeMap::<usize, (usize, usize)>::new();
+    let mut placed = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let mut occupied = active.into_iter().peekable();
+        active = BTreeMap::new();
+        let mut cells = row.iter().peekable();
+        let mut column = 0;
+        let mut output = Vec::new();
+        while cells.peek().is_some() || occupied.peek().is_some() {
+            if occupied.peek().is_some_and(|(at, _)| *at == column) {
+                let (_, (span, left)) = occupied.next().expect("checked above");
+                output.push(PlacedCell { span, merge: CellMerge::Continue, blocks: &[], layout: CellLayout::default() });
+                if left > 1 { active.insert(column, (span, left - 1)); }
+                column += span;
+                continue;
+            }
+            let next = occupied.peek().map(|(at, _)| *at);
+            if let Some(cell) = cells.peek()
+                && next.is_none_or(|at| column + cell.span <= at) {
+                let cell = cells.next().expect("checked above");
+                let height = if cell.row_span == 0 { rows.len() - index } else { cell.row_span.min(rows.len() - index) };
+                let merge = if height > 1 {
+                    active.insert(column, (cell.span, height - 1));
+                    CellMerge::Start
+                } else { CellMerge::None };
+                output.push(PlacedCell { span: cell.span, merge, blocks: &cell.blocks, layout: cell.layout.clone() });
+                column += cell.span;
+                continue;
+            }
+            if let Some(next) = next {
+                output.push(PlacedCell { span: next - column, merge: CellMerge::None, blocks: &[], layout: CellLayout::default() });
+                column = next;
+            }
+        }
+        placed.push(output);
+    }
+    placed
 }
 
 pub(crate) fn mark(index: usize) -> String {
@@ -185,7 +278,7 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
             let (before, after) = text.split_once(&mark).unwrap_or(("", ""));
             SpaceEdges::between(before.chars().next_back(), after.chars().next())
         };
-        let blocks = read_html(&value.html, value.has_extras, spaces);
+        let blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet);
 
         // Alone in its paragraph: the paragraph becomes the value's paragraphs.
         if is_block && !blocks.is_empty() {
@@ -212,7 +305,7 @@ fn without_empty_marks(paragraph: &str, values: &[RichValue]) -> String {
         let at = rest.find(&mark).unwrap_or(0);
         out.push_str(&rest[..at]);
         if let Some(value) = values.get(index)
-            && !read_html(&value.html, value.has_extras, SpaceEdges { start: true, end: true }).is_empty() {
+            && !read_html(&value.html, value.has_extras, SpaceEdges { start: true, end: true }, &value.style_sheet).is_empty() {
             out.push_str(&mark);
         }
         rest = &rest[at + mark.len()..];
@@ -255,7 +348,7 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
             previous = before.chars().next_back().or(previous);
             if let Some(value) = values.get(index) {
                 let spaces = SpaceEdges::between(previous, after.chars().next());
-                let inline = join_inline(&read_html(&value.html, value.has_extras, spaces), run_props, links);
+                let inline = join_inline(&read_html(&value.html, value.has_extras, spaces, &value.style_sheet), run_props, links);
                 previous = read_flow_text(&inline).chars().next_back().or(previous);
                 out.push_str(&inline);
             }
@@ -304,9 +397,11 @@ fn join_inline(blocks: &[Block], run_props: &str, links: &mut Vec<String>) -> St
 fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &str, block: &Block, writer: &mut BlockWriter) {
     let Some(rows) = &block.table else {
         let number = block.list.as_ref().and_then(|item| writer.lists.id_for(item));
-        out.push_str(&format!("{open}{}{bookmarks}{}</w:p>", write_paragraph_props(paragraph_props, block, number), write_runs(block, writer.run_props, writer.links, number)));
+        let after = if block.layout.page_after { "<w:r><w:br w:type=\"page\"/></w:r>" } else { "" };
+        out.push_str(&format!("{open}{}{bookmarks}{}{after}</w:p>", write_paragraph_props(paragraph_props, block, number), write_runs(block, writer.run_props, writer.links, number)));
         return;
     };
+    let rows = place_cells(rows);
     let columns = rows.iter().map(|row| row.iter().map(|cell| cell.span).sum::<usize>()).max().unwrap_or(1).max(1);
     out.push_str(&format!("<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/>{TABLE_BORDERS}</w:tblPr><w:tblGrid>"));
     for _ in 0..columns {
@@ -321,9 +416,17 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
             if cell.span > 1 {
                 out.push_str(&format!("<w:gridSpan w:val=\"{}\"/>", cell.span));
             }
+            match cell.merge {
+                CellMerge::Start => out.push_str("<w:vMerge w:val=\"restart\"/>"),
+                CellMerge::Continue => out.push_str("<w:vMerge/>"),
+                CellMerge::None => {}
+            }
+            let margins: String = CELL_SIDES.into_iter().zip(cell.layout.margins).filter_map(|(side, value)| value.map(|value| format!("<w:{side} w:w=\"{}\" w:type=\"dxa\"/>", value.max(0)))).collect();
+            if !margins.is_empty() { out.push_str(&format!("<w:tcMar>{margins}</w:tcMar>")); }
+            if let Some(vertical) = cell.layout.vertical { out.push_str(&format!("<w:vAlign w:val=\"{}\"/>", vertical.as_str())); }
             out.push_str("</w:tcPr>");
             for (index, block) in cell.blocks.iter().enumerate() {
-                if follows_table(&cell.blocks, index) {
+                if follows_table(cell.blocks, index) {
                     out.push_str("<w:p/>");
                 }
                 write_block(out, "<w:p>", "", "", block, writer);
@@ -534,6 +637,9 @@ struct Container {
     align: Option<&'static str>,
     quote_level: u32,
     is_pre: bool,
+    layout: ParagraphLayout,
+    collection: usize,
+    first: usize,
 }
 
 /// Builds blocks from HTML tokens.
@@ -569,12 +675,14 @@ impl Reader {
             align: inner.align.or(outer.align),
             quote_level: outer.quote_level + inner.quote_level,
             is_pre: outer.is_pre || inner.is_pre,
+            layout: outer.layout.and(inner.layout),
+            ..Container::default()
         })
     }
 
     fn start_block(&mut self, block: Block) {
         let container = self.container();
-        let block = Block { align: block.align.or(container.align), quote_level: container.quote_level, ..block };
+        let block = Block { align: block.align.or(container.align), quote_level: container.quote_level, layout: container.layout.inherited().and(block.layout), ..block };
         self.blocks().push(block);
         self.current = Some(self.blocks().len() - 1);
     }
@@ -584,7 +692,7 @@ impl Reader {
             self.start_block(Block::default());
         }
         let (bold, italic, underline) = self.counts;
-        let preserve_spaces = self.container().is_pre;
+        let preserve_spaces = self.preformatted();
         let run = Run { text, is_break, is_bold: bold > 0, is_italic: italic > 0, is_underlined: underline > 0, format: self.format(), preserve_spaces };
         let index = self.current.expect("started above");
         if is_break && !preserve_spaces {
@@ -621,6 +729,23 @@ impl Reader {
         current.is_some_and(|index| self.blocks()[index].list.is_some())
     }
 
+    fn preformatted(&self) -> bool { self.format().pre_spaces.unwrap_or(self.container().is_pre) }
+
+    fn close_container(&mut self, name: &str) {
+        let Some(at) = self.containers.iter().rposition(|(tag, _)| tag == name) else { return };
+        let (_, container) = self.containers.remove(at);
+        let Some(blocks) = self.collections.get_mut(container.collection) else { return };
+        if let Some(first) = blocks.get_mut(container.first) {
+            first.layout.before = container.layout.before.or(first.layout.before);
+            first.layout.page_before |= container.layout.page_before;
+        }
+        if blocks.len() > container.first
+            && let Some(last) = blocks.last_mut() {
+            last.layout.after = container.layout.after.or(last.layout.after);
+            last.layout.page_after |= container.layout.page_after;
+        }
+    }
+
     /// Ends the open cell, if any, giving it the blocks collected in it.
     fn close_cell(&mut self) {
         let Some((depth, rows)) = self.tables.last_mut() else { return };
@@ -643,7 +768,7 @@ impl Reader {
 }
 
 /// The HTML's paragraphs, headings, list items and, with extras, tables, with their runs.
-fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
+fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges, style_sheet: &str) -> Vec<Block> {
     let mut reader = Reader {
         collections: vec![Vec::new()],
         current: None,
@@ -657,11 +782,14 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
         spaces,
     };
 
+    let embedded = embedded_sheets(html);
+    let sheets: Vec<&str> = std::iter::once(style_sheet).chain(embedded.iter().map(String::as_str)).collect();
+    let mut cascade = css::Cascade::new(&sheets);
     for token in read_html_tokens(html, has_extras) {
-        let (is_closing, tag, attributes) = match token {
+        let (is_closing, tag, mut attributes) = match token {
             HtmlToken::Text(text) => {
                 let decoded = decode_entities(text);
-                if reader.container().is_pre {
+                if reader.preformatted() {
                     for (index, line) in decoded.split('\n').enumerate() {
                         if index > 0 {
                             reader.add_run(None, true);
@@ -677,6 +805,14 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
             }
             HtmlToken::Tag { is_closing, name, attributes } => (is_closing, name.to_ascii_lowercase(), attributes),
         };
+        if has_extras {
+            if is_closing { cascade.close(&tag); }
+            else {
+                let style = cascade.open(&tag, &attributes);
+                attributes.retain(|(name, _)| name != "style");
+                if !style.is_empty() { attributes.push(("style".to_string(), style)); }
+            }
+        }
         if has_extras && read_extra_tag(&mut reader, is_closing, &tag, &attributes) {
             continue;
         }
@@ -700,7 +836,8 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
                     reader.current = None;
                 } else {
                     let align = has_extras.then(|| read_style(&attributes, "text-align").and_then(read_align)).flatten();
-                    reader.start_block(Block { heading_level: heading, align, ..Block::default() });
+                    let layout = if has_extras { read_layout(&attributes) } else { ParagraphLayout::default() };
+                    reader.start_block(Block { heading_level: heading, align, layout, ..Block::default() });
                 }
             }
             "ul" | "ol" => {
@@ -730,7 +867,8 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
                             reader.next_list += 1;
                         }
                         *reader.lists.last_mut().expect("list read above") = item;
-                        reader.start_block(Block { list: Some(item), ..Block::default() });
+                        let layout = if has_extras { read_layout(&attributes) } else { ParagraphLayout::default() };
+                        reader.start_block(Block { list: Some(item), layout, ..Block::default() });
                     }
                     _ => reader.current = None,
                 }
@@ -749,6 +887,31 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
 
 fn is_html_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')
+}
+
+pub(crate) fn validate_style_sheet(sheet: &str) -> Result<(), String> { css::validate_sheet(sheet) }
+
+fn embedded_sheets(html: &str) -> Vec<String> {
+    let mut sheets = Vec::new();
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start..];
+        if rest.starts_with("<!--") {
+            let Some(end) = rest.find("-->") else { break };
+            rest = &rest[end + 3..];
+            continue;
+        }
+        let Some((token, length)) = read_html_tag(rest, true) else { rest = &rest[1..]; continue };
+        let HtmlToken::Tag { is_closing: false, name, .. } = token else { rest = &rest[length..]; continue };
+        let name = name.to_ascii_lowercase();
+        if !is_hidden(&name) { rest = &rest[length..]; continue; }
+        let body = &rest[length..];
+        let closing = format!("</{name}");
+        let Some(end) = body.to_ascii_lowercase().find(&closing) else { break };
+        if name == "style" { sheets.push(body[..end].to_string()); }
+        rest = &body[end..];
+    }
+    sheets
 }
 
 fn trim_spaces(block: &mut Block) {
@@ -812,12 +975,13 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
         "div" | "center" | "blockquote" | "pre" | "section" | "article" | "header" | "footer" | "main" => {
             reader.current = None;
             if is_closing {
-                Reader::close(&mut reader.containers, tag);
+                reader.close_container(tag);
                 Reader::close(&mut reader.formats, tag);
                 return true;
             }
             let align = if tag == "center" { Some("center") } else { read_style(attributes, "text-align").and_then(read_align) };
-            let container = Container { align, quote_level: u32::from(tag == "blockquote"), is_pre: tag == "pre" };
+            let first = reader.blocks().len();
+            let container = Container { align, quote_level: u32::from(tag == "blockquote"), is_pre: tag == "pre", layout: read_layout(attributes), first, collection: reader.collections.len() - 1 };
             reader.containers.push((tag.to_string(), container));
             let mut format = read_css(attributes);
             if tag == "pre" {
@@ -882,11 +1046,14 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
             reader.close_cell();
             if !is_closing {
                 let span = read_attribute(attributes, "colspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, MAX_COLUMN_SPAN);
+                let row_span = read_attribute(attributes, "rowspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1);
                 if let Some((_, rows)) = reader.tables.last_mut() {
                     if rows.is_empty() {
                         rows.push(Vec::new());
                     }
-                    rows.last_mut().expect("pushed above").push(Cell { span, blocks: Vec::new() });
+                    let margins = CELL_SIDES.map(|side| read_style(attributes, &format!("padding-{side}")).and_then(|value| css_twips(value, DEFAULT_FONT_POINTS)));
+                    let vertical = read_style(attributes, "vertical-align").and_then(|value| match value { "top" => Some(CellVertical::Top), "middle" | "center" => Some(CellVertical::Center), "bottom" => Some(CellVertical::Bottom), _ => None });
+                    rows.last_mut().expect("pushed above").push(Cell { span, row_span, blocks: Vec::new(), layout: CellLayout { margins, vertical } });
                 }
                 reader.collections.push(Vec::new());
                 reader.current = None;
@@ -917,6 +1084,90 @@ fn read_style<'a>(attributes: &'a [(String, String)], property: &str) -> Option<
     })
 }
 
+fn css_twips(value: &str, font_points: f64) -> Option<i64> {
+    let value = value.trim();
+    let (number, factor) = if let Some(value) = value.strip_suffix("px") { (value, POINTS_PER_CSS_PIXEL * TWIPS_PER_POINT) }
+        else if let Some(value) = value.strip_suffix("pt") { (value, TWIPS_PER_POINT) }
+        else if let Some(value) = value.strip_suffix("em") { (value, font_points * TWIPS_PER_POINT) }
+        else if value == "0" { (value, 1.0) } else { return None };
+    let twips = number.trim().parse::<f64>().ok()? * factor;
+    (twips.is_finite() && twips.abs() <= i32::MAX as f64).then(|| twips.round() as i64)
+}
+
+fn read_layout(attributes: &[(String, String)]) -> ParagraphLayout {
+    let style = |name| read_style(attributes, name);
+    let font = style("font-size").and_then(read_font_size).map_or(DEFAULT_FONT_POINTS, |size| size as f64 / 2.0);
+    let length = |name| style(name).and_then(|value| css_twips(value, font));
+    let side = |margin, padding| match (length(margin), length(padding)) {
+        (None, None) => None,
+        (margin, padding) => Some(margin.unwrap_or(0) + padding.unwrap_or(0).max(0)),
+    };
+    let line_height = style("line-height").and_then(|value| {
+        let multiple = value.strip_suffix('%').and_then(|value| value.trim().parse::<f64>().ok()).map(|value| value / 100.0)
+            .or_else(|| value.parse::<f64>().ok());
+        if let Some(multiple) = multiple {
+            return (multiple.is_finite() && multiple > 0.0 && multiple * LINE_HEIGHT_UNIT <= i32::MAX as f64)
+                .then(|| LineHeight::Multiple((multiple * LINE_HEIGHT_UNIT).round() as u32));
+        }
+        css_twips(value, font).filter(|value| *value > 0).map(|value| LineHeight::Exact(value as u32))
+    });
+    ParagraphLayout {
+        left: side("margin-left", "padding-left"), right: side("margin-right", "padding-right"),
+        before: side("margin-top", "padding-top"), after: side("margin-bottom", "padding-bottom"),
+        text_indent: length("text-indent"), line_height,
+        rtl: style("direction").and_then(|value| match value { "rtl" => Some(true), "ltr" => Some(false), _ => None }),
+        page_before: style("break-before") == Some("page"), page_after: style("break-after") == Some("page"),
+    }
+}
+
+fn layout_is_empty(layout: ParagraphLayout) -> bool {
+    layout.left.is_none() && layout.right.is_none() && layout.before.is_none() && layout.after.is_none()
+        && layout.text_indent.is_none() && layout.line_height.is_none() && layout.rtl.is_none()
+        && !layout.page_before && !layout.page_after
+}
+
+fn read_property(inner: &str, name: &str) -> String {
+    let Some(start) = find_element_start(inner, &format!("<{name}")) else { return format!("<{name}/>") };
+    let Some(end) = inner[start..].find('>') else { return format!("<{name}/>") };
+    inner[start..start + end + 1].to_string()
+}
+
+fn remove_attribute(raw: &str, name: &str) -> String {
+    let needle = format!(" {name}=\"");
+    let Some(start) = raw.find(&needle) else { return raw.to_string() };
+    let from = start + needle.len();
+    let Some(end) = raw[from..].find('"') else { return raw.to_string() };
+    format!("{}{}", &raw[..start], &raw[from + end + 1..])
+}
+
+fn write_layout(mut inner: String, layout: ParagraphLayout) -> String {
+    if layout.left.is_some() || layout.right.is_some() || layout.text_indent.is_some() {
+        let mut ind = read_property(&inner, "w:ind");
+        for (name, value) in [("w:left", layout.left), ("w:right", layout.right)] {
+            if let Some(value) = value { ind = set_attribute(&ind, name, &value.to_string()); }
+        }
+        if let Some(value) = layout.text_indent {
+            ind = remove_attribute(&remove_attribute(&ind, "w:firstLine"), "w:hanging");
+            ind = set_attribute(&ind, if value < 0 { "w:hanging" } else { "w:firstLine" }, &value.unsigned_abs().to_string());
+        }
+        inner = set_child(&inner, "w:ind", &ind, PARAGRAPH_ORDER);
+    }
+    if layout.before.is_some() || layout.after.is_some() || layout.line_height.is_some() {
+        let mut spacing = read_property(&inner, "w:spacing");
+        for (name, value) in [("w:before", layout.before), ("w:after", layout.after)] {
+            if let Some(value) = value { spacing = set_attribute(&spacing, name, &value.max(0).to_string()); }
+        }
+        if let Some(height) = layout.line_height {
+            let (value, rule) = match height { LineHeight::Multiple(value) => (value, "auto"), LineHeight::Exact(value) => (value, "exact") };
+            spacing = set_attribute(&set_attribute(&spacing, "w:line", &value.to_string()), "w:lineRule", rule);
+        }
+        inner = set_child(&inner, "w:spacing", &spacing, PARAGRAPH_ORDER);
+    }
+    if let Some(rtl) = layout.rtl { inner = set_child(&inner, "w:bidi", if rtl { "<w:bidi/>" } else { "<w:bidi w:val=\"0\"/>" }, PARAGRAPH_ORDER); }
+    if layout.page_before { inner = set_child(&inner, "w:pageBreakBefore", "<w:pageBreakBefore/>", PARAGRAPH_ORDER); }
+    inner
+}
+
 fn read_align(align: &str) -> Option<&'static str> {
     match align.trim() {
         "left" | "start" => Some("left"),
@@ -944,6 +1195,8 @@ fn read_css(attributes: &[(String, String)]) -> Format {
         shade: style("background-color").or_else(|| style("background")).and_then(read_color),
         size: style("font-size").and_then(read_font_size),
         font: style("font-family").map(|family| family.split(',').next().unwrap_or(family).trim().trim_matches(['"', '\'']).to_string()).filter(|family| !family.is_empty()),
+        pre_spaces: style("white-space").and_then(|value| match value { "pre" | "pre-wrap" | "break-spaces" => Some(true), "normal" | "nowrap" => Some(false), _ => None }),
+        rtl: style("direction").and_then(|value| match value { "rtl" => Some(true), "ltr" => Some(false), _ => None }),
         ..Format::default()
     }
 }
@@ -1019,7 +1272,9 @@ fn read_html_tokens(html: &str, has_extras: bool) -> Vec<HtmlToken<'_>> {
             continue;
         }
         match read_html_tag(rest, has_extras) {
-            Some((HtmlToken::Tag { is_closing: false, name, .. }, length)) if has_extras && is_hidden(name) => {
+            Some((token @ HtmlToken::Tag { is_closing: false, name, .. }, length)) if has_extras && is_hidden(name) => {
+                tokens.push(token);
+                tokens.push(HtmlToken::Tag { is_closing: true, name, attributes: Vec::new() });
                 at += length + find_closing_tag(&rest[length..], name).unwrap_or(rest.len() - length);
             }
             Some((token, length)) => {
@@ -1129,7 +1384,7 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
         }
         None => paragraph_props.to_string(),
     };
-    if block.align.is_none() && block.quote_level == 0 && !block.is_rule {
+    if block.align.is_none() && block.quote_level == 0 && !block.is_rule && layout_is_empty(block.layout) {
         return props;
     }
 
@@ -1143,6 +1398,7 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     if let Some(align) = block.align {
         inner = set_child(&inner, "w:jc", &format!("<w:jc w:val=\"{align}\"/>"), PARAGRAPH_ORDER);
     }
+    inner = write_layout(inner, block.layout);
     props = format!("<w:pPr>{inner}</w:pPr>");
     props
 }
@@ -1232,6 +1488,7 @@ fn write_run_props(run_props: &str, is_bold: bool, is_italic: bool, is_underline
 fn write_format(inner: &str, format: &Format) -> String {
     let mut inner = inner.to_string();
     let toggle = |is_on: bool, name: &str| if is_on { format!("<{name}/>") } else { format!("<{name} w:val=\"0\"/>") };
+    if let Some(rtl) = format.rtl { inner = set_child(&inner, "w:rtl", &toggle(rtl, "w:rtl"), RUN_ORDER); }
     if let Some(font) = &format.font {
         let mut family = String::new();
         escape(font, &mut family);
@@ -1336,7 +1593,7 @@ mod tests {
 
     #[test]
     fn skips_a_tag_with_attributes_as_text() {
-        let blocks = read_html("<p class=\"x\">t</p>", false, SpaceEdges::default());
+        let blocks = read_html("<p class=\"x\">t</p>", false, SpaceEdges::default(), "");
         assert_eq!(blocks[0].runs[0].text.as_deref(), Some("p class=\"x\">t"));
     }
 

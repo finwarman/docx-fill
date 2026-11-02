@@ -6,12 +6,16 @@ fn reads_every_option() {
     let value = json!({
         "paragraphLoop": false,
         "linebreaks": false,
+        "tagPrefixes": { "loopStart": "if ", "loopEnd": "endif", "invertedLoop": "unless ", "raw": "raw ", "image": "img ", "centeredImage": "centerImg ", "html": "html ", "blockHtml": "blockHtml ", "wordRun": "wordRun " },
         "delimiters": { "start": "[[", "end": "]]" },
         "extensions": { "tableMerge": false, "sections": true },
         "dropEmptyLastPage": false,
         "modulePrefixes": ["$"],
         "dropStyleParagraphs": true,
         "comments": { "author": "Jane", "initials": "J", "date": "2026-11-02T09:00:00Z" },
+        "footnotes": { "raw": true, "refProperties": "<w:b/>", "refRun": "<w:r/>", "paragraphProperties": "<w:keepNext/>", "runProperties": "<w:i/>" },
+        "table": { "paragraphValidation": "ignore", "autoResizeTable": true },
+        "htmlStyleSheet": "p { color: red }",
         "document": {
             "readOnly": true,
             "language": "en-GB",
@@ -24,10 +28,27 @@ fn reads_every_option() {
     let options = base.read_json(&value).unwrap();
 
     assert!(!options.paragraph_loop && !options.linebreaks && !options.drop_empty_last_page && options.drop_style_paragraphs);
+    assert_eq!(options.tag_prefixes.loop_start, "if ");
+    assert_eq!(options.tag_prefixes.loop_end, "endif");
+    assert_eq!(options.tag_prefixes.inverted_loop, "unless ");
+    assert_eq!(options.tag_prefixes.raw, "raw ");
+    assert_eq!(options.tag_prefixes.image, "img ");
+    assert_eq!(options.tag_prefixes.centered_image, "centerImg ");
+    assert_eq!(options.tag_prefixes.html, "html ");
+    assert_eq!(options.tag_prefixes.block_html, "blockHtml ");
+    assert_eq!(options.tag_prefixes.word_run, "wordRun ");
     assert_eq!((options.delimiters.start.as_str(), options.delimiters.end.as_str()), ("[[", "]]"));
     assert_eq!(options.extensions, Extensions { table_merge: false, ..Extensions::ALL });
     assert_eq!(options.module_prefixes, ["$"]);
     assert_eq!((options.comments.author.as_str(), options.comments.initials.as_deref()), ("Jane", Some("J")));
+    assert_eq!(options.footnotes.content, docx_fill::FootnoteContent::Raw);
+    assert_eq!(options.footnotes.ref_properties.as_deref(), Some("<w:b/>"));
+    assert_eq!(options.footnotes.ref_run.as_deref(), Some("<w:r/>"));
+    assert_eq!(options.footnotes.paragraph_properties.as_deref(), Some("<w:keepNext/>"));
+    assert_eq!(options.footnotes.run_properties.as_deref(), Some("<w:i/>"));
+    assert_eq!(options.table.paragraph_validation, docx_fill::TableValidation::Ignore);
+    assert_eq!(options.table.resize, docx_fill::TableResize::KeepColumns);
+    assert_eq!(options.html_style_sheet, "p { color: red }");
     let document = &options.document;
     assert!(document.read_only);
     assert_eq!(document.language.as_deref(), Some("en-GB"));
