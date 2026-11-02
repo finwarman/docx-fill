@@ -385,3 +385,12 @@ fn skips_empty_series_templates() {
 
     assert_eq!(chart_xml(&parts)[0].matches("<c:ser>").count(), 2);
 }
+
+#[test]
+fn rebinds_single_quoted_chart_id() {
+    let body = drawing().replace("r:id=\"rIdChart\"", "r:id='rIdChart'") + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, CHART, &json!({})), json!({"sales":{"categories":["A"],"series":[{"data":[1]}]}}));
+    assert_eq!(chart_xml(&parts).len(), 1);
+    let document = String::from_utf8_lossy(&parts["word/document.xml"]).to_string();
+    assert_eq!(document.matches("r:id=").count(), 1, "{document}");
+}

@@ -3,7 +3,7 @@ use std::io::{Cursor, Read, Write};
 
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::properties::{find_element_end, set_child};
+use crate::properties::{find_element_end, set_attribute, set_child};
 use crate::xml::{ElementKind, Token, check_balanced, escape, is_xml_char, read_attribute, tokenize, unescape};
 use crate::{FillError, FillErrorId};
 
@@ -70,14 +70,6 @@ pub(super) fn prepare(sources: &BTreeMap<&str, &[u8]>, source_path: &str, source
 }
 
 fn escaped(value: &str) -> String { let mut out = String::new(); escape(value, &mut out); out }
-
-fn set_attribute(raw: &str, name: &str, value: &str) -> String {
-    if let Some(old) = read_attribute(raw, name) {
-        let at = crate::xml::offset_in(raw, old);
-        return format!("{}{value}{}", &raw[..at], &raw[at + old.len()..]);
-    }
-    crate::properties::set_attribute(raw, name, value)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CellKind { Text, Number }
@@ -334,7 +326,9 @@ fn chart_data(chart: &str, sheet: &str) -> Result<(String, Vec<Column>), FillErr
     if chart.len() as u64 > MAX_XML_BYTES { return Err(error("Chart XML exceeds 16 MiB")); }
     let tokens = tokenize(chart).map_err(error)?;
     check_balanced(&tokens).map_err(error)?;
-    let series = elements(chart, "ser")?;
+    // Series hidden by a filter sit in extLst and keep their workbook references.
+    let extensions = elements(chart, "extLst")?;
+    let series: Vec<_> = elements(chart, "ser")?.into_iter().filter(|item| !extensions.iter().any(|ext| ext.start < item.start && item.end <= ext.end)).collect();
     if series.is_empty() { return Err(error("Workbook updates require standard chart series")); }
     let mut columns: Vec<Column> = Vec::new();
     let mut replacements = Vec::new();

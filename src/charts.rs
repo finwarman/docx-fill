@@ -262,7 +262,6 @@ pub(crate) fn prepare(parts: &mut [(String, Vec<u8>)], options: &FillOptions) ->
 
 pub(crate) fn apply(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)], titles: &BTreeMap<String, String>, mode: ChartDataMode) -> Vec<FillError> {
     let errors = fill_charts(parts, uses, titles, mode);
-    if mode == ChartDataMode::Workbook { return errors; }
     // A chart left unfilled still shows its title, so its tag goes too.
     for (path, literal) in titles {
         let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == path) else { continue };
