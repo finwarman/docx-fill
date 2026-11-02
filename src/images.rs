@@ -7,6 +7,8 @@ use crate::template::PX_PER_TWIP;
 use crate::xml::{ElementKind, Token, read_attribute, tokenize};
 
 const EMU_PER_PX: f64 = 9525.0;
+const SVG_NAMESPACE: &str = "http://schemas.microsoft.com/office/drawing/2016/SVG/main";
+const SVG_EXTENSION: &str = "{96DAC541-7B7A-43D3-8B79-37D633B846F1}";
 const PIXELS_PER_INCH: f64 = 96.0;
 const CENTIMETERS_PER_INCH: f64 = 2.54;
 const MILLIMETERS_PER_INCH: f64 = 25.4;
@@ -95,6 +97,13 @@ impl MediaUse {
         let safe: String = image.key.chars().filter(char::is_ascii_alphanumeric).collect();
         MediaUse { relationship_id: format!("rIdDocxFill_{safe}"), target: format!("media/docx_fill_{safe}.{}", image.extension), image }
     }
+
+    pub(crate) fn svg_fallback(image: &Image, bytes: Arc<[u8]>) -> MediaUse {
+        let mut media = Self::for_image(Image { key: image.key.clone(), bytes, extension: "png".into(), width: image.width, height: image.height });
+        media.relationship_id = media.relationship_id.replacen("rIdDocxFill_", "rIdDocxFillSvgFallback_", 1);
+        media.target = media.target.replacen("media/", "media/svg_fallback/", 1);
+        media
+    }
 }
 
 /// The drawing an image tag prints, in pixels: `width` wide, its height from the image's shape.
@@ -106,15 +115,19 @@ pub(crate) fn drawing_size(image: &Image, width: f64, is_in_cell: bool, body_hei
 }
 
 /// An inline drawing of relationship `relationship_id`, `width` by `height` pixels.
-pub(crate) fn drawing_xml(id: u32, relationship_id: &str, width: f64, height: f64) -> String {
+pub(crate) fn drawing_xml(id: u32, relationship_id: &str, width: f64, height: f64, svg: Option<&str>) -> String {
     let extent = format!("cx=\"{}\" cy=\"{}\"", (width * EMU_PER_PX).round() as i64, (height * EMU_PER_PX).round() as i64);
+    let blip = match svg {
+        Some(svg) => format!("<a:blip r:embed=\"{relationship_id}\"><a:extLst><a:ext uri=\"{SVG_EXTENSION}\"><asvg:svgBlip xmlns:asvg=\"{SVG_NAMESPACE}\" r:embed=\"{svg}\"/></a:ext></a:extLst></a:blip>"),
+        None => format!("<a:blip r:embed=\"{relationship_id}\"/>"),
+    };
     format!(
         "<w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent {extent}/>\
 <wp:docPr id=\"{id}\" name=\"Photo {id}\"/>\
 <a:graphic xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">\
 <pic:pic xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\">\
 <pic:nvPicPr><pic:cNvPr id=\"0\" name=\"photo\"/><pic:cNvPicPr/></pic:nvPicPr>\
-<pic:blipFill><a:blip r:embed=\"{relationship_id}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>\
+<pic:blipFill>{blip}<a:stretch><a:fillRect/></a:stretch></pic:blipFill>\
 <pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext {extent}/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr>\
 </pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>"
     )

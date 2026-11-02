@@ -166,9 +166,11 @@ pub struct Template {
     pub(crate) top: Vec<usize>,
     pub(crate) linebreaks: bool,
     pub(crate) html_extras: bool,
+    pub(crate) table_resize: crate::TableResize,
     pub(crate) drop_style_paragraphs: bool,
     /// With comments on, the comment author and date a value gives none of.
     pub(crate) comment_defaults: Option<CommentDefaults>,
+    pub(crate) footnotes: crate::FootnoteOptions,
     /// Tag names read as expressions, with expressions on.
     pub(crate) expressions: BTreeMap<String, Expression>,
     /// The largest drawing id the part uses, so new drawings take ids after it.
@@ -394,8 +396,10 @@ impl Template {
             top: Vec::new(),
             linebreaks: options.linebreaks && layout == TextLayout::Paragraphs,
             html_extras: options.extensions.html_extras,
+            table_resize: options.table.resize,
             drop_style_paragraphs: options.drop_style_paragraphs,
             comment_defaults: options.extensions.comments.then(|| options.comments.clone()),
+            footnotes: options.footnotes.clone(),
         };
         template.nest_blocks()?;
         Ok(template)
@@ -685,21 +689,27 @@ fn read_tag(text: &str, options: &FillOptions) -> (TagKind, String) {
         (&prefixes.image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: false }),
         (&prefixes.centered_image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: options.extensions.centered_images }),
     ];
-    if let Some((prefix, _, kind)) = kinds.into_iter().filter(|(prefix, enabled, _)| *enabled && text.starts_with(prefix.as_str())).max_by_key(|(prefix, _, _)| prefix.len()) {
-        let rest = &text[prefix.len()..];
+    let found = kinds.into_iter().filter(|(prefix, enabled, _)| *enabled && text.starts_with(prefix.as_str())).max_by_key(|(prefix, _, _)| prefix.len());
+    let named = |kind: TagKind, rest: &str| {
         let name = if matches!(kind, TagKind::Image { .. } | TagKind::RawRun) { rest.trim() } else { rest };
-        return (kind, name.to_string());
-    }
+        (kind, name.to_string())
+    };
+    // An empty prefix only takes tags nothing else reads, element loops included.
+    let fallback = match found {
+        Some((prefix, _, kind)) if !prefix.is_empty() => return named(kind, &text[prefix.len()..]),
+        Some((_, _, kind)) => Some(kind),
+        None => None,
+    };
 
     let rest = text.get(1..).unwrap_or_default().to_string();
-    match text.as_bytes().first() {
-        // `-w:tr rows`: the element, then the name. Without both, `-a` is a plain name.
-        Some(b'-') => match rest.split_once(char::is_whitespace) {
-            Some((element, name)) if !element.is_empty() => (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string()),
-            _ => (TagKind::Value, text.to_string()),
-        },
-        _ => (TagKind::Value, text.to_string()),
+    // `-w:tr rows`: the element, then the name. Without both, `-a` is a plain name.
+    if text.starts_with('-')
+        && let Some((element, name)) = rest.split_once(char::is_whitespace)
+        && !element.is_empty()
+    {
+        return (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string());
     }
+    fallback.map_or_else(|| (TagKind::Value, text.to_string()), |kind| named(kind, text))
 }
 
 fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, String)> {
@@ -910,7 +920,7 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                 blocks.push(Block { kind, start, end: end + 1, body_start: end + 1, body_end: end + 1, children: Vec::new(), open_tag: index });
             }
             TagKind::FullTable => {
-                if !tag.is_alone {
+                if !tag.is_alone && options.table.paragraph_validation == crate::TableValidation::Error {
                     return Err(FillError::new(format!("The table tag \"{}\" should be the only text in its paragraph", tag.text)));
                 }
                 let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;

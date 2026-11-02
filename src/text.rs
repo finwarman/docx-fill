@@ -11,6 +11,9 @@ use crate::properties::set_attribute;
 use crate::xml::{ElementKind, Token, escape, read_attribute, tokenize, unescape};
 use crate::{DOCUMENT_PART, FillError};
 
+mod bookmarks;
+pub use bookmarks::Bookmark;
+
 /// A place in the body's text: a paragraph, counted from 0 in document order with paragraphs in
 /// tables and text boxes included, and a character offset in its text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
