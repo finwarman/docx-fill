@@ -27,6 +27,7 @@ mod includes;
 mod json;
 mod part_kinds;
 mod properties;
+mod qr_codes;
 mod sections;
 mod protection;
 mod render;
@@ -130,6 +131,8 @@ pub struct Extensions {
     pub rich_text: bool,
     /// `{%name}` and `{%%name}`: an image from [`FillHooks::image`].
     pub images: bool,
+    /// Decode image tags held in raster QR codes before filling the package.
+    pub qr_codes: bool,
     /// `{:merge-cells-col 1,2}`, `{:merge-cells-col rtl 1,2}` and `{:merge-cells-row 1,-1}`: merges
     /// neighbouring cells of the tag's table that print the same, non-empty text.
     pub table_merge: bool,
@@ -178,6 +181,7 @@ impl Extensions {
         cell_styling: true,
         rich_text: true,
         images: true,
+        qr_codes: true,
         table_merge: true,
         styling: true,
         word_run: true,
@@ -195,6 +199,7 @@ impl Extensions {
         cell_styling: false,
         rich_text: false,
         images: false,
+        qr_codes: false,
         table_merge: false,
         styling: false,
         word_run: false,
@@ -358,7 +363,8 @@ impl PackageTemplate {
     /// [`FillOptions::fill_properties`] the core, app and custom document properties.
     pub fn parse(parts: impl IntoIterator<Item = (String, Vec<u8>)>, options: &FillOptions) -> Result<PackageTemplate, FillError> {
         options.document.check()?;
-        let parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
+        let mut parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
+        if options.extensions.qr_codes && options.extensions.images { qr_codes::prepare(&mut parts, options); }
         let content_types = parts.iter().find(|(name, _)| name == CONTENT_TYPES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes));
         let kinds = PartKinds::read(content_types.as_deref());
         let main_part = parts.iter().map(|(name, _)| name).find(|name| kinds.kind(name) == PartKind::Main).cloned().unwrap_or_else(|| DOCUMENT_PART.to_string());
