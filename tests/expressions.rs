@@ -399,7 +399,7 @@ fn refuses_what_is_not_an_expression_when_parsing() {
     let data = data();
     let cases = [
         "{a b}", "{a +}", "{+}", "{*}", "{a *}", "{(a}", "{a)}", "{()}", "{[1}", "{a[}", "{a[]}", "{a.}", "{a..b}", "{a.1}", "{.a}", "{a ?}", "{a ? 1}", "{a ? 1 :}", "{a : 1}", "{?}", "{:}", "{a == }", "{a ===}", "{a &amp;}", "{a |}", "{a ||}", "{&amp;&amp; a}", "{!}", "{-}", "{a,b}", "{a@b}", "{\\}", "{'x}", "{\"x}", "{'}", "{name++}", "{a++}", "{new a}", "{typeof a}",
-        "{1a}", "{0x10}", "{1e}", "{[,]}", "{s |}", "{| upper}", "{table:abc.value}", "{first name}", "{a = 1}", "{a;b}",
+        "{1a}", "{0x10}", "{1e}", "{[,]}", "{s |}", "{| upper}", "{table:abc.value}", "{first name}", "{1 = a}", "{a + b = 1}",
     ];
     for template in cases {
         let error = try_fill(template, &data).expect_err(template);

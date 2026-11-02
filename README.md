@@ -82,6 +82,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 ## Other options
 
+With expressions enabled, assignments store values for the current fill and print nothing: `{total = price * count}{total}`. Semicolon-separated expressions print their last result. Bare names are assigned on the current loop item; property assignments update the visible object. The caller's JSON remains unchanged. Object values are copied, and array assignments are limited to index 1,000,000.
+
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
 
 Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.

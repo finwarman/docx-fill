@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
+use std::collections::BTreeMap;
 
 use serde_json::{Number, Value, json};
 
@@ -13,6 +14,7 @@ use crate::render::{FillHooks, print_value};
 // Nested tags and long chains recurse when read and when evaluated.
 const MAX_NESTING: usize = 64;
 const MAX_TOKENS: usize = 1024;
+const MAX_ARRAY_INDEX: usize = 1_000_000;
 // Above this, a float cannot be told from its neighbours, so it prints as a float.
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
@@ -35,6 +37,8 @@ pub(crate) enum Expression {
     Or(Box<Expression>, Box<Expression>),
     Conditional(Box<Expression>, Box<Expression>, Box<Expression>),
     Filter { input: Box<Expression>, name: String, arguments: Vec<Expression> },
+    Assignment(Box<Expression>, Box<Expression>),
+    Sequence(Vec<Expression>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +74,7 @@ enum Token {
 }
 
 // Longest first, so `===` is not read as `==` and `=`.
-const SYMBOLS: [&str; 25] = ["===", "!==", "==", "!=", "<=", ">=", "&&", "||", "+", "-", "*", "/", "%", "<", ">", "!", "?", ":", ".", ",", "(", ")", "[", "]", "|"];
+const SYMBOLS: [&str; 27] = ["===", "!==", "==", "!=", "<=", ">=", "&&", "||", "+", "-", "*", "/", "%", "<", ">", "!", "?", ":", ".", ",", "(", ")", "[", "]", "|", "=", ";"];
 
 fn read_tokens(text: &str) -> Result<Vec<Token>, String> {
     let mut tokens = Vec::new();
@@ -188,10 +192,38 @@ impl Expression {
         if parser.tokens.is_empty() {
             return Ok(Expression::Undefined);
         }
-        let expression = parser.filter_chain()?;
+        let expression = parser.sequence()?;
         match parser.tokens.get(parser.at) {
             None => Ok(expression),
             Some(token) => Err(format!("unexpected {}", describe(token))),
+        }
+    }
+
+    fn assignable(&self) -> bool {
+        match self {
+            Self::Identifier(_) => true,
+            Self::Property(base, _) | Self::Index(base, _) => base.assignable(),
+            _ => false,
+        }
+    }
+
+    fn has_assignment(&self) -> bool {
+        match self {
+            Self::Assignment(..) => true,
+            Self::Sequence(items) | Self::Array(items) => items.iter().any(Self::has_assignment),
+            Self::Property(base, _) | Self::Unary(_, base) => base.has_assignment(),
+            Self::Index(a, b) | Self::Binary(_, a, b) | Self::And(a, b) | Self::Or(a, b) => a.has_assignment() || b.has_assignment(),
+            Self::Conditional(a, b, c) => a.has_assignment() || b.has_assignment() || c.has_assignment(),
+            Self::Filter { input, arguments, .. } => input.has_assignment() || arguments.iter().any(Self::has_assignment),
+            _ => false,
+        }
+    }
+
+    fn prints_assignment(&self) -> bool {
+        match self {
+            Self::Assignment(..) => true,
+            Self::Sequence(items) => items.last().is_some_and(Self::prints_assignment),
+            _ => false,
         }
     }
 }
@@ -205,6 +237,31 @@ fn describe(token: &Token) -> String {
 }
 
 impl Parser<'_> {
+    fn sequence(&mut self) -> Result<Expression, String> {
+        let mut items = Vec::new();
+        loop {
+            while self.eat(";") {}
+            if self.at == self.tokens.len() || self.tokens.get(self.at) == Some(&Token::Symbol(")")) { break; }
+            items.push(self.assignment()?);
+            if !self.eat(";") { break; }
+        }
+        Ok(match items.len() {
+            0 => Expression::Literal(Value::String(String::new())),
+            1 => items.pop().expect("one item"),
+            _ => Expression::Sequence(items),
+        })
+    }
+
+    fn assignment(&mut self) -> Result<Expression, String> {
+        let target = self.filter_chain()?;
+        if !self.eat("=") { return Ok(target); }
+        if !target.assignable() { return Err("the assignment target is not a name or property".into()); }
+        self.nest()?;
+        let value = self.assignment()?;
+        self.nesting -= 1;
+        Ok(Expression::Assignment(Box::new(target), Box::new(value)))
+    }
+
     fn eat(&mut self, symbol: &'static str) -> bool {
         let is_next = self.tokens.get(self.at) == Some(&Token::Symbol(symbol));
         self.at += usize::from(is_next);
@@ -317,7 +374,7 @@ impl Parser<'_> {
                 expression = Expression::Property(Box::new(expression), name);
             } else if self.eat("[") {
                 self.nest()?;
-                let index = self.filter_chain()?;
+                let index = self.assignment()?;
                 self.nesting -= 1;
                 self.expect("]")?;
                 expression = Expression::Index(Box::new(expression), Box::new(index));
@@ -359,7 +416,8 @@ impl Parser<'_> {
             },
             Token::Symbol("(") => {
                 self.nest()?;
-                let inner = self.filter_chain()?;
+                if self.tokens.get(self.at) == Some(&Token::Symbol(")")) { return Err("empty parentheses".into()); }
+                let inner = self.sequence()?;
                 self.nesting -= 1;
                 self.expect(")")?;
                 Ok(inner)
@@ -368,7 +426,7 @@ impl Parser<'_> {
                 self.nest()?;
                 let mut items = Vec::new();
                 while !self.eat("]") {
-                    items.push(self.conditional()?);
+                    items.push(self.assignment()?);
                     if !self.eat(",") {
                         self.expect("]")?;
                         break;
@@ -596,18 +654,47 @@ fn index<'a>(object: Evaluated<'a>, key: &Evaluated) -> Evaluated<'a> {
     property(object, &key.to_text())
 }
 
+#[derive(Default)]
+pub(crate) struct Assignments {
+    scopes: BTreeMap<usize, BTreeMap<String, Option<Value>>>,
+}
+
+impl Assignments {
+    fn key(scope: &Value) -> usize { std::ptr::from_ref(scope) as usize }
+
+    fn get(&self, scope: &Value, name: &str) -> Option<&Option<Value>> {
+        self.scopes.get(&Self::key(scope))?.get(name)
+    }
+
+    pub(crate) fn scope(&self, scope: &Value) -> Value {
+        let mut value = scope.clone();
+        if let (Some(over), Some(object)) = (self.scopes.get(&Self::key(scope)), value.as_object_mut()) {
+            for (name, value) in over {
+                if let Some(value) = value { object.insert(name.clone(), value.clone()); }
+                else { object.remove(name); }
+            }
+        }
+        value
+    }
+}
+
 /// What one evaluation reads.
 pub(crate) struct Evaluation<'e, 'a> {
     pub scopes: &'e [&'a Value],
     /// Each array loop item's index, innermost last.
     pub loop_indexes: &'e [usize],
     pub hooks: &'e mut dyn FillHooks,
+    pub assignments: &'e mut Assignments,
 }
 
 impl<'a> Evaluation<'_, 'a> {
     /// The value of `expression`. Names are looked up from the innermost scope out; a whole result
     /// that is missing is tried again from the parent scope, so `{p.q}` finds an outer `p`.
     pub(crate) fn evaluate(&mut self, expression: &Expression) -> Option<Cow<'a, Value>> {
+        if expression.has_assignment() {
+            let result = self.at_level(expression, self.scopes.len().checked_sub(1)?);
+            return if expression.prints_assignment() { Some(Cow::Owned(Value::String(String::new()))) } else { result.into_value() };
+        }
         (0..self.scopes.len()).rev().find_map(|level| {
             let result = self.at_level(expression, level);
             if result.is_missing() { None } else { result.into_value() }
@@ -618,7 +705,11 @@ impl<'a> Evaluation<'_, 'a> {
         match expression {
             Expression::Literal(value) => Evaluated::owned(value.clone()),
             Expression::Undefined | Expression::Call => Evaluated::Undefined,
-            Expression::This => Evaluated::Data(Cow::Borrowed(self.scopes[level])),
+            Expression::This => {
+                let scope = self.scopes[level];
+                if self.assignments.scopes.contains_key(&Assignments::key(scope)) { Evaluated::owned(self.assignments.scope(scope)) }
+                else { Evaluated::Data(Cow::Borrowed(scope)) }
+            }
             // The innermost loop's, even when tried again from an outer scope, and null outside
             // any loop, as in core.
             Expression::LoopIndex => self.loop_indexes.last().map_or(Evaluated::owned(Value::Null), |&index| Evaluated::Float(index as f64)),
@@ -671,6 +762,46 @@ impl<'a> Evaluation<'_, 'a> {
                 let arguments: Vec<Value> = arguments.iter().map(|argument| self.json_at(argument, level)).collect();
                 Evaluated::owned(self.hooks.filter(name, &input, &arguments))
             }
+            Expression::Assignment(target, value) => {
+                let value = self.at_level(value, level).into_value().map(Cow::into_owned);
+                let Some((name, path)) = self.target_path(target, level) else { return Evaluated::Undefined };
+                let owner = if path.is_empty() { level } else {
+                    std::iter::once(level).chain((0..self.scopes.len()).rev()).find(|&index| {
+                        self.assignments.get(self.scopes[index], &name).map_or_else(|| self.scopes[index].get(&name).is_some_and(|value| !value.is_null()), |value| value.as_ref().is_some_and(|value| !value.is_null()))
+                    }).unwrap_or(level)
+                };
+                let assigned = if path.is_empty() { value.clone() } else {
+                    let mut root = self.assignments.get(self.scopes[owner], &name).cloned().flatten().or_else(|| self.scopes[owner].get(&name).cloned()).unwrap_or(Value::Null);
+                    if !set_path(&mut root, &path, value.clone()) { return Evaluated::Undefined; }
+                    Some(root)
+                };
+                self.assignments.scopes.entry(Assignments::key(self.scopes[owner])).or_default().insert(name, assigned);
+                value.map_or(Evaluated::Undefined, Evaluated::owned)
+            }
+            Expression::Sequence(items) => {
+                let mut result = Evaluated::Undefined;
+                for item in items { result = self.at_level(item, level); }
+                result
+            }
+        }
+    }
+
+    fn target_path(&mut self, target: &Expression, level: usize) -> Option<(String, Vec<String>)> {
+        match target {
+            Expression::Identifier(name) => Some((name.clone(), Vec::new())),
+            Expression::Property(base, name) => {
+                let (root, mut path) = self.target_path(base, level)?;
+                path.push(name.clone());
+                Some((root, path))
+            }
+            Expression::Index(base, key) => {
+                let (root, mut path) = self.target_path(base, level)?;
+                let key = self.at_level(key, level);
+                if key.is_missing() { return None; }
+                path.push(key.to_text());
+                Some((root, path))
+            }
+            _ => None,
         }
     }
 
@@ -684,6 +815,14 @@ impl<'a> Evaluation<'_, 'a> {
     fn identifier(&self, name: &str, level: usize) -> Evaluated<'a> {
         let mut found = Evaluated::Undefined;
         for scope in std::iter::once(&self.scopes[level]).chain(self.scopes.iter().rev()) {
+            if let Some(value) = self.assignments.get(scope, name) {
+                match value {
+                    Some(value) if !value.is_null() => return Evaluated::owned(value.clone()),
+                    Some(value) => found = Evaluated::owned(value.clone()),
+                    None => {}
+                }
+                continue;
+            }
             match scope.get(name) {
                 Some(value) if !value.is_null() => return Evaluated::Data(Cow::Borrowed(value)),
                 Some(value) => found = Evaluated::Data(Cow::Borrowed(value)),
@@ -691,6 +830,29 @@ impl<'a> Evaluation<'_, 'a> {
             }
         }
         found
+    }
+}
+
+fn set_path(target: &mut Value, path: &[String], value: Option<Value>) -> bool {
+    let Some((name, rest)) = path.split_first() else { *target = value.unwrap_or(Value::Null); return true };
+    if matches!(name.as_str(), "__proto__" | "constructor" | "prototype") { return false; }
+    if target.is_null() { *target = Value::Object(serde_json::Map::new()); }
+    match target {
+        Value::Object(object) => {
+            if rest.is_empty() {
+                if let Some(value) = value { object.insert(name.clone(), value); }
+                else { object.remove(name); }
+                return true;
+            }
+            set_path(object.entry(name.clone()).or_insert(Value::Null), rest, value)
+        }
+        Value::Array(items) => {
+            let Ok(index) = name.parse::<usize>() else { return false };
+            if index > MAX_ARRAY_INDEX { return false; }
+            items.resize_with(items.len().max(index + 1), || Value::Null);
+            set_path(&mut items[index], rest, value)
+        }
+        _ => false,
     }
 }
 
