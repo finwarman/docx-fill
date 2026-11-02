@@ -86,6 +86,39 @@ impl Default for Delimiters {
     }
 }
 
+/// Prefixes that classify standard and extension tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagPrefixes {
+    pub loop_start: String,
+    pub loop_end: String,
+    pub inverted_loop: String,
+    pub raw: String,
+    pub image: String,
+    pub centered_image: String,
+    pub html: String,
+    pub block_html: String,
+    pub word_run: String,
+}
+
+impl Default for TagPrefixes {
+    fn default() -> Self {
+        Self { loop_start: "#".into(), loop_end: "/".into(), inverted_loop: "^".into(), raw: "@".into(), image: "%".into(), centered_image: "%%".into(), html: "~".into(), block_html: "~~".into(), word_run: "r@".into() }
+    }
+}
+
+impl TagPrefixes {
+    pub(crate) fn validate(&self) -> Result<(), FillError> {
+        let values = [&self.loop_start, &self.loop_end, &self.inverted_loop, &self.raw, &self.image, &self.centered_image, &self.html, &self.block_html, &self.word_run];
+        let mut seen = BTreeSet::new();
+        for (index, value) in values.into_iter().enumerate() {
+            if (index < 4 && value.is_empty()) || !seen.insert(value) {
+                return Err(FillError::new("Core tag prefixes must be nonempty; all tag prefixes must be distinct"));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Tag kinds beyond the core syntax, each on or off.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extensions {
@@ -185,6 +218,7 @@ pub struct FillOptions {
     /// A `\n` in a value prints as a line break.
     pub linebreaks: bool,
     pub delimiters: Delimiters,
+    pub tag_prefixes: TagPrefixes,
     /// What starts and ends a tag that sets new delimiters for the rest of the part, `=` for
     /// `{=[[ ]]=}`. `None` reads such tags as values.
     pub change_delimiter_prefix: Option<String>,
@@ -229,6 +263,7 @@ impl Default for FillOptions {
             paragraph_loop: true,
             linebreaks: true,
             delimiters: Delimiters::default(),
+            tag_prefixes: TagPrefixes::default(),
             change_delimiter_prefix: Some("=".to_string()),
             allow_unopened_tag: false,
             allow_unclosed_tag: false,
