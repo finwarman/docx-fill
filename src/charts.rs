@@ -10,8 +10,13 @@ use crate::properties::{find_element_end, find_starts, set_child};
 use crate::xml::{ElementKind, Token, escape, read_attribute, tokenize, unescape};
 use crate::{ChartDataMode, FillError, FillErrorId, FillOptions, CONTENT_TYPES_PART, add_relationship, insert_before_last};
 
+mod extended;
+
 const CHART_RELATIONSHIP: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
 const CHART_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
+const EXTENDED_RELATIONSHIP: &str = "http://schemas.microsoft.com/office/2014/relationships/chartEx";
+const EXTENDED_CONTENT_TYPE: &str = "application/vnd.ms-office.chartex+xml";
+const MAX_HIERARCHY_DEPTH: usize = 128;
 const BAR_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:invertIfNegative", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:shape", "c:extLst"];
 const LINE_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:marker", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:smooth", "c:extLst"];
 const AREA_ORDER: &[&str] = &["c:idx", "c:order", "c:tx", "c:spPr", "c:pictureOptions", "c:dPt", "c:dLbls", "c:trendline", "c:errBars", "c:cat", "c:val", "c:extLst"];
@@ -24,6 +29,14 @@ const LABEL_ORDER: &[&str] = &["c:idx", "c:delete", "c:layout", "c:tx", "c:numFm
 
 #[derive(Clone, Copy)]
 enum ChartKind { Bar, Line, Area, Radar, Pie, Doughnut, Surface, Scatter, Bubble }
+
+#[derive(Clone, Copy)]
+enum ChartFormat { Standard, Extended }
+
+impl ChartFormat {
+    fn relationship(self) -> &'static str { match self { Self::Standard => CHART_RELATIONSHIP, Self::Extended => EXTENDED_RELATIONSHIP } }
+    fn content_type(self) -> &'static str { match self { Self::Standard => CHART_CONTENT_TYPE, Self::Extended => EXTENDED_CONTENT_TYPE } }
+}
 
 impl ChartKind {
     fn read(name: &str) -> Option<Self> {
@@ -59,6 +72,7 @@ pub(crate) struct ChartUse {
 #[derive(Debug)]
 struct ChartData {
     categories: Option<Vec<String>>,
+    paths: Option<Vec<Vec<String>>>,
     series: Vec<Series>,
 }
 
@@ -75,6 +89,8 @@ enum DataKind<'a> { Text, Number(&'a str) }
 
 impl ChartData {
     fn read(value: &Value) -> Option<Self> {
+        if let Some(categories) = value.get("categories").and_then(Value::as_array)
+            && categories.iter().any(Value::is_object) { return Self::hierarchy(categories); }
         let categories = match value.get("categories") {
             Some(value) => Some(value.as_array()?.iter().map(|value| match value {
                 Value::String(text) => Some(text.clone()),
@@ -85,7 +101,12 @@ impl ChartData {
             None => None,
         };
         let mut series = Vec::new();
-        for value in value.get("series")?.as_array()? {
+        let series_values = match value.get("series") {
+            Some(series) => series.as_array()?.iter().collect::<Vec<_>>(),
+            None if value.get("data").is_some() => vec![value],
+            None => return None,
+        };
+        for value in series_values {
             let title = match value.get("title") { None | Some(Value::Null) => None, Some(title) => Some(title.as_str()?.to_string()) };
             let points = value.get("data")?.as_array()?;
             let is_xy = categories.is_none() || points.iter().any(Value::is_object);
@@ -113,10 +134,34 @@ impl ChartData {
             }
             series.push(Series { title, values, x_values, sizes, names });
         }
-        Some(Self { categories, series })
+        Some(Self { categories, paths: None, series })
+    }
+
+    fn hierarchy(categories: &[Value]) -> Option<Self> {
+        let mut pending = categories.iter().rev().map(|value| (value, Vec::new())).collect::<Vec<_>>();
+        let mut paths = Vec::new();
+        let mut values = Vec::new();
+        while let Some((node, mut path)) = pending.pop() {
+            if path.len() >= MAX_HIERARCHY_DEPTH { return None; }
+            path.push(node.get("name")?.as_str()?.to_string());
+            match node.get("categories") {
+                Some(children) if !children.as_array()?.is_empty() => {
+                    for child in children.as_array()?.iter().rev() { pending.push((child, path.clone())); }
+                }
+                _ => {
+                    let value = node.get("value")?;
+                    if value.as_f64().is_some_and(|number| number < 0.0) { return None; }
+                    values.push(number(value)?);
+                    paths.push(path);
+                }
+            }
+        }
+        let categories = paths.iter().map(|path| path.last().cloned().unwrap_or_default()).collect();
+        Some(Self { categories: Some(categories), paths: Some(paths), series: vec![Series { title: None, values, x_values: None, sizes: None, names: None }] })
     }
 
     fn matches(&self, kind: ChartKind) -> bool {
+        if self.paths.is_some() { return false; }
         if matches!(kind, ChartKind::Pie) && self.series.len() > 1 { return false; }
         if !matches!(kind, ChartKind::Scatter | ChartKind::Bubble) && self.categories.is_none() { return false; }
         self.series.iter().all(|series| match kind {
@@ -134,7 +179,7 @@ fn number(value: &Value) -> Option<Option<String>> {
 /// Keep occurrence indexes so each chart repeated by a loop can have different data.
 pub(crate) fn queue(xml: &str, uses: &mut Vec<ChartUse>, value: Option<&Value>) {
     let Some(data) = value.and_then(ChartData::read) else { return };
-    let Some(occurrence) = find_starts(xml, "c:chart").len().checked_sub(1) else { return };
+    let Some(occurrence) = references(xml).len().checked_sub(1) else { return };
     if let Some(used) = uses.iter_mut().find(|used| used.occurrence == occurrence) {
         used.data = data;
     } else {
@@ -150,15 +195,15 @@ pub(crate) fn prepare(parts: &mut [(String, Vec<u8>)], options: &FillOptions) ->
     let mut changes = Vec::new();
     for (index, (name, bytes)) in parts.iter().enumerate() {
         let Ok(xml) = std::str::from_utf8(bytes) else { continue };
-        if !xml.contains("<c:chart ") { continue; }
+        if references(xml).is_empty() { continue; }
         let relations = relationships(name, &sources);
         let mut edits = Vec::new();
         for start in find_starts(xml, "w:p") {
             let Some(end) = find_element_end(xml, start, "w:p") else { continue };
             let paragraph = &xml[start..end];
-            if find_starts(paragraph, "c:chart").len() != 1 { continue; }
+            if references(paragraph).len() != 1 { continue; }
             let mut added = String::new();
-            for chart in find_starts(paragraph, "c:chart") {
+            for chart in references(paragraph) {
                 let Some(close) = paragraph[chart..].find('>').map(|at| chart + at + 1) else { continue };
                 let Some(id) = read_attribute(&paragraph[chart..close], "r:id") else { continue };
                 let Some(literal) = relations.get(id).and_then(|path| titles.get(path)) else { continue };
@@ -199,6 +244,7 @@ struct ChartChange {
     types: Option<Vec<u8>>,
     id: String,
     target: String,
+    format: ChartFormat,
 }
 
 fn fill_charts(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)], titles: &BTreeMap<String, String>, mode: ChartDataMode) -> Vec<FillError> {
@@ -213,7 +259,7 @@ fn fill_charts(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)]
         parts.push((change.path.clone(), Cow::Owned(change.chart)));
         if let Some(bytes) = change.relations { parts.push((relation_path(&change.path), Cow::Owned(bytes))); }
         if let Some(workbook) = change.workbook { parts.push((workbook.0, Cow::Owned(workbook.1))); }
-        add_relationship(parts, part, &change.id, &format!("<Relationship Id=\"{}\" Type=\"{CHART_RELATIONSHIP}\" Target=\"{}\"/>", change.id, change.target));
+        add_relationship(parts, part, &change.id, &format!("<Relationship Id=\"{}\" Type=\"{}\" Target=\"{}\"/>", change.id, change.format.relationship(), change.target));
         if let Some(types) = change.types
             && let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == CONTENT_TYPES_PART) { *bytes = Cow::Owned(types); }
     }
@@ -225,11 +271,12 @@ fn chart_change(parts: &[(String, Cow<[u8]>)], part: &str, used: &ChartUse, titl
     let sources: BTreeMap<_, _> = parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())).collect();
     let relations = relationships(part, &sources);
     let xml = sources.get(part).and_then(|bytes| std::str::from_utf8(bytes).ok()).ok_or_else(|| invalid("Missing chart owner XML"))?;
-    let start = find_starts(xml, "c:chart").get(used.occurrence).copied().ok_or_else(|| invalid("Missing chart drawing"))?;
+    let start = references(xml).get(used.occurrence).copied().ok_or_else(|| invalid("Missing chart drawing"))?;
     let end = xml[start..].find('>').map(|at| start + at + 1).ok_or_else(|| invalid("Invalid chart drawing"))?;
     let id = read_attribute(&xml[start..end], "r:id").ok_or_else(|| invalid("Missing chart relationship ID"))?;
     let source_path = relations.get(id).ok_or_else(|| invalid("Missing internal chart relationship"))?;
     let source = sources.get(source_path.as_str()).and_then(|bytes| std::str::from_utf8(bytes).ok()).ok_or_else(|| invalid("Missing chart XML"))?;
+    let format = if find_starts(source, "cx:chartSpace").is_empty() { ChartFormat::Standard } else { ChartFormat::Extended };
     let filled = fill_chart(source, &used.data, titles.get(source_path).map(String::as_str)).ok_or_else(|| invalid("Unsupported chart type or data"))?;
     let folder = source_path.rsplit_once('/').map_or("", |(folder, _)| folder);
     let rels_path = relation_path(part);
@@ -246,7 +293,7 @@ fn chart_change(parts: &[(String, Cow<[u8]>)], part: &str, used: &ChartUse, titl
     let mut change = ChartChange {
         owner_xml: xml.to_string(), path: path.clone(), chart: filled.as_bytes().to_vec(),
         relations: sources.get(relation_path(source_path).as_str()).map(|bytes| bytes.to_vec()),
-        workbook: None, types: None, id: id.clone(), target: String::new(),
+        workbook: None, types: None, id: id.clone(), target: String::new(), format,
     };
     let workbook_type = if mode == ChartDataMode::Workbook {
         #[cfg(feature = "chart-workbook")]
@@ -267,12 +314,13 @@ fn chart_change(parts: &[(String, Cow<[u8]>)], part: &str, used: &ChartUse, titl
         let types = std::str::from_utf8(bytes).map_err(|_| invalid("Invalid package content types"))?;
         if mode == ChartDataMode::Workbook && !types.contains("<Types") { return Err(invalid("Missing package content types root")); }
         let mut escaped = String::new(); escape(&path, &mut escaped);
-        change.types = Some(insert_before_last(types, "</Types>", &format!("<Override PartName=\"/{escaped}\" ContentType=\"{CHART_CONTENT_TYPE}\"/>{workbook_type}")).into_bytes());
+        change.types = Some(insert_before_last(types, "</Types>", &format!("<Override PartName=\"/{escaped}\" ContentType=\"{}\"/>{workbook_type}", format.content_type())).into_bytes());
     } else if mode == ChartDataMode::Workbook { return Err(invalid("Missing package content types")); }
     Ok(change)
 }
 
 fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<String> {
+    if !find_starts(xml, "cx:chartSpace").is_empty() { return extended::fill(xml, data, title_tag); }
     let names: Vec<_> = tokenize(xml).ok()?.iter().filter_map(|token| match token {
         Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name, .. } if name.starts_with("c:") && name.ends_with("Chart") => Some(*name),
         _ => None,
@@ -418,8 +466,9 @@ fn element_text(xml: &str, name: &str) -> Option<String> {
 }
 
 fn title_tag(xml: &str, options: &FillOptions) -> Option<String> {
-    let start = *find_starts(xml, "c:title").first()?;
-    let end = find_element_end(xml, start, "c:title")?;
+    let name = if find_starts(xml, "cx:chartSpace").is_empty() { "c:title" } else { "cx:title" };
+    let start = *find_starts(xml, name).first()?;
+    let end = find_element_end(xml, start, name)?;
     let text: String = text_spans(&xml[start..end]).into_iter().map(|(_, _, text)| text).collect();
     let open = &options.delimiters.start;
     let close = &options.delimiters.end;
@@ -441,7 +490,7 @@ fn text_spans(xml: &str) -> Vec<(usize, usize, String)> {
     let mut in_text = false;
     for token in tokenize(xml).unwrap_or_default() {
         match token {
-            Token::Element { kind, name, raw } => { if name == "a:t" { in_text = kind == ElementKind::Open; } offset += raw.len(); }
+            Token::Element { kind, name, raw } => { if matches!(name, "a:t" | "c:v" | "cx:v") { in_text = kind == ElementKind::Open; } offset += raw.len(); }
             Token::Text(text) => { if in_text { spans.push((offset, offset + text.len(), unescape(text))); } offset += text.len(); }
         }
     }
@@ -450,8 +499,9 @@ fn text_spans(xml: &str) -> Vec<(usize, usize, String)> {
 
 fn strip_title_tag(xml: &str, literal: &str) -> String {
     // The title's tag has been moved into its drawing paragraph. Clear its text in the clone.
-    let Some(start) = find_starts(xml, "c:title").first().copied() else { return xml.to_string() };
-    let Some(end) = find_element_end(xml, start, "c:title") else { return xml.to_string() };
+    let name = if find_starts(xml, "cx:chartSpace").is_empty() { "c:title" } else { "cx:title" };
+    let Some(start) = find_starts(xml, name).first().copied() else { return xml.to_string() };
+    let Some(end) = find_element_end(xml, start, name) else { return xml.to_string() };
     let spans = text_spans(&xml[start..end]);
     let text: String = spans.iter().map(|(_, _, text)| text.as_str()).collect();
     let Some(tag_start) = text.find(literal) else { return xml.to_string() };
@@ -476,7 +526,7 @@ fn relationships(part: &str, sources: &BTreeMap<&str, &[u8]>) -> BTreeMap<String
     let folder = part.rsplit_once('/').map_or("", |(folder, _)| folder);
     tokenize(xml).unwrap_or_default().into_iter().filter_map(|token| {
         let Token::Element { name: "Relationship", raw, .. } = token else { return None };
-        if read_attribute(raw, "Type") != Some(CHART_RELATIONSHIP) || read_attribute(raw, "TargetMode") == Some("External") { return None; }
+        if !matches!(read_attribute(raw, "Type"), Some(CHART_RELATIONSHIP | EXTENDED_RELATIONSHIP)) || read_attribute(raw, "TargetMode") == Some("External") { return None; }
         Some((read_attribute(raw, "Id")?.to_string(), resolve(folder, &unescape(read_attribute(raw, "Target")?))?))
     }).collect()
 }
@@ -498,4 +548,17 @@ fn relative_target(part: &str, target: &str) -> String {
     let destination: Vec<_> = target.split('/').collect();
     let shared = source.iter().zip(&destination).take_while(|(a, b)| a == b).count();
     std::iter::repeat_n("..", source.len() - shared).chain(destination[shared..].iter().copied()).collect::<Vec<_>>().join("/")
+}
+
+fn references(xml: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+    for token in tokenize(xml).unwrap_or_default() {
+        match token {
+            Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "c:chart" | "cx:chart", raw } if read_attribute(raw, "r:id").is_some() => { out.push(offset); offset += raw.len(); }
+            Token::Element { raw, .. } => offset += raw.len(),
+            Token::Text(text) => offset += text.len(),
+        }
+    }
+    out
 }

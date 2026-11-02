@@ -35,6 +35,10 @@ fn chart_xml(parts: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
 fn category_chart(name: &str, properties: &str) -> String {
     let start = CHART.find("<c:ser>").unwrap();
     let end = CHART.find("</c:ser>").unwrap() + "</c:ser>".len();
+    let mut series = CHART[start..end].to_string();
+    if matches!(name, "c:lineChart" | "c:line3DChart" | "c:radarChart") {
+        series = series.replace("</c:spPr>", "<a:ln w=\"19050\"><a:solidFill><a:srgbClr val=\"00AA00\"/></a:solidFill></a:ln></c:spPr>");
+    }
     let mut tail = String::new();
     let mut axes = String::new();
     if name == "c:doughnutChart" { tail.push_str("<c:holeSize val=\"65\"/>"); }
@@ -48,7 +52,7 @@ fn category_chart(name: &str, properties: &str) -> String {
         tail.push_str("<c:axId val=\"3\"/>");
         axes.push_str("<c:serAx><c:axId val=\"3\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:axPos val=\"b\"/><c:crossAx val=\"1\"/></c:serAx>");
     }
-    format!(r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:view3D><c:rotX val="15"/><c:rotY val="20"/></c:view3D><c:plotArea><{name}>{properties}{}{tail}</{name}>{axes}</c:plotArea></c:chart></c:chartSpace>"#, &CHART[start..end])
+    format!(r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:view3D><c:rotX val="15"/><c:rotY val="20"/></c:view3D><c:plotArea><{name}>{properties}{}{tail}</{name}>{axes}</c:plotArea><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>"#, series)
 }
 
 enum XyKind { Scatter, Bubble }
@@ -58,7 +62,7 @@ fn xy_chart(kind: XyKind) -> String {
         XyKind::Scatter => ("c:scatterChart", "<c:scatterStyle val=\"lineMarker\"/>", "", "<c:marker><c:symbol val=\"diamond\"/></c:marker>", "<c:smooth val=\"1\"/>"),
         XyKind::Bubble => ("c:bubbleChart", "", "<c:bubbleSize><c:numLit><c:formatCode>0%</c:formatCode><c:ptCount val=\"1\"/><c:pt idx=\"0\"><c:v>1</c:v></c:pt></c:numLit></c:bubbleSize>", "", "<c:bubble3D val=\"1\"/>"),
     };
-    format!(r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><{name}>{properties}<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>Original</c:v></c:tx><c:spPr><a:solidFill><a:srgbClr val="00AA00"/></a:solidFill></c:spPr>{marker}<c:dLbls><c:dLbl><c:idx val="0"/><c:spPr><a:solidFill><a:srgbClr val="AA0000"/></a:solidFill></c:spPr><c:dLblPos val="t"/></c:dLbl></c:dLbls><c:xVal><c:numLit><c:formatCode>0.0</c:formatCode><c:ptCount val="1"/><c:pt idx="0"><c:v>9</c:v></c:pt></c:numLit></c:xVal><c:yVal><c:numLit><c:formatCode>0.00</c:formatCode><c:ptCount val="1"/><c:pt idx="0"><c:v>9</c:v></c:pt></c:numLit></c:yVal>{size}{tail}</c:ser><c:axId val="1"/><c:axId val="2"/></{name}><c:valAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/><c:crossAx val="2"/></c:valAx><c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/><c:crossAx val="1"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#)
+    format!(r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea><{name}>{properties}<c:ser><c:idx val="0"/><c:order val="0"/><c:tx><c:v>Original</c:v></c:tx><c:spPr><a:solidFill><a:srgbClr val="00AA00"/></a:solidFill></c:spPr>{marker}<c:dLbls><c:dLbl><c:idx val="0"/><c:spPr><a:solidFill><a:srgbClr val="AA0000"/></a:solidFill></c:spPr><c:dLblPos val="t"/></c:dLbl></c:dLbls><c:xVal><c:numLit><c:formatCode>0.0</c:formatCode><c:ptCount val="1"/><c:pt idx="0"><c:v>9</c:v></c:pt></c:numLit></c:xVal><c:yVal><c:numLit><c:formatCode>0.00</c:formatCode><c:ptCount val="1"/><c:pt idx="0"><c:v>9</c:v></c:pt></c:numLit></c:yVal>{size}{tail}</c:ser><c:axId val="1"/><c:axId val="2"/></{name}><c:valAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/><c:crossAx val="2"/></c:valAx><c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/><c:crossAx val="1"/></c:valAx></c:plotArea><c:dispBlanksAs val="gap"/></c:chart></c:chartSpace>"#)
 }
 
 #[test]
@@ -71,6 +75,7 @@ fn fills_scatter_coordinates() {
     assert!(chart.contains("<c:xVal><c:numLit><c:formatCode>0.0</c:formatCode><c:ptCount val=\"4\"/><c:pt idx=\"0\"><c:v>1.5</c:v></c:pt><c:pt idx=\"2\"><c:v>4</c:v></c:pt>"));
     assert!(chart.contains("<c:yVal><c:numLit><c:formatCode>0.00</c:formatCode><c:ptCount val=\"4\"/><c:pt idx=\"0\"><c:v>-2</c:v></c:pt><c:pt idx=\"2\"><c:v>5</c:v></c:pt>"));
     assert!(chart.contains("<c:symbol val=\"diamond\"/>") && chart.contains("<c:smooth val=\"1\"/>"));
+    common::export_chart_fixture("scatter", &parts);
 }
 
 #[test]
@@ -83,6 +88,7 @@ fn fills_bubble_sizes_and_names() {
     assert!(chart.contains("<a:t>A &amp; B</a:t>") && chart.contains("<a:t>C</a:t>"));
     assert!(chart.contains("AA0000") && chart.contains("<c:dLblPos val=\"t\"/>"));
     assert!(chart.contains("<c:bubble3D val=\"1\"/>"));
+    common::export_chart_fixture("bubble", &parts);
 }
 
 #[test]
@@ -146,15 +152,16 @@ fn fills_category_chart_types() {
     for (name, properties) in cases {
         let source = category_chart(name, properties);
         let body = drawing().to_string() + &paragraph(&["{$sales}"]);
-        let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"categories":["One","Two"],"series":[{"title":"Updated","data":[3,null]}]}}));
+        let parts = render(&template(&body, &source, &json!({})), json!({"sales":{"categories":["One","Two","Three"],"series":[{"title":"Updated","data":[3,5,4]}]}}));
         let charts = chart_xml(&parts);
         assert_eq!(charts.len(), 1, "{name}");
         let chart = &charts[0];
         assert!(chart.contains(properties) && chart.contains("<c:rotY val=\"20\"/>"), "{name}");
         assert!(chart.contains("<c:tx><c:v>Updated</c:v></c:tx>") && chart.contains(">Two</c:v>"), "{name}");
-        assert!(chart.contains("<c:ptCount val=\"2\"/>") && chart.contains("<c:pt idx=\"0\"><c:v>3</c:v></c:pt>"), "{name}");
+        assert!(chart.contains("<c:ptCount val=\"3\"/>") && chart.contains("<c:pt idx=\"0\"><c:v>3</c:v></c:pt>"), "{name}");
         assert!(chart.contains("00AA00") && chart.contains("<c:formatCode>0.00</c:formatCode>"), "{name}");
         if name == "c:doughnutChart" { assert!(chart.contains("<c:holeSize val=\"65\"/>")); }
+        common::export_chart_fixture(name.trim_start_matches("c:"), &parts);
     }
 }
 

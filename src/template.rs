@@ -1008,7 +1008,7 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
             }
             TagKind::Chart => {
                 let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;
-                let chart_count = |items: &[Part]| items.iter().filter(|part| matches!(part, Part::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name, .. } if name == "c:chart")).count();
+                let chart_count = |items: &[Part]| items.iter().filter(|part| matches!(part, Part::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name, .. } if name == "c:chart" || name == "cx:chart")).count();
                 let has_chart = chart_count(&parts[start..tag.part]) > 0;
                 if !has_chart {
                     let previous = parts[..start].iter().rposition(|part| matches!(part, Part::Element { kind: ElementKind::Open, name, .. } if name == PARAGRAPH));
