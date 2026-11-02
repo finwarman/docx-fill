@@ -177,6 +177,19 @@ fn binds_supported_chart_choice() {
 }
 
 #[test]
+fn selects_chart_version_choice() {
+    for (version, layout, numeric) in [("2015/9/8", "sunburst", "size"), ("2016/5/10", "regionMap", "colorVal")] {
+        let selected = drawing().trim_start_matches("<w:p><w:r>").trim_end_matches("</w:r></w:p>").replace("<cx:chart ", "<c:chart xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" ");
+        let body = format!(r#"<w:p><w:r><mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice xmlns:feature="http://schemas.microsoft.com/office/drawing/{version}/chartex" Requires="feature">{selected}</mc:Choice><mc:Fallback><w:t>Preview</w:t></mc:Fallback></mc:AlternateContent></w:r></w:p>{}"#, paragraph(&["{$sales}"]));
+        let parts = render(&body, &chart(layout, numeric), json!({"sales":{"categories":["France","Spain"],"data":[8,9]}}));
+        assert!(output_chart(&parts).contains("<cx:pt idx=\"0\">8</cx:pt>"));
+        assert!(String::from_utf8_lossy(&parts["word/document.xml"]).contains("<w:t>Preview</w:t>"));
+        let unsupported = body.replace(&format!("/{version}/chartex"), "/2099/1/1/chartex");
+        assert!(docx_fill::fill_part(&common::document(&unsupported), &json!({"sales":{"categories":["France","Spain"],"data":[8,9]}}), &FillOptions::default()).is_err());
+    }
+}
+
+#[test]
 fn keeps_chart_fallback_picture() {
     let selected = drawing().trim_start_matches("<w:p><w:r>").trim_end_matches("</w:r></w:p>").to_string();
     let picture = r#"<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="2" name="Fallback"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdPreview"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="5486400" cy="3200400"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData>"#;
