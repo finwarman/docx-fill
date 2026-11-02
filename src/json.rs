@@ -207,6 +207,7 @@ fn read_extensions(value: &Value, mut extensions: Extensions) -> Result<Extensio
             "cellStyling" => &mut extensions.cell_styling,
             "richText" => &mut extensions.rich_text,
             "images" => &mut extensions.images,
+            "charts" => &mut extensions.charts,
             "tableMerge" => &mut extensions.table_merge,
             "styling" => &mut extensions.styling,
             "wordRun" => &mut extensions.word_run,

@@ -16,6 +16,7 @@
 //! Built from the WordprocessingML spec and docxtemplater's documented behaviour.
 
 mod cell_styling;
+mod charts;
 mod comments;
 mod document_edits;
 mod empty_last_page;
@@ -132,6 +133,8 @@ pub struct Extensions {
     pub rich_text: bool,
     /// `{%name}` and `{%%name}`: an image from [`FillHooks::image`].
     pub images: bool,
+    /// `{$name}`: category and series data for an existing bar chart.
+    pub charts: bool,
     /// `{:merge-cells-col 1,2}`, `{:merge-cells-col rtl 1,2}` and `{:merge-cells-row 1,-1}`: merges
     /// neighbouring cells of the tag's table that print the same, non-empty text.
     pub table_merge: bool,
@@ -180,6 +183,7 @@ impl Extensions {
         cell_styling: true,
         rich_text: true,
         images: true,
+        charts: true,
         table_merge: true,
         styling: true,
         word_run: true,
@@ -197,6 +201,7 @@ impl Extensions {
         cell_styling: false,
         rich_text: false,
         images: false,
+        charts: false,
         table_merge: false,
         styling: false,
         word_run: false,
@@ -339,6 +344,7 @@ pub fn fill_part(xml: &str, data: &Value, options: &FillOptions) -> Result<Strin
 #[derive(Debug)]
 pub struct PackageTemplate {
     parts: Vec<(String, PackagePart)>,
+    chart_titles: BTreeMap<String, String>,
     theme_colors: BTreeMap<String, String>,
     /// The main document part, `word/document.xml` unless the content types name another.
     main_part: String,
@@ -365,7 +371,8 @@ impl PackageTemplate {
     /// [`FillOptions::fill_properties`] the core, app and custom document properties.
     pub fn parse(parts: impl IntoIterator<Item = (String, Vec<u8>)>, options: &FillOptions) -> Result<PackageTemplate, FillError> {
         options.document.check()?;
-        let parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
+        let mut parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
+        let chart_titles = if options.extensions.charts { charts::prepare(&mut parts, options) } else { BTreeMap::new() };
         let content_types = parts.iter().find(|(name, _)| name == CONTENT_TYPES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes));
         let kinds = PartKinds::read(content_types.as_deref());
         let main_part = parts.iter().map(|(name, _)| name).find(|name| kinds.kind(name) == PartKind::Main).cloned().unwrap_or_else(|| DOCUMENT_PART.to_string());
@@ -407,6 +414,7 @@ impl PackageTemplate {
         Ok(PackageTemplate {
             main_part,
             theme_colors: BTreeMap::new(),
+            chart_titles,
             max_comment_id,
             drop_empty_last_page: options.drop_empty_last_page,
             document: options.document.clone(),
@@ -473,12 +481,14 @@ impl PackageTemplate {
         let mut definitions = Vec::new();
         let mut includes = Vec::new();
         let mut sections = Vec::new();
+        let mut chart_uses = Vec::new();
         for (name, part) in &self.parts {
             let bytes = match part {
                 PackagePart::Bytes(bytes) => Cow::Borrowed(bytes.as_slice()),
                 PackagePart::Template(template) => {
                     let filled = template.fill(data, name, hooks, &mut state);
                     media.extend(filled.media.into_iter().map(|used| (name.clone(), used)));
+                    chart_uses.extend(filled.charts.into_iter().map(|used| (name.clone(), used)));
                     if *name == self.main_part {
                         notes = filled.footnotes;
                         comments = filled.comments;
@@ -498,6 +508,7 @@ impl PackageTemplate {
         }
         add_media(&mut out, &media);
         add_links(&mut out, &links);
+        charts::apply(&mut out, &chart_uses, &self.chart_titles);
         restyle_definitions(&mut out, &definitions);
         footnotes::add_footnotes(&mut out, &notes);
         comments::add_comments(&mut out, &comments);

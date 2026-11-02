@@ -128,6 +128,7 @@ pub(crate) struct FillState {
 /// A filled part and the media its drawings show.
 pub(crate) struct FilledPart {
     pub xml: String,
+    pub charts: Vec<crate::charts::ChartUse>,
     pub media: Vec<MediaUse>,
     /// Footnote ids and their text, referenced from the part.
     pub footnotes: Vec<(u32, String)>,
@@ -180,6 +181,7 @@ struct Render<'a, 'h> {
     /// Each array loop item's index, innermost last.
     loop_indexes: Vec<usize>,
     pictures: Vec<PictureFrame>,
+    charts: Vec<crate::charts::ChartUse>,
 }
 
 impl Template {
@@ -240,12 +242,13 @@ impl Template {
             computed: computed.end(),
             loop_indexes: Vec::new(),
             pictures: Vec::new(),
+            charts: Vec::new(),
         };
         let mut scopes = vec![data];
         render.render_range(0, self.parts.len(), &self.top, &mut scopes);
         let xml = if render.ranges.is_empty() { render.out } else { style_ranges(&render.out, &render.ranges) };
         let xml = if self.has_cell_loops { crate::table_grid::fit_table_grids(&xml, self.table_resize).unwrap_or(xml) } else { xml };
-        FilledPart { xml, media: render.media, footnotes: render.footnotes, links: render.links, style_definitions: render.style_definitions, includes: render.includes, comments: render.comments, sections: render.sections }
+        FilledPart { xml, charts: render.charts, media: render.media, footnotes: render.footnotes, links: render.links, style_definitions: render.style_definitions, includes: render.includes, comments: render.comments, sections: render.sections }
     }
 }
 
@@ -321,6 +324,10 @@ impl<'a> Render<'a, '_> {
                         self.out.push(INCLUDE_END);
                         self.includes.push((name.to_string(), scope.clone()));
                     }
+                }
+                BlockKind::Chart { name } => {
+                    let value = self.look_up(scopes, name);
+                    crate::charts::queue(&self.out, &mut self.charts, value);
                 }
                 BlockKind::FullTable { name, is_in_cell } => {
                     if let Some(value) = self.look_up(scopes, name) {
@@ -459,6 +466,7 @@ impl<'a> Render<'a, '_> {
                                 None => self.print_text(&print_value(value), tag.run_props.as_deref()),
                             }
                         }
+                        TagKind::Chart => crate::charts::queue(&self.out, &mut self.charts, value),
                         TagKind::Module(module) => {
                             let printed = self.hooks.module_tag(self.part, ModuleTag { module, name: &tag.name, value });
                             self.out.push_str(&printed);

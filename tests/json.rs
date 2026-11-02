@@ -8,7 +8,7 @@ fn reads_every_option() {
         "linebreaks": false,
         "tagPrefixes": { "loopStart": "if ", "loopEnd": "endif", "invertedLoop": "unless ", "raw": "raw ", "image": "img ", "centeredImage": "centerImg ", "html": "html ", "blockHtml": "blockHtml ", "wordRun": "wordRun " },
         "delimiters": { "start": "[[", "end": "]]" },
-        "extensions": { "tableMerge": false, "sections": true },
+        "extensions": { "tableMerge": false, "sections": true, "charts": false },
         "dropEmptyLastPage": false,
         "modulePrefixes": ["$"],
         "dropStyleParagraphs": true,
@@ -37,7 +37,7 @@ fn reads_every_option() {
     assert_eq!(options.tag_prefixes.block_html, "blockHtml ");
     assert_eq!(options.tag_prefixes.word_run, "wordRun ");
     assert_eq!((options.delimiters.start.as_str(), options.delimiters.end.as_str()), ("[[", "]]"));
-    assert_eq!(options.extensions, Extensions { table_merge: false, ..Extensions::ALL });
+    assert_eq!(options.extensions, Extensions { table_merge: false, charts: false, ..Extensions::ALL });
     assert_eq!(options.module_prefixes, ["$"]);
     assert_eq!((options.comments.author.as_str(), options.comments.initials.as_deref()), ("Jane", Some("J")));
     assert_eq!(options.footnotes.content, docx_fill::FootnoteContent::Raw);

@@ -15,6 +15,8 @@ pub enum TagType {
     InvertedLoop,
     /// A tag starting with one of `FillOptions::module_prefixes`.
     Module,
+    /// `{$name}`
+    Chart,
     /// `{~~name}` or `{~name}`
     RichText,
     /// `{%name}` or `{%%name}`
@@ -87,6 +89,7 @@ fn tag_type(kind: &TagKind) -> Option<TagType> {
         TagKind::Open { is_inverted: true, .. } => TagType::InvertedLoop,
         TagKind::Open { is_inverted: false, .. } => TagType::Loop,
         TagKind::Module(_) => TagType::Module,
+        TagKind::Chart => TagType::Chart,
         TagKind::CellStyle | TagKind::Style(_) | TagKind::GlobalStyle(_) => TagType::Style,
         TagKind::RichText { .. } => TagType::RichText,
         TagKind::Image { .. } => TagType::Image,
