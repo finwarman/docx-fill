@@ -79,3 +79,12 @@ fn collects_picture_attribute_errors() {
     assert!(errors.iter().all(|error| error.id == FillErrorId::ScopeParserCompilation));
     assert!(errors.iter().all(|error| error.tag.is_some()));
 }
+
+#[test]
+fn counts_empty_paragraphs() {
+    let xml = document(&("<w:p/><w:p><w:r><w:t>before</w:t></w:r><w:drawing><w:p/></w:drawing></w:p>".to_string() + &paragraph(&["{bad"])));
+    let error = Template::parse(&xml, &FillOptions::default()).err().unwrap();
+
+    assert_eq!(error.paragraph, Some(3));
+    assert_eq!(error.offset, Some(0));
+}

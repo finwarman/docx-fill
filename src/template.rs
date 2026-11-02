@@ -494,6 +494,10 @@ fn scan_paragraphs(tokens: &[Token], layout: TextLayout) -> (Vec<ParagraphTokens
                 paragraphs.push((index, None));
                 texts.push(Vec::new());
             }
+            Token::Element { kind: ElementKind::SelfClosing, name: PARAGRAPH, .. } => {
+                paragraphs.push((index, Some(index)));
+                texts.push(Vec::new());
+            }
             Token::Element { kind: ElementKind::Close, name: PARAGRAPH, .. } => {
                 if let Some(paragraph) = open.pop() {
                     paragraphs[paragraph].1 = Some(index);
