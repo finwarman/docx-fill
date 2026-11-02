@@ -49,3 +49,10 @@ fn writes_page_break_boundaries() {
     assert!(paragraphs[1].contains("<w:br w:type=\"page\"/>"));
     assert!(paragraphs[0].contains("w:before=\"240\""));
 }
+
+#[test]
+fn orders_cell_properties_with_row_spans() {
+    let xml = render("<table><tr><td rowspan='2' style='padding-top:1px;vertical-align:bottom'>A</td><td>B</td></tr><tr><td>C</td></tr></table>");
+
+    assert!(xml.contains("<w:vMerge w:val=\"restart\"/><w:tcMar><w:top w:w=\"15\" w:type=\"dxa\"/></w:tcMar><w:vAlign w:val=\"bottom\"/></w:tcPr>"));
+}

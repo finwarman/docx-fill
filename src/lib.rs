@@ -51,13 +51,15 @@ pub use document_edits::{DocumentEdits, Margins, Watermark, WatermarkLayout};
 pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
 pub use comments::CommentDefaults;
+pub use footnotes::{FootnoteContent, FootnoteOptions};
+pub use full_table::{TableOptions, TableResize, TableValidation};
 pub use images::{Image, ImageLength, ImageSize};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
 pub use tag_list::{TagType, TemplateTag};
 pub use template::Template;
-pub use text::{CommentedText, FilledDocument, TextPosition, TextRange};
+pub use text::{Bookmark, CommentedText, FilledDocument, TextPosition, TextRange};
 
 use images::MediaUse;
 use part_kinds::{PartKind, PartKinds};
@@ -83,6 +85,39 @@ pub struct Delimiters {
 impl Default for Delimiters {
     fn default() -> Self {
         Delimiters { start: "{".to_string(), end: "}".to_string() }
+    }
+}
+
+/// Prefixes that classify standard and extension tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagPrefixes {
+    pub loop_start: String,
+    pub loop_end: String,
+    pub inverted_loop: String,
+    pub raw: String,
+    pub image: String,
+    pub centered_image: String,
+    pub html: String,
+    pub block_html: String,
+    pub word_run: String,
+}
+
+impl Default for TagPrefixes {
+    fn default() -> Self {
+        Self { loop_start: "#".into(), loop_end: "/".into(), inverted_loop: "^".into(), raw: "@".into(), image: "%".into(), centered_image: "%%".into(), html: "~".into(), block_html: "~~".into(), word_run: "r@".into() }
+    }
+}
+
+impl TagPrefixes {
+    pub(crate) fn validate(&self) -> Result<(), FillError> {
+        let values = [&self.loop_start, &self.loop_end, &self.inverted_loop, &self.raw, &self.image, &self.centered_image, &self.html, &self.block_html, &self.word_run];
+        let mut seen = BTreeSet::new();
+        for (index, value) in values.into_iter().enumerate() {
+            if (index < 4 && value.is_empty()) || !seen.insert(value) {
+                return Err(FillError::new("Core tag prefixes must be nonempty; all tag prefixes must be distinct"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -185,6 +220,7 @@ pub struct FillOptions {
     /// A `\n` in a value prints as a line break.
     pub linebreaks: bool,
     pub delimiters: Delimiters,
+    pub tag_prefixes: TagPrefixes,
     /// What starts and ends a tag that sets new delimiters for the rest of the part, `=` for
     /// `{=[[ ]]=}`. `None` reads such tags as values.
     pub change_delimiter_prefix: Option<String>,
@@ -205,6 +241,9 @@ pub struct FillOptions {
     /// Drops the paragraphs holding `{::stylepar}` tags.
     pub drop_style_paragraphs: bool,
     pub comments: CommentDefaults,
+    /// Content mode and formatting of inserted footnotes.
+    pub footnotes: FootnoteOptions,
+    pub table: TableOptions,
     /// A bookmark prefix such as `tag_`. When rich text turns a tag's paragraph into several, and
     /// the tag's paragraph has a bookmark named this prefix and a number (`tag_3`), each later
     /// paragraph gets its own bookmark `tag_3_1`, `tag_3_2`, …, so a reader can find them all.
@@ -229,6 +268,7 @@ impl Default for FillOptions {
             paragraph_loop: true,
             linebreaks: true,
             delimiters: Delimiters::default(),
+            tag_prefixes: TagPrefixes::default(),
             change_delimiter_prefix: Some("=".to_string()),
             allow_unopened_tag: false,
             allow_unclosed_tag: false,
@@ -238,6 +278,8 @@ impl Default for FillOptions {
             document: DocumentEdits::default(),
             drop_style_paragraphs: false,
             comments: CommentDefaults::default(),
+            footnotes: FootnoteOptions::default(),
+            table: TableOptions::default(),
             continued_bookmarks: None,
             fill_properties: true,
             expressions: false,
