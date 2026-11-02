@@ -13,6 +13,7 @@ fn reads_every_option() {
         "modulePrefixes": ["$"],
         "dropStyleParagraphs": true,
         "comments": { "author": "Jane", "initials": "J", "date": "2026-11-02T09:00:00Z" },
+        "paragraphPlaceholder": { "expandToShape": false, "expandSoftBreaksInShapes": true },
         "footnotes": { "raw": true, "refProperties": "<w:b/>", "refRun": "<w:r/>", "paragraphProperties": "<w:keepNext/>", "runProperties": "<w:i/>" },
         "table": { "paragraphValidation": "ignore", "autoResizeTable": true },
         "htmlStyleSheet": "p { color: red }",
@@ -41,6 +42,8 @@ fn reads_every_option() {
     assert_eq!(options.extensions, Extensions { table_merge: false, ..Extensions::ALL });
     assert_eq!(options.module_prefixes, ["$"]);
     assert_eq!((options.comments.author.as_str(), options.comments.initials.as_deref()), ("Jane", Some("J")));
+    assert!(!options.paragraph_placeholder.expand_to_shape);
+    assert_eq!(options.paragraph_placeholder.soft_breaks, docx_fill::SoftBreakScope::Shapes);
     assert_eq!(options.footnotes.content, docx_fill::FootnoteContent::Raw);
     assert_eq!(options.footnotes.ref_properties.as_deref(), Some("<w:b/>"));
     assert_eq!(options.footnotes.ref_run.as_deref(), Some("<w:r/>"));
