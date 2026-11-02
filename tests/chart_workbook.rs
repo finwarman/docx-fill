@@ -271,4 +271,26 @@ mod enabled {
         assert!(text(&workbook, "xl/worksheets/docxFillData1.xml").contains("Revenue"));
     }
 
+
+    #[test]
+    fn clears_unfilled_title_tag() {
+        let mut source = parts(DRAWING, workbook("Template"), &relation());
+        let chart = chart().replace("<c:chart><c:plotArea>", "<c:chart><c:title><c:tx><c:rich><a:bodyPr xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"/><a:p xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:r><a:t>Sales {$sales}</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea>");
+        source.iter_mut().find(|(name, _)| name == "word/charts/chart1.xml").unwrap().1 = chart.into_bytes();
+        let template = PackageTemplate::parse(source, &options()).unwrap();
+        let rendered: BTreeMap<_, _> = template.render(&json!({})).into_iter().map(|(name, bytes)| (name, bytes.into_owned())).collect();
+        assert!(!text(&rendered, "word/charts/chart1.xml").contains("{$sales}"));
+    }
+
+    #[test]
+    fn accepts_filtered_series() {
+        let body = format!("{DRAWING}<w:p><w:r><w:t>{{$sales}}</w:t></w:r></w:p>");
+        let mut source = parts(&body, workbook("Template"), &relation());
+        let filtered = "<c:extLst><c:ext uri=\"{02D57815-91ED-43cb-92C2-25804820EDAC}\" xmlns:c15=\"http://schemas.microsoft.com/office/drawing/2012/chart\"><c15:filteredBarSeries><c15:ser><c:idx val=\"5\"/><c:order val=\"5\"/><c:val><c:numRef><c:f>Template!$C$2:$C$3</c:f></c:numRef></c:val></c15:ser></c15:filteredBarSeries></c:ext></c:extLst>";
+        let chart = chart().replace("</c:barChart>", &format!("{filtered}</c:barChart>"));
+        source.iter_mut().find(|(name, _)| name == "word/charts/chart1.xml").unwrap().1 = chart.into_bytes();
+        let template = PackageTemplate::parse(source, &options()).unwrap();
+        let result = template.try_render(&data());
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
 }

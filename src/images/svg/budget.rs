@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use resvg::{tiny_skia::Transform, usvg};
 use super::{MAX_RENDER_DEPTH, MAX_RENDER_PIXELS, MAX_SVG_NODES};
 use super::validate::{MAX_ORDER, MAX_RADIUS, MAX_SIGMA};
@@ -8,6 +10,8 @@ const FILTER_BASE: u64 = 2;
 const MERGE_COPIES: u64 = 2;
 const MASK_COPIES: u64 = 2;
 const MAX_SIDE: f32 = 16384.0;
+// Setting up an edge costs far more than stepping it down one scanline.
+const SEGMENT_COST: u64 = 16;
 
 #[derive(Clone, Copy)]
 struct Surface { width: u32, height: u32 }
@@ -22,12 +26,12 @@ impl Surface {
 
 pub(super) fn check(tree: &usvg::Tree, transform: Transform, dimensions: (u32, u32)) -> Option<()> {
     let canvas = Surface { width: dimensions.0, height: dimensions.1 };
-    let mut budget = Budget { pixels: 0, work: 0, visited: 0 };
+    let mut budget = Budget { pixels: 0, work: 0, visited: 0, spans: HashMap::new() };
     budget.charge(canvas, 1)?;
     budget.nodes(tree.root(), transform, canvas, 0)
 }
 
-struct Budget { pixels: u64, work: u64, visited: u32 }
+struct Budget { pixels: u64, work: u64, visited: u32, spans: HashMap<*const usvg::Path, f32> }
 
 impl Budget {
     fn enter(&mut self, depth: usize) -> Option<()> {
@@ -42,6 +46,17 @@ impl Budget {
         self.work = self.work.checked_add(canvas.pixels().checked_mul(passes)?)?;
         (self.work <= MAX_WORK).then_some(())
     }
+    /// Rasterizing costs a setup per segment plus a step per scanline each edge crosses.
+    fn outline(&mut self, path: &usvg::Path, transform: Transform, canvas: Surface) -> Option<()> {
+        let span = *self.spans.entry(std::ptr::from_ref(path)).or_insert_with(|| {
+            path.data().points().windows(2).map(|pair| (pair[1].y - pair[0].y).abs()).sum()
+        });
+        let (_, sy) = transform.get_scale();
+        let rows = (span * sy).min(canvas.height as f32 * path.data().len() as f32);
+        if !rows.is_finite() { return None; }
+        self.work = self.work.checked_add((path.data().len() as u64).checked_mul(SEGMENT_COST)?)?.checked_add(rows.ceil() as u64)?;
+        (self.work <= MAX_WORK).then_some(())
+    }
     fn nodes(&mut self, group: &usvg::Group, transform: Transform, canvas: Surface, depth: usize) -> Option<()> {
         self.enter(depth)?;
         for node in group.children() {
@@ -49,8 +64,14 @@ impl Budget {
                 usvg::Node::Group(group) => self.group(group, transform, canvas, depth + 1)?,
                 usvg::Node::Text(text) => self.group(text.flattened(), transform, canvas, depth + 1)?,
                 usvg::Node::Path(path) => {
-                    if let Some(fill) = path.fill() { self.paint(fill.paint(), transform, canvas, depth + 1)?; }
-                    if let Some(stroke) = path.stroke() { self.paint(stroke.paint(), transform, canvas, depth + 1)?; }
+                    if let Some(fill) = path.fill() {
+                        self.outline(path, transform, canvas)?;
+                        self.paint(fill.paint(), transform, canvas, depth + 1)?;
+                    }
+                    if let Some(stroke) = path.stroke() {
+                        self.outline(path, transform, canvas)?;
+                        self.paint(stroke.paint(), transform, canvas, depth + 1)?;
+                    }
                 }
                 usvg::Node::Image(image) => match image.kind() {
                     usvg::ImageKind::SVG(tree) => {
@@ -102,7 +123,10 @@ impl Budget {
         self.enter(depth)?;
         for node in group.children() {
             match node {
-                usvg::Node::Path(path) => if let Some(fill) = path.fill() { self.paint(fill.paint(), transform, canvas, depth + 1)?; },
+                usvg::Node::Path(path) => if let Some(fill) = path.fill() {
+                    self.outline(path, transform, canvas)?;
+                    self.paint(fill.paint(), transform, canvas, depth + 1)?;
+                },
                 usvg::Node::Text(text) => self.clip_nodes(text.flattened(), transform, canvas, depth + 1)?,
                 usvg::Node::Group(group) => {
                     let transform = transform.pre_concat(group.transform());

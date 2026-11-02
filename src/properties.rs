@@ -131,12 +131,10 @@ pub(crate) fn edit_properties(element: &str, properties: &str, edit: impl FnOnce
 
 /// `raw`, an element's start tag, with attribute `name` set to `value`.
 pub(crate) fn set_attribute(raw: &str, name: &str, value: &str) -> String {
-    let needle = format!(" {name}=\"");
-    if let Some(at) = raw.find(&needle) {
-        let value_start = at + needle.len();
-        if let Some(length) = raw[value_start..].find('"') {
-            return format!("{}{value}{}", &raw[..value_start], &raw[value_start + length..]);
-        }
+    if let Some(old) = crate::xml::read_attribute(raw, name) {
+        let at = crate::xml::offset_in(raw, old);
+        let quote = &raw[at - 1..at];
+        return format!("{}{quote}{value}{quote}{}", &raw[..at - 1], &raw[at + old.len() + 1..]);
     }
     let end = if raw.ends_with("/>") { raw.len() - 2 } else { raw.len() - 1 };
     format!("{} {name}=\"{value}\"{}", &raw[..end], &raw[end..])
