@@ -20,3 +20,24 @@ jobs:
       - run: cargo test
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo build --target wasm32-unknown-unknown
+
+  differential:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: differential
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: differential/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: cargo build --release --example differential_fill
+      - run: node run.mjs --seed 1 --count 2000
+      - run: node run.mjs --seed 1 --count 2000 --expressions

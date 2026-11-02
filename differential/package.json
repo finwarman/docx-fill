@@ -1,0 +1,14 @@
+{
+  "name": "docx-fill-differential",
+  "private": true,
+  "type": "module",
+  "description": "Differential tests: docx-fill against the MIT docxtemplater core on random templates",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "angular-expressions": "1.7.1",
+    "docxtemplater": "3.71.1",
+    "pizzip": "3.3.0"
+  }
+}
