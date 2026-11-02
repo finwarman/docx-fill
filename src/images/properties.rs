@@ -1,5 +1,6 @@
 use crate::properties::{find_starts, set_attribute};
 use crate::xml::escape;
+use super::layout::{ImageFloat, ImageTransform};
 
 const EMU_PER_POINT: f64 = 12700.0;
 const DRAWING_NAMESPACE: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
@@ -56,6 +57,7 @@ impl ImageCaption {
 pub struct ImageProperties {
     alt: Option<String>, name: Option<String>, align: Option<ImageAlignment>,
     border: Option<ImageBorder>, link: Option<String>, caption: Option<ImageCaption>,
+    floating: Option<ImageFloat>, transform: ImageTransform,
 }
 
 impl ImageProperties {
@@ -65,6 +67,10 @@ impl ImageProperties {
     pub fn border(mut self, border: ImageBorder) -> Self { self.border = Some(border); self }
     pub fn link(mut self, target: impl Into<String>) -> Self { self.link = Some(target.into()); self }
     pub fn caption(mut self, caption: ImageCaption) -> Self { self.caption = Some(caption); self }
+    pub fn floating(mut self, floating: ImageFloat) -> Self { self.floating = Some(floating); self }
+    pub fn rotate(mut self, degrees: f64) -> Option<Self> { self.transform.rotate(degrees)?; Some(self) }
+    pub fn flip_horizontal(mut self) -> Self { self.transform.flip_horizontal(); self }
+    pub fn flip_vertical(mut self) -> Self { self.transform.flip_vertical(); self }
 
     pub(crate) fn alignment(&self) -> Option<&'static str> { self.align.map(ImageAlignment::value) }
     pub(crate) fn link_target(&self) -> Option<&str> { self.link.as_deref() }
@@ -87,7 +93,8 @@ impl ImageProperties {
             let line = format!("<a:ln w=\"{}\"><a:solidFill><a:srgbClr val=\"{}\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln>", border.width, border.color);
             xml = xml.replacen("</pic:spPr>", &format!("{line}</pic:spPr>"), 1);
         }
-        xml
+        xml = self.transform.apply(xml);
+        match &self.floating { Some(floating) => floating.apply(xml), None => xml }
     }
 }
 
