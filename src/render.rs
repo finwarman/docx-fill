@@ -241,7 +241,7 @@ impl Template {
         let mut scopes = vec![data];
         render.render_range(0, self.parts.len(), &self.top, &mut scopes);
         let xml = if render.ranges.is_empty() { render.out } else { style_ranges(&render.out, &render.ranges) };
-        let xml = if self.has_cell_loops { crate::table_grid::fit_table_grids(&xml).unwrap_or(xml) } else { xml };
+        let xml = if self.has_cell_loops { crate::table_grid::fit_table_grids(&xml, self.table_resize).unwrap_or(xml) } else { xml };
         FilledPart { xml, media: render.media, footnotes: render.footnotes, links: render.links, style_definitions: render.style_definitions, includes: render.includes, comments: render.comments, sections: render.sections }
     }
 }
@@ -622,7 +622,7 @@ impl<'a> Render<'a, '_> {
         let id = self.state.next_footnote_id;
         self.state.next_footnote_id += 1;
         self.out.push_str(&format!("</w:t></w:r><w:r>{SUPERSCRIPT}<w:footnoteReference w:id=\"{id}\"/></w:r><w:r>{props}<w:t xml:space=\"preserve\">"));
-        self.footnotes.push((id, text));
+        self.footnotes.push((id, crate::footnotes::write_note(id, &text, &self.template.footnotes)));
     }
 
     /// The value's text marked with its comments, in the body; elsewhere the text alone.
