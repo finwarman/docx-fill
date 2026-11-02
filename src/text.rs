@@ -130,7 +130,27 @@ impl FilledDocument {
     ///
     /// @throws When the range is empty, spans paragraphs, or no longer holds its text.
     pub fn add_comment(&mut self, range: &TextRange, comment: &str, by: &CommentDefaults) -> Result<u32, FillError> {
-        let xml = self.read_document();
+        self.add_part_comment(DOCUMENT_PART, range, comment, by)
+    }
+
+    /// Comments on located diagnostics in Word paragraphs. Returns the number annotated.
+    /// Diagnostics without a usable paragraph/offset remain available on `error`.
+    pub fn annotate_errors(&mut self, error: &FillError, by: &CommentDefaults) -> Result<usize, FillError> {
+        let mut count = 0;
+        for error in error.diagnostics() {
+            let part = error.part.as_deref().unwrap_or(DOCUMENT_PART);
+            let Some(xml) = self.read_part(part) else { continue };
+            let body = read_body_text(&xml);
+            let Some(range) = error_range(&xml, &body, error) else { continue };
+            let message = format!("{}: {}", error.id.as_str(), error.message);
+            self.add_part_comment(part, &range, &message, by)?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    fn add_part_comment(&mut self, part: &str, range: &TextRange, comment: &str, by: &CommentDefaults) -> Result<u32, FillError> {
+        let xml = self.read_part(part).ok_or_else(|| FillError::new("The comment part is missing"))?;
         let body = read_body_text(&xml);
         check_range(&body, range)?;
         if range.start.offset == range.end.offset {
@@ -145,7 +165,9 @@ impl FilledDocument {
         let mut opens = BTreeSet::new();
         let mut edits = split_at(&xml, paragraph, range.start.offset, &start_mark, true, &mut opens);
         edits.extend(split_at(&xml, paragraph, range.end.offset, &end_mark, false, &mut opens));
-        self.write_document(apply(&xml, edits));
+        if let Some((_, bytes)) = self.parts.iter_mut().find(|(name, _)| name == part) {
+            *bytes = Cow::Owned(apply(&xml, edits).into_bytes());
+        }
 
         let written = Comment { id, text: comment.to_string(), author: by.author.clone(), initials: by.initials.clone(), date: by.date.clone() };
         add_comments(&mut self.parts, &[written]);
@@ -188,6 +210,37 @@ impl FilledDocument {
             part.1 = Cow::Owned(xml.into_bytes());
         }
     }
+}
+
+fn error_range(xml: &str, body: &BodyText, error: &FillError) -> Option<TextRange> {
+    let index = error.paragraph?;
+    let paragraph = body.paragraphs.get(index)?;
+    let mut remaining = error.offset?;
+    let mut start = None;
+    for piece in &paragraph.pieces {
+        if piece.text_open.is_none() { continue; }
+        let raw = &xml[piece.raw.0..piece.raw.1];
+        if remaining < raw.len() {
+            let prefix = raw.get(..remaining)?;
+            start = Some(piece.offset + unescape(prefix).chars().count());
+            break;
+        }
+        remaining -= raw.len();
+    }
+    let start = start?;
+    let chars: Vec<_> = paragraph.text.chars().collect();
+    if start >= chars.len() { return None; }
+    let tail: String = chars[start..].iter().collect();
+    let length = match error.tag.as_deref().filter(|tag| !tag.is_empty()) {
+        Some(tag) => match tail.find(tag) {
+            Some(at) => tail[..at + tag.len()].chars().count(),
+            None if matches!(error.id, crate::FillErrorId::UnopenedTag | crate::FillErrorId::DuplicateCloseTag) => 1,
+            None => return None,
+        },
+        None => 1,
+    };
+    let end = (start + length).min(chars.len());
+    Some(TextRange { start: TextPosition { paragraph: index, offset: start }, end: TextPosition { paragraph: index, offset: end }, text: chars[start..end].iter().collect() })
 }
 
 fn read_body_text(xml: &str) -> BodyText {
