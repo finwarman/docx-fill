@@ -51,6 +51,7 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 | `rich_text` | `{~~html}`, `{~html}` | Prints HTML as paragraphs, or inline | HTML |
 | `html_extras` | | Adds links, tables, code, quotes, checkboxes and inline CSS to HTML | HTML |
 | `images` | `{%image}`, `{%%image}` | Draws an image from `FillHooks::image`, sized to its cell or page | Image |
+| `charts` | `{$name}` | Fills an existing bar chart from categories and series | Chart |
 | `centered_images` | `{%%image}` | Centres an image alone in its paragraph | Image |
 | `subtemplates` | `{:include name}`, `{:segment name}`, `{:includesegment name}` | Prints other documents or segments, with their styles, lists, media and links | Subtemplate |
 | `sections` | `{:subsection name}`, `{:replacesection name}`, `{:page props}` | Takes headers and footers from a subtemplate, or sets page size and margins | Subsection |
@@ -87,6 +88,10 @@ template.set_theme_colors(BTreeMap::from([
 The method updates standard slots in `word/theme/theme1.xml`; color values accept three- or six-digit hex with an optional `#`.
 
 ## Other options
+
+Place `{$sales}` alone in the paragraph after a bar chart, in the chart's paragraph, or in its title. Package rendering accepts `{"sales":{"categories":["A","B"],"series":[{"title":"Revenue","data":[10,20]}]}}`. Series titles are optional; omitted titles keep the template title. Numeric data and `null` gaps must match the category count. Chart layout, series formatting and number formats are preserved. Loops create separate chart parts for each value.
+
+Only standard `c:barChart` charts are filled. Title tags need one chart in their drawing paragraph. Other chart types and invalid data keep the original chart. The generated chart uses literal data; its embedded workbook stays unchanged and is detached from the generated chart. JSON can disable this feature with `extensions.charts`.
 
 Paragraph placeholders inside text boxes expand to the whole shape by default. Set `paragraphPlaceholder: { expandToShape: false }` to target only the paragraph. `expandSoftBreaksInShapes: true` targets individual soft lines within shapes; `expandSoftBreaks: true` also enables this outside shapes. Surviving lines remain joined by soft breaks. In this opt-in mode, parser paragraph positions count logical soft lines.
 

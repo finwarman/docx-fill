@@ -46,6 +46,8 @@ pub(crate) enum TagKind {
     Close,
     /// A tag starting with `FillOptions::module_prefixes[index]`.
     Module(usize),
+    /// `{$name}`: the preceding chart's category and series data.
+    Chart,
     /// `{:stylecell name}`: a background for the table cell the tag is in.
     CellStyle,
     /// `{~~name}` (block) or `{~name}` (inline): HTML printed as Word runs and paragraphs.
@@ -120,6 +122,8 @@ pub(crate) enum BlockKind {
     Placeholder { names: Vec<String> },
     /// A `{:table}` tag's paragraph.
     FullTable { name: String, is_in_cell: bool },
+    /// A chart tag's otherwise empty paragraph.
+    Chart { name: String },
     /// A grid's tag paragraphs and the paragraphs between them, the body.
     Grid { name: String },
     /// An `{:include}` tag's paragraph.
@@ -440,7 +444,7 @@ impl Template {
         match &self.blocks[block].kind {
             BlockKind::Loop { name, .. } | BlockKind::Raw { name, .. } => name,
             BlockKind::Placeholder { names } => names.first().map_or("", String::as_str),
-            BlockKind::FullTable { name, .. } | BlockKind::Grid { name } => name,
+            BlockKind::FullTable { name, .. } | BlockKind::Grid { name } | BlockKind::Chart { name } => name,
             BlockKind::Include { name } | BlockKind::Segment { name } | BlockKind::IncludeSegment { name, .. } | BlockKind::Section { name, .. } => name,
         }
     }
@@ -722,6 +726,9 @@ fn read_tag(text: &str, options: &FillOptions) -> (TagKind, String) {
 }
 
 fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, String)> {
+    if extensions.charts && let Some(name) = text.strip_prefix('$') {
+        return Some((TagKind::Chart, name.trim().to_string()));
+    }
     if extensions.sections {
         for (prefix, tag) in [(":subsection ", SectionTag::Subsection), (":replacesection ", SectionTag::Replace), (":page ", SectionTag::Page)] {
             if let Some(name) = text.strip_prefix(prefix) {
@@ -964,6 +971,18 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                     children: Vec::new(),
                     open_tag: index,
                 });
+            }
+            TagKind::Chart => {
+                let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;
+                let has_chart = parts[start..tag.part].iter().any(|part| matches!(part, Part::Element { name, .. } if name == "c:chart"));
+                if !has_chart {
+                    let previous = parts[..start].iter().rposition(|part| matches!(part, Part::Element { kind: ElementKind::Open, name, .. } if name == PARAGRAPH));
+                    let has_previous = previous.is_some_and(|previous| parts[previous..start].iter().any(|part| matches!(part, Part::Element { name, .. } if name == "c:chart")));
+                    if !tag.is_alone || !has_previous {
+                        return Err(FillError::new(format!("The chart tag \"{}\" must be in its chart's paragraph or alone immediately after it", tag.text)));
+                    }
+                    blocks.push(Block { kind: BlockKind::Chart { name: tag.name.clone() }, start, end: end + 1, body_start: end + 1, body_end: end + 1, children: Vec::new(), open_tag: index });
+                }
             }
             TagKind::Value
             | TagKind::Module(_)
