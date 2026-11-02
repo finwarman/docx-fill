@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 
 const EXTENDED: &str = "http://schemas.microsoft.com/office/drawing/2014/chartex";
+const HIERARCHY_CHARTS: &str = "http://schemas.microsoft.com/office/drawing/2015/9/8/chartex";
+const MAP_CHARTS: &str = "http://schemas.microsoft.com/office/drawing/2016/5/10/chartex";
 const CHART: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 const DRAWING: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const RELATIONSHIPS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -135,7 +137,7 @@ pub(super) fn references(xml: &str) -> (Vec<usize>, bool) {
                     let supported = local(name) == "Fallback" || attrs.iter().find(|attr| attr.name == "Requires").is_some_and(|attr| {
                         let decoded = unescape(attr.value);
                         let required = decoded.split_whitespace().collect::<Vec<_>>();
-                        !required.is_empty() && required.iter().all(|prefix| bindings.get(*prefix).is_some_and(|uri| matches!(uri.as_str(), EXTENDED | CHART | DRAWING)))
+                        !required.is_empty() && required.iter().all(|prefix| bindings.get(*prefix).is_some_and(|uri| matches!(uri.as_str(), EXTENDED | HIERARCHY_CHARTS | MAP_CHARTS | CHART | DRAWING)))
                     });
                     let selected = !*chosen && supported;
                     *chosen |= selected;
