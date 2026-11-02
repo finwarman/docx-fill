@@ -79,6 +79,11 @@ pub trait FillHooks {
         None
     }
 
+    /// A PNG preview for an SVG image, used by readers without SVG support.
+    fn svg_fallback(&mut self, _part: &str, _value: &Value, _image: &Image) -> Option<std::sync::Arc<[u8]>> {
+        None
+    }
+
     /// The result of `{input | name:arguments}`, with a filter named in `FillOptions::filters`. A
     /// missing input or argument is null. Returns the input by default.
     fn filter(&mut self, _name: &str, input: &Value, _arguments: &[Value]) -> Value {
@@ -236,7 +241,7 @@ impl Template {
         let mut scopes = vec![data];
         render.render_range(0, self.parts.len(), &self.top, &mut scopes);
         let xml = if render.ranges.is_empty() { render.out } else { style_ranges(&render.out, &render.ranges) };
-        let xml = if self.has_cell_loops { crate::table_grid::fit_table_grids(&xml).unwrap_or(xml) } else { xml };
+        let xml = if self.has_cell_loops { crate::table_grid::fit_table_grids(&xml, self.table_resize).unwrap_or(xml) } else { xml };
         FilledPart { xml, media: render.media, footnotes: render.footnotes, links: render.links, style_definitions: render.style_definitions, includes: render.includes, comments: render.comments, sections: render.sections }
     }
 }
@@ -617,7 +622,7 @@ impl<'a> Render<'a, '_> {
         let id = self.state.next_footnote_id;
         self.state.next_footnote_id += 1;
         self.out.push_str(&format!("</w:t></w:r><w:r>{SUPERSCRIPT}<w:footnoteReference w:id=\"{id}\"/></w:r><w:r>{props}<w:t xml:space=\"preserve\">"));
-        self.footnotes.push((id, text));
+        self.footnotes.push((id, crate::footnotes::write_note(id, &text, &self.template.footnotes)));
     }
 
     /// The value's text marked with its comments, in the body; elsewhere the text alone.
@@ -666,16 +671,23 @@ impl<'a> Render<'a, '_> {
                 drawing_size(&image, width, cell_width.is_some(), height)
             }
         };
+        let fallback = if image.extension.eq_ignore_ascii_case("svg") {
+            self.hooks.svg_fallback(self.part, value, &image).map(|bytes| MediaUse::svg_fallback(&image, bytes))
+        } else { None };
         let media = MediaUse::for_image(image);
         let id = self.state.next_drawing_id;
         self.state.next_drawing_id += 1;
 
         // The tag sits inside <w:t>; a drawing belongs in the run beside it.
         self.out.push_str("</w:t>");
-        self.out.push_str(&drawing_xml(id, &media.relationship_id, width, height));
+        let displayed = fallback.as_ref().unwrap_or(&media);
+        let svg = fallback.as_ref().map(|_| media.relationship_id.as_str());
+        self.out.push_str(&drawing_xml(id, &displayed.relationship_id, width, height, svg));
         self.out.push_str("<w:t xml:space=\"preserve\">");
-        if !self.media.iter().any(|used| used.relationship_id == media.relationship_id) {
-            self.media.push(media);
+        for media in std::iter::once(media).chain(fallback) {
+            if !self.media.iter().any(|used| used.relationship_id == media.relationship_id) {
+                self.media.push(media);
+            }
         }
     }
 
