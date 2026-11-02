@@ -617,7 +617,7 @@ impl<'a> Render<'a, '_> {
         let id = self.state.next_footnote_id;
         self.state.next_footnote_id += 1;
         self.out.push_str(&format!("</w:t></w:r><w:r>{SUPERSCRIPT}<w:footnoteReference w:id=\"{id}\"/></w:r><w:r>{props}<w:t xml:space=\"preserve\">"));
-        self.footnotes.push((id, text));
+        self.footnotes.push((id, crate::footnotes::write_note(id, &text, &self.template.footnotes)));
     }
 
     /// The value's text marked with its comments, in the body; elsewhere the text alone.

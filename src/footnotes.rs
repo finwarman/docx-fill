@@ -15,6 +15,43 @@ pub(crate) const MAIN_NAMESPACE: &str = "http://schemas.openxmlformats.org/wordp
 const SEPARATORS: &str = "<w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>\
 <w:footnote w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>";
 
+/// Whether a footnote value is text or complete Word runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FootnoteContent { #[default] Text, Raw }
+
+/// Formatting fragments for newly inserted footnotes.
+#[derive(Debug, Clone, Default)]
+pub struct FootnoteOptions {
+    pub content: FootnoteContent,
+    pub ref_properties: Option<String>,
+    pub ref_run: Option<String>,
+    pub paragraph_properties: Option<String>,
+    pub run_properties: Option<String>,
+}
+
+pub(crate) fn write_note(id: u32, text: &str, options: &FootnoteOptions) -> String {
+    let paragraph = options.paragraph_properties.as_deref().unwrap_or("<w:pStyle w:val=\"FootnoteText\"/>");
+    let reference = options.ref_properties.as_deref().unwrap_or("<w:vertAlign w:val=\"superscript\"/>");
+    let mut out = format!("<w:footnote w:id=\"{id}\"><w:p><w:pPr>{paragraph}</w:pPr><w:r><w:rPr>{reference}</w:rPr><w:footnoteRef/></w:r>");
+    if let Some(run) = &options.ref_run { out.push_str(run); }
+    match options.content {
+        FootnoteContent::Raw => {
+            if options.ref_run.is_none() { out.push_str("<w:r><w:t xml:space=\"preserve\"> </w:t></w:r>"); }
+            out.push_str(text);
+        }
+        FootnoteContent::Text => {
+            out.push_str("<w:r>");
+            if let Some(properties) = &options.run_properties { out.push_str(&format!("<w:rPr>{properties}</w:rPr>")); }
+            out.push_str("<w:t xml:space=\"preserve\">");
+            if options.ref_run.is_none() { out.push(' '); }
+            escape(text, &mut out);
+            out.push_str("</w:t></w:r>");
+        }
+    }
+    out.push_str("</w:p></w:footnote>");
+    out
+}
+
 /// The largest footnote id in a footnotes part, at least 0.
 pub(crate) fn read_max_id(xml: &str) -> u32 {
     read_max_element_id(xml, "w:footnote")
@@ -42,12 +79,8 @@ pub(crate) fn add_footnotes(parts: &mut Vec<(String, Cow<[u8]>)>, notes: &[(u32,
         return;
     }
     let mut written = String::new();
-    for (id, text) in notes {
-        written.push_str(&format!(
-            "<w:footnote w:id=\"{id}\"><w:p><w:pPr><w:pStyle w:val=\"FootnoteText\"/></w:pPr><w:r><w:rPr><w:vertAlign w:val=\"superscript\"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space=\"preserve\"> "
-        ));
-        escape(text, &mut written);
-        written.push_str("</w:t></w:r></w:p></w:footnote>");
+    for (_, note) in notes {
+        written.push_str(note);
     }
     append_notes(parts, &written);
 }
