@@ -73,6 +73,12 @@ pub trait FillHooks {
         None
     }
 
+    /// Exact display dimensions for an image. `None` keeps container fitting.
+    /// Called after `image`; the same media can have different display sizes.
+    fn image_size(&mut self, _part: &str, _value: &Value, _image: &Image) -> Option<crate::ImageSize> {
+        None
+    }
+
     /// The result of `{input | name:arguments}`, with a filter named in `FillOptions::filters`. A
     /// missing input or argument is null. Returns the input by default.
     fn filter(&mut self, _name: &str, input: &Value, _arguments: &[Value]) -> Value {
@@ -110,6 +116,7 @@ pub(crate) struct FillState {
     pub next_bookmark_id: u32,
     /// The package's main document part, whose body takes sections, footnotes and comments.
     pub main_part: String,
+    pub numbering: Option<rich_text::numbering::Numberings>,
 }
 
 /// A filled part and the media its drawings show.
@@ -177,7 +184,7 @@ impl Template {
     /// The part filled with `data`, asking `hooks` for module tags and images. An image's media
     /// part and relationship are not added: fill a [`crate::PackageTemplate`] for that.
     pub fn render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> String {
-        let mut state = FillState { next_drawing_id: self.max_drawing_id + 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string() };
+        let mut state = FillState { next_drawing_id: self.max_drawing_id + 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
         let filled = self.fill(data, "", hooks, &mut state);
         // Only a package prints subtemplates.
         let xml = if filled.includes.is_empty() {
@@ -537,7 +544,7 @@ impl<'a> Render<'a, '_> {
                 if !has_rich_text && style.is_none() {
                     return;
                 }
-                let mut written = if has_rich_text { rich_text::write_paragraph(&self.out[opened..], &self.rich_values, &mut self.links, self.template.continued_bookmarks.as_deref().map(|prefix| (prefix, &mut self.state.next_bookmark_id))) } else { self.out[opened..].to_string() };
+                let mut written = if has_rich_text { rich_text::write_paragraph(&self.out[opened..], &self.rich_values, &mut self.links, self.template.continued_bookmarks.as_deref().map(|prefix| (prefix, &mut self.state.next_bookmark_id)), self.state.numbering.as_mut()) } else { self.out[opened..].to_string() };
                 if let Some(style) = style {
                     written = edit_each(&written, PARAGRAPH, |paragraph| style_paragraph(paragraph, &style, true));
                 }
@@ -650,9 +657,15 @@ impl<'a> Render<'a, '_> {
             paragraph.style.get_or_insert_with(Style::default).align = Some("center");
         }
 
-        let (body_width, body_height) = body_or_default(self.template.body.or(self.state.body));
-        let width = cell_width.unwrap_or(body_width) * self.state.container_fill;
-        let (width, height) = drawing_size(&image, width, cell_width.is_some(), body_height);
+        let (width, height) = match self.hooks.image_size(self.part, value, &image) {
+            Some(size) => size.dimensions(),
+            None => {
+                let (body_width, body_height) = body_or_default(self.template.body.or(self.state.body));
+                let width = cell_width.unwrap_or(body_width) * self.state.container_fill;
+                let height = body_height * self.state.container_fill;
+                drawing_size(&image, width, cell_width.is_some(), height)
+            }
+        };
         let media = MediaUse::for_image(image);
         let id = self.state.next_drawing_id;
         self.state.next_drawing_id += 1;

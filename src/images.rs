@@ -6,6 +6,13 @@ use crate::template::PX_PER_TWIP;
 use crate::xml::{ElementKind, Token, read_attribute, tokenize};
 
 const EMU_PER_PX: f64 = 9525.0;
+const PIXELS_PER_INCH: f64 = 96.0;
+const CENTIMETERS_PER_INCH: f64 = 2.54;
+const MILLIMETERS_PER_INCH: f64 = 25.4;
+const POINTS_PER_INCH: f64 = 72.0;
+const PICAS_PER_INCH: f64 = 6.0;
+// Word's ST_PositiveCoordinate limit.
+const MAX_WORD_IMAGE_EMU: f64 = i32::MAX as f64;
 // A4 less 1 inch margins, for a part with no page size.
 const DEFAULT_BODY: (f64, f64) = (698.0, 1027.0);
 
@@ -20,6 +27,57 @@ pub struct Image {
     /// Intrinsic size in any unit; only the ratio counts.
     pub width: f64,
     pub height: f64,
+}
+
+/// One display dimension, independent of the image's intrinsic dimensions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ImageLength {
+    Pixels(f64),
+    Inches(f64),
+    Centimeters(f64),
+    Millimeters(f64),
+    Points(f64),
+    Picas(f64),
+    Emus(f64),
+}
+
+impl ImageLength {
+    fn pixels(self) -> f64 {
+        match self {
+            Self::Pixels(value) => value,
+            Self::Inches(value) => value * PIXELS_PER_INCH,
+            Self::Centimeters(value) => value * PIXELS_PER_INCH / CENTIMETERS_PER_INCH,
+            Self::Millimeters(value) => value * PIXELS_PER_INCH / MILLIMETERS_PER_INCH,
+            Self::Points(value) => value * PIXELS_PER_INCH / POINTS_PER_INCH,
+            Self::Picas(value) => value * PIXELS_PER_INCH / PICAS_PER_INCH,
+            Self::Emus(value) => value / EMU_PER_PX,
+        }
+    }
+}
+
+/// Validated display size. Explicit sizes are not fitted or padded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageSize {
+    width: f64,
+    height: f64,
+}
+
+impl ImageSize {
+    /// `None` for non-finite, zero, negative or unsupported Word dimensions.
+    pub fn new(width: ImageLength, height: ImageLength) -> Option<Self> {
+        let (width, height) = (width.pixels(), height.pixels());
+        let valid = |value: f64| value.is_finite() && (1.0..=MAX_WORD_IMAGE_EMU).contains(&(value * EMU_PER_PX).round());
+        (valid(width) && valid(height)).then_some(Self { width, height })
+    }
+
+    /// A display size in pixels at 96 DPI.
+    pub fn pixels(width: f64, height: f64) -> Option<Self> {
+        Self::new(ImageLength::Pixels(width), ImageLength::Pixels(height))
+    }
+
+    pub(crate) fn dimensions(self) -> (f64, f64) {
+        (self.width, self.height)
+    }
 }
 
 /// A media part a filled part shows, and the relationship it shows it by.

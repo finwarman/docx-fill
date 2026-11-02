@@ -55,7 +55,7 @@ fn marks_bold_italic_and_underlined_text_on_its_runs() {
     let run_for = |value: &str| runs.iter().find(|run| text(run) == value).copied().unwrap_or_default();
     assert!(!run_for("plain ").contains("<w:b/>") && !run_for("plain ").contains("<w:i/>") && !run_for("plain ").contains("<w:u "));
     assert!(run_for("bold ").contains("<w:b/>"));
-    assert!(run_for("both").contains("<w:b/><w:i/>"));
+    assert!(run_for("both").contains("<w:b/>") && run_for("both").contains("<w:i/>"));
     assert!(run_for("under").contains(r#"<w:u w:val="single"/>"#));
 }
 

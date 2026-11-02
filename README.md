@@ -41,7 +41,7 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 
 | Flag | Tags | Does | docxtemplater module |
 |---|---|---|---|
-| `vertical_tables` | `{:vt#cols}` … `{:vt/cols}` | Repeats table cells | Vertical table |
+| `vertical_tables` | `{:vt#cols}` … `{:vt/cols}` | Repeats columns, including ranges across rows | Vertical table |
 | `cell_styling`, `styling` | `{:stylecell}`, `{:stylepar}`, `{:stylerow}`, `{:stylerun}`, `{:stylebullets}`, `{:styleshape}`, `{:stylestart}` … `{:/style}`, `{::stylepar}`, `{::stylerun}` | Styles a cell, paragraph, row, run, bullet, shape or style definition | Styling |
 | `table_merge` | `{:merge-cells-col 1,2}`, `{:merge-cells-row 1,-1}` | Merges neighbouring cells with the same text | Table |
 | `full_tables` | `{:table name}`, `{:#grid name}` … `{:/grid}` | Builds a table from data, or a grid of cells | Table |
@@ -55,6 +55,10 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 | `subtemplates` | `{:include name}`, `{:segment name}`, `{:includesegment name}` | Prints other documents or segments, with their styles, lists, media and links | Subtemplate |
 | `sections` | `{:subsection name}`, `{:replacesection name}`, `{:page props}` | Takes headers and footers from a subtemplate, or sets page size and margins | Subsection |
 | `comments` | `{name}` with `{ "text", "comment" }` | Prints text with Word comments on it | |
+
+Package rendering writes HTML lists as native Word lists, with numbering definitions, nesting, ordered starts and item-value resets. Existing numbering IDs are preserved. Word supports nine nesting levels; deeper HTML lists use the ninth level. Standalone `Template` and `fill_part` rendering keep literal markers because they do not return package parts.
+
+Inline HTML keeps spaces needed to separate surrounding text, including adjacent HTML values. Normal HTML whitespace collapses at line boundaries; the template's own spaces remain unchanged.
 
 A style value looks like this. `fontSize` is in half-points. It can also include `text`, which is printed at the styling tag and escaped as Word text.
 
@@ -77,6 +81,19 @@ template.set_theme_colors(BTreeMap::from([
 The method updates standard slots in `word/theme/theme1.xml`; color values accept three- or six-digit hex with an optional `#`.
 
 ## Other options
+
+`FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
+
+Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
+
+```rust
+use docx_fill::{ImageLength, ImageSize};
+
+let pixels = ImageSize::pixels(120.0, 80.0);
+let physical = ImageSize::new(ImageLength::Inches(2.0), ImageLength::Centimeters(2.54));
+```
+
+Dimensions accept pixels at 96 DPI, inches, centimeters, millimeters, points, picas and EMUs. Constructors return `None` for non-finite, non-positive or out-of-range Word dimensions. Explicit sizes are not padded or fitted to the page or cell.
 
 | Option | Does |
 |---|---|

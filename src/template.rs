@@ -13,6 +13,8 @@ use crate::tag_list::{TemplateTag, list_tags};
 use crate::xml::{ElementKind, Token, check_balanced, escape, read_attribute, tokenize, unescape};
 use crate::{Delimiters, Extensions, FillError, FillOptions};
 
+mod vertical_columns;
+
 const PARAGRAPH: &str = "w:p";
 const TEXT: &str = "w:t";
 const CELL: &str = "w:tc";
@@ -21,6 +23,7 @@ const RUN: &str = "w:r";
 const RUN_PROPS: &str = "w:rPr";
 const BREAK: &str = "w:br";
 const PRESERVE_SPACE: &str = " xml:space=\"preserve\"";
+const VERTICAL_START: &str = ":vt#";
 // Word lengths are twentieths of a point; pixels are 1/96 inch.
 pub(crate) const PX_PER_TWIP: f64 = 96.0 / 1440.0;
 
@@ -730,7 +733,7 @@ fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, S
     }
     if extensions.vertical_tables {
         // `{:vt#cols}` … `{:vt/cols}` repeat the cells from the opening tag's to the closing tag's.
-        if let Some(name) = text.strip_prefix(":vt#") {
+        if let Some(name) = text.strip_prefix(VERTICAL_START) {
             return Some((TagKind::Open { is_inverted: false, element: Some(CELL.to_string()) }, name.trim().to_string()));
         }
         if let Some(name) = text.strip_prefix(":vt/") {
@@ -821,6 +824,10 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                     continue;
                 }
                 check_cell_loops(parts, tags, opening, index, &options.delimiters)?;
+                if let Some(columns) = vertical_columns::column_blocks(parts, tags, opening, index)? {
+                    blocks.extend(columns);
+                    continue;
+                }
                 blocks.push(expand_loop(parts, tags, paragraphs, opening, index, options)?);
             }
             TagKind::Raw if !tag.is_alone => {

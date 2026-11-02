@@ -72,6 +72,61 @@ fn repeats_cells_between_vertical_table_tags() {
     assert_eq!(read_rows(&xml), [["Name", "H1", "H2"], ["r1", "1a", "1b"]]);
 }
 
+#[test]
+fn repeats_columns_across_rows() {
+    let template = table(&[
+        row(&[cell(&["Head"]), cell(&["{:vt#items}"]), cell(&["End"])]),
+        row(&[cell(&["Name"]), cell(&["{name}"]), cell(&["End"])]),
+        row(&[cell(&["Value"]), cell(&["{value}{:vt/items}"]), cell(&["End"])]),
+    ]);
+    let xml = fill(&template, json!({ "items": [{ "name": "A", "value": 1 }, { "name": "B", "value": 2 }] }));
+
+    assert_eq!(read_rows(&xml), [["Head", "", "", "End"], ["Name", "A", "B", "End"], ["Value", "1", "2", "End"]]);
+}
+
+#[test]
+fn drops_empty_columns() {
+    let template = table(&[
+        row(&[cell(&["Head"]), cell(&["{:vt#items}"])]),
+        row(&[cell(&["Name"]), cell(&["{name}{:vt/items}"])]),
+    ]);
+
+    assert_eq!(read_rows(&fill(&template, json!({ "items": [] }))), [["Head"], ["Name"]]);
+}
+
+#[test]
+fn repeats_column_groups() {
+    let template = table(&[
+        row(&[cell(&["{:vt#items}{a}"]), cell(&["{b}"])]),
+        row(&[cell(&["{a}"]), cell(&["{b}{:vt/items}"])]),
+    ]);
+    let xml = fill(&template, json!({ "items": [{ "a": "A", "b": "B" }, { "a": "C", "b": "D" }] }));
+
+    assert_eq!(read_rows(&xml), [["A", "B", "C", "D"], ["A", "B", "C", "D"]]);
+}
+
+#[test]
+fn combines_column_and_row_loops() {
+    let template = table(&[
+        row(&[cell(&["{:vt#columns}{name}"])]),
+        row(&[cell(&["{-w:tr rows}{value}{/rows}{:vt/columns}"])]),
+    ]);
+    let xml = fill(&template, json!({
+        "columns": [{ "name": "A" }, { "name": "B" }],
+        "rows": [{ "columns": [{ "value": "1" }, { "value": "2" }] }, { "columns": [{ "value": "3" }, { "value": "4" }] }]
+    }));
+
+    assert_eq!(read_rows(&xml), [["A", "B"], ["1", "2"], ["3", "4"]]);
+}
+
+#[test]
+fn rejects_cross_table_tags() {
+    let template = table(&[row(&[cell(&["{:vt#items}"])])]) + &table(&[row(&[cell(&["{:vt/items}"])])]);
+    let result = docx_fill::Template::parse(&template, &docx_fill::FillOptions::default());
+
+    assert!(result.is_err());
+}
+
 fn sized_cell(width: u32, text: &str) -> String {
     format!(r#"<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>"#)
 }

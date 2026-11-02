@@ -14,13 +14,19 @@
 
 use crate::cell_styling::{find_element_start, remove_first_element};
 use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_child};
-use crate::xml::escape;
+use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
+use std::collections::BTreeMap;
+
+pub(crate) mod numbering;
+use numbering::Numberings;
 
 // Stands in for a value in the filled XML until its paragraph closes.
 pub(crate) const MARK_START: char = '\u{E000}';
 pub(crate) const MARK_END: char = '\u{E001}';
 
 const LIST_INDENT_TWIPS: u32 = 360;
+// Word numbering levels are zero-based, with nine levels.
+const MAX_LIST_LEVEL: usize = 8;
 const QUOTE_INDENT_TWIPS: u32 = 720;
 const BULLET: &str = "\u{2022}";
 // Half-points, h1 to h6.
@@ -29,6 +35,7 @@ const CODE_FONT: &str = "Courier New";
 const LINK_COLOR: &str = "0563C1";
 const CHECKED: &str = "\u{2612}";
 const UNCHECKED: &str = "\u{2610}";
+const OBJECT_REPLACEMENT: char = '\u{fffc}';
 const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
 // Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
 const TABLE_COLUMN_TWIPS: u32 = 2000;
@@ -88,17 +95,63 @@ struct Run {
     is_italic: bool,
     is_underlined: bool,
     format: Format,
+    preserve_spaces: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 struct Block {
     runs: Vec<Run>,
     heading_level: Option<usize>,
-    list: Option<(usize, String)>,
+    list: Option<ListItem>,
     align: Option<&'static str>,
     quote_level: u32,
     is_rule: bool,
     table: Option<Vec<Vec<Cell>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ListItem {
+    group: usize,
+    level: usize,
+    format: Numbering,
+    value: i64,
+}
+
+struct ListWriter<'a> {
+    numbering: Option<&'a mut Numberings>,
+    ids: BTreeMap<usize, u32>,
+}
+
+struct BlockWriter<'a, 'n> {
+    run_props: &'a str,
+    links: &'a mut Vec<String>,
+    lists: ListWriter<'n>,
+}
+
+#[derive(Default)]
+struct SpaceEdges {
+    start: bool,
+    end: bool,
+}
+
+impl SpaceEdges {
+    fn between(before: Option<char>, after: Option<char>) -> Self {
+        Self {
+            start: before.is_some_and(|c| !is_html_space(c)),
+            end: after.is_some_and(|c| !is_html_space(c)),
+        }
+    }
+}
+
+impl ListWriter<'_> {
+    fn id_for(&mut self, item: &ListItem) -> Option<u32> {
+        if let Some(id) = self.ids.get(&item.group) {
+            return Some(*id);
+        }
+        let id = self.numbering.as_mut()?.add(item.format, item.level, item.value)?;
+        self.ids.insert(item.group, id);
+        Some(id)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -114,8 +167,9 @@ pub(crate) fn mark(index: usize) -> String {
 /// A filled paragraph holding rich text marks, rewritten with the values' runs and paragraphs.
 /// External links are added to `links`, whose position names their relationship. `continued`
 /// gives the bookmark prefix whose later paragraphs get numbered bookmarks, and the next free id.
-pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut Vec<String>, continued: Option<(&str, &mut u32)>) -> String {
-    let mut paragraph = write_earlier_marks(paragraph, values, links);
+pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>) -> String {
+    let paragraph = without_empty_marks(paragraph, values);
+    let mut paragraph = write_earlier_marks(&paragraph, values, links);
     while let Some((mark, index)) = find_mark(&paragraph) {
         // Only printed values hold marks by accident, and those have no value to print.
         let Some(value) = values.get(index) else {
@@ -125,11 +179,17 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
         let other_text = read_text(&paragraph).replacen(&mark, "", 1);
         let run = find_run(&paragraph, &mark);
         let run_props = run.and_then(|run| find_between(run, "<w:rPr>", "</w:rPr>")).unwrap_or("");
-        let blocks = read_html(&value.html, value.has_extras);
+        let is_block = value.is_block && other_text.trim().is_empty() && run.is_some();
+        let spaces = if is_block { SpaceEdges::default() } else {
+            let text = read_flow_text(&paragraph);
+            let (before, after) = text.split_once(&mark).unwrap_or(("", ""));
+            SpaceEdges::between(before.chars().next_back(), after.chars().next())
+        };
+        let blocks = read_html(&value.html, value.has_extras, spaces);
 
         // Alone in its paragraph: the paragraph becomes the value's paragraphs.
-        if value.is_block && other_text.trim().is_empty() && !blocks.is_empty() && run.is_some() {
-            return write_blocks(&paragraph, &blocks, run_props, links, continued);
+        if is_block && !blocks.is_empty() {
+            return write_blocks(&paragraph, &blocks, run_props, links, continued, numbering);
         }
 
         // Beside other text: the runs go where the tag was, joined by breaks.
@@ -144,11 +204,31 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
     paragraph
 }
 
+/// Empty fragments must not hide the real text on either side of another fragment.
+fn without_empty_marks(paragraph: &str, values: &[RichValue]) -> String {
+    let mut out = String::with_capacity(paragraph.len());
+    let mut rest = paragraph;
+    while let Some((mark, index)) = find_mark(rest) {
+        let at = rest.find(&mark).unwrap_or(0);
+        out.push_str(&rest[..at]);
+        if let Some(value) = values.get(index)
+            && !read_html(&value.html, value.has_extras, SpaceEdges { start: true, end: true }).is_empty() {
+            out.push_str(&mark);
+        }
+        rest = &rest[at + mark.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// `paragraph` with every mark but its last printed inline, in one pass, as only a last mark can
 /// be alone in its paragraph.
 fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<String>) -> String {
     let mut left = paragraph.matches(MARK_START).count().saturating_sub(1);
     let mut out = String::with_capacity(paragraph.len());
+    let flow = read_flow_text(paragraph);
+    let mut following = flow.as_str();
+    let mut previous = None;
     let mut from = 0;
     while left > 0 {
         let Some(at) = find_element_start(&paragraph[from..], "<w:r") else { break };
@@ -171,9 +251,15 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
             let Some((mark, index)) = find_mark(rest) else { break };
             let at = rest.find(&mark).unwrap_or(0);
             out.push_str(&write_text_run(open, run_props, &rest[..at]));
+            let (before, after) = following.split_once(&mark).unwrap_or(("", ""));
+            previous = before.chars().next_back().or(previous);
             if let Some(value) = values.get(index) {
-                out.push_str(&join_inline(&read_html(&value.html, value.has_extras), run_props, links));
+                let spaces = SpaceEdges::between(previous, after.chars().next());
+                let inline = join_inline(&read_html(&value.html, value.has_extras, spaces), run_props, links);
+                previous = read_flow_text(&inline).chars().next_back().or(previous);
+                out.push_str(&inline);
             }
+            following = after;
             rest = &rest[at + mark.len()..];
             left -= 1;
         }
@@ -184,12 +270,13 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
 }
 
 /// The paragraph as the value's paragraphs, in place of its own.
-fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>) -> String {
+fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>) -> String {
     let open = &paragraph[..paragraph.find('>').map_or(0, |at| at + 1)];
     let paragraph_props = find_between(paragraph, "<w:pPr>", "</w:pPr>").unwrap_or("");
     let bookmarks = find_bookmarks(paragraph);
     let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
     let mut out = String::new();
+    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new() } };
     for (index, block) in blocks.iter().enumerate() {
         let later = match (&mut continued, index) {
             (_, 0) => String::new(),
@@ -204,12 +291,9 @@ fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut 
         if follows_table(blocks, index) {
             out.push_str(&format!("{open}{paragraph_props}</w:p>"));
         }
-        write_block(&mut out, open, paragraph_props, bookmarks, block, run_props, links);
+        write_block(&mut out, open, paragraph_props, bookmarks, block, &mut writer);
     }
-    // A table cannot end a cell; the tag paragraph's look follows it.
-    if blocks.last().is_some_and(|block| block.table.is_some()) {
-        out.push_str(&format!("{open}{paragraph_props}</w:p>"));
-    }
+    // The final structure pass adds a trailing paragraph only where required.
     out
 }
 
@@ -217,9 +301,10 @@ fn join_inline(blocks: &[Block], run_props: &str, links: &mut Vec<String>) -> St
     blocks.iter().map(|block| write_inline(block, run_props, links)).collect::<Vec<_>>().join(&format!("<w:r>{run_props}<w:br/></w:r>"))
 }
 
-fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &str, block: &Block, run_props: &str, links: &mut Vec<String>) {
+fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &str, block: &Block, writer: &mut BlockWriter) {
     let Some(rows) = &block.table else {
-        out.push_str(&format!("{open}{}{bookmarks}{}</w:p>", write_paragraph_props(paragraph_props, block), write_runs(block, run_props, links)));
+        let number = block.list.as_ref().and_then(|item| writer.lists.id_for(item));
+        out.push_str(&format!("{open}{}{bookmarks}{}</w:p>", write_paragraph_props(paragraph_props, block, number), write_runs(block, writer.run_props, writer.links, number)));
         return;
     };
     let columns = rows.iter().map(|row| row.iter().map(|cell| cell.span).sum::<usize>()).max().unwrap_or(1).max(1);
@@ -241,7 +326,7 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
                 if follows_table(&cell.blocks, index) {
                     out.push_str("<w:p/>");
                 }
-                write_block(out, "<w:p>", "", "", block, run_props, links);
+                write_block(out, "<w:p>", "", "", block, writer);
             }
             if cell.blocks.last().is_none_or(|block| block.table.is_some()) {
                 out.push_str("<w:p/>");
@@ -265,7 +350,7 @@ fn follows_table(blocks: &[Block], index: usize) -> bool {
 /// A block's runs for printing inside a paragraph; a table's cells are joined by tabs and its
 /// rows by breaks.
 fn write_inline(block: &Block, run_props: &str, links: &mut Vec<String>) -> String {
-    let Some(rows) = &block.table else { return write_runs(block, run_props, links) };
+    let Some(rows) = &block.table else { return write_runs(block, run_props, links, None) };
     let mut lines = Vec::new();
     for row in rows {
         let cells: Vec<String> = row.iter().map(|cell| cell.blocks.iter().map(|block| write_inline(block, run_props, links)).collect()).collect();
@@ -324,6 +409,23 @@ fn read_text(xml: &str) -> String {
         let Some(close) = xml[from..].find("</w:t>") else { break };
         text.push_str(&xml[from..from + close]);
         from += close;
+    }
+    text
+}
+
+/// Text and line boundaries used to collapse only the inserted HTML's edge spaces.
+fn read_flow_text(xml: &str) -> String {
+    let mut text = String::new();
+    let mut in_text = false;
+    for token in tokenize(xml).unwrap_or_default() {
+        match token {
+            Token::Element { kind: ElementKind::Open, name: "w:t", .. } => in_text = true,
+            Token::Element { kind: ElementKind::Close, name: "w:t", .. } => in_text = false,
+            Token::Text(value) if in_text => text.push_str(&unescape(value)),
+            Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "w:br" | "w:cr" | "w:tab", .. } => text.push(' '),
+            Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "w:drawing" | "w:pict" | "w:object", .. } => text.push(OBJECT_REPLACEMENT),
+            _ => {}
+        }
     }
     text
 }
@@ -439,7 +541,8 @@ struct Reader {
     /// Blocks being collected: the value's, then each open table cell's.
     collections: Vec<Vec<Block>>,
     current: Option<usize>,
-    lists: Vec<(Numbering, i64)>,
+    lists: Vec<ListItem>,
+    next_list: usize,
     // Without extras, nesting counts of b/strong, i/em and u.
     counts: (i32, i32, i32),
     /// Open inline elements and the format each adds.
@@ -449,6 +552,7 @@ struct Reader {
     tables: Vec<(usize, Vec<Vec<Cell>>)>,
     /// Open tables past `MAX_TABLE_DEPTH`, printed as part of the table around them.
     ignored_tables: usize,
+    spaces: SpaceEdges,
 }
 
 impl Reader {
@@ -480,9 +584,36 @@ impl Reader {
             self.start_block(Block::default());
         }
         let (bold, italic, underline) = self.counts;
-        let run = Run { text, is_break, is_bold: bold > 0, is_italic: italic > 0, is_underlined: underline > 0, format: self.format() };
+        let preserve_spaces = self.container().is_pre;
+        let run = Run { text, is_break, is_bold: bold > 0, is_italic: italic > 0, is_underlined: underline > 0, format: self.format(), preserve_spaces };
         let index = self.current.expect("started above");
+        if is_break && !preserve_spaces {
+            trim_spaces(&mut self.blocks()[index]);
+        }
         self.blocks()[index].runs.push(run);
+    }
+
+    /// Collapse HTML whitespace across inline boundaries, without collapsing NBSP.
+    fn add_text(&mut self, text: &str) {
+        let keep_start = self.spaces.start && self.collections.len() == 1 && self.blocks().is_empty();
+        let mut space = self.current.map_or(!keep_start, |index| {
+            self.blocks()[index].runs.last().is_none_or(|run| run.is_break || run.text.as_deref().is_none_or(|text| text.ends_with(' ')))
+        });
+        let mut collapsed = String::new();
+        for c in text.chars() {
+            if is_html_space(c) {
+                if !space {
+                    collapsed.push(' ');
+                }
+                space = true;
+            } else {
+                collapsed.push(c);
+                space = false;
+            }
+        }
+        if !collapsed.is_empty() {
+            self.add_run(Some(collapsed), false);
+        }
     }
 
     fn is_in_list(&mut self) -> bool {
@@ -512,16 +643,18 @@ impl Reader {
 }
 
 /// The HTML's paragraphs, headings, list items and, with extras, tables, with their runs.
-fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
+fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
     let mut reader = Reader {
         collections: vec![Vec::new()],
         current: None,
         lists: Vec::new(),
+        next_list: 0,
         counts: (0, 0, 0),
         formats: Vec::new(),
         containers: Vec::new(),
         tables: Vec::new(),
         ignored_tables: 0,
+        spaces,
     };
 
     for token in read_html_tokens(html, has_extras) {
@@ -537,8 +670,8 @@ fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
                             reader.add_run(Some(line.to_string()), false);
                         }
                     }
-                } else if reader.current.is_some() || !decoded.trim().is_empty() {
-                    reader.add_run(Some(decoded), false);
+                } else {
+                    reader.add_text(&decoded);
                 }
                 continue;
             }
@@ -582,16 +715,22 @@ fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
                     .flatten()
                     .unwrap_or(numbering);
                 let start = has_extras.then(|| read_attribute(&attributes, "start").and_then(|start| start.trim().parse::<i64>().ok())).flatten().unwrap_or(1);
-                reader.lists.push((numbering, start - 1));
+                let item = ListItem { group: reader.next_list, level: reader.lists.len(), format: numbering, value: start.saturating_sub(1) };
+                reader.next_list += 1;
+                reader.lists.push(item);
             }
             "li" => {
-                let level = reader.lists.len();
-                match reader.lists.last_mut() {
-                    Some((numbering, count)) if !is_closing => {
+                match reader.lists.last().copied() {
+                    Some(mut item) if !is_closing => {
                         let value = has_extras.then(|| read_attribute(&attributes, "value").and_then(|value| value.trim().parse::<i64>().ok())).flatten();
-                        *count = value.unwrap_or(*count + 1);
-                        let marker = numbering.marker(*count);
-                        reader.start_block(Block { list: Some((level - 1, marker)), ..Block::default() });
+                        let next = item.value.saturating_add(1);
+                        item.value = value.unwrap_or(next);
+                        if value.is_some_and(|value| value != next) {
+                            item.group = reader.next_list;
+                            reader.next_list += 1;
+                        }
+                        *reader.lists.last_mut().expect("list read above") = item;
+                        reader.start_block(Block { list: Some(item), ..Block::default() });
                     }
                     _ => reader.current = None,
                 }
@@ -603,7 +742,41 @@ fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
     while !reader.tables.is_empty() {
         read_extra_tag(&mut reader, true, "table", &[]);
     }
-    reader.collections.swap_remove(0)
+    let mut blocks = reader.collections.swap_remove(0);
+    trim_blocks(&mut blocks, reader.spaces);
+    blocks
+}
+
+fn is_html_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')
+}
+
+fn trim_spaces(block: &mut Block) {
+    for run in block.runs.iter_mut().rev() {
+        if run.is_break || run.preserve_spaces {
+            break;
+        }
+        let Some(text) = &mut run.text else { continue };
+        text.truncate(text.trim_end_matches(is_html_space).len());
+        if !text.is_empty() {
+            break;
+        }
+    }
+}
+
+fn trim_blocks(blocks: &mut [Block], spaces: SpaceEdges) {
+    let last = blocks.len().saturating_sub(1);
+    for (index, block) in blocks.iter_mut().enumerate() {
+        if index != last || !spaces.end {
+            trim_spaces(block);
+        }
+        block.runs.retain(|run| run.is_break || run.text.as_deref().is_some_and(|text| !text.is_empty()));
+        if let Some(rows) = &mut block.table {
+            for cell in rows.iter_mut().flatten() {
+                trim_blocks(&mut cell.blocks, SpaceEdges::default());
+            }
+        }
+    }
 }
 
 /// Handles an element only extras read. Returns whether it was one.
@@ -943,16 +1116,15 @@ fn read_attributes(text: &str, attributes: &mut Vec<(String, String)>) -> Option
     }
 }
 
-fn write_paragraph_props(paragraph_props: &str, block: &Block) -> String {
+fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u32>) -> String {
     let mut props = match &block.list {
-        Some((level, _)) => {
-            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_INDENT_TWIPS}\"/>", LIST_INDENT_TWIPS * (*level as u32 + 1));
+        Some(item) => {
+            let level = if number.is_some() { item.level.min(MAX_LIST_LEVEL) } else { item.level };
+            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_INDENT_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
             let inner = paragraph_props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("");
             let inner = remove_first_element(inner, "<w:ind");
-            let inner = match find_between(&inner, "<w:numPr>", "</w:numPr>") {
-                Some(numbering) => inner.replacen(numbering, "", 1),
-                None => inner,
-            };
+            let numbering = number.map(|id| format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{id}\"/></w:numPr>")).unwrap_or_default();
+            let inner = set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER);
             format!("<w:pPr>{inner}{indent}</w:pPr>")
         }
         None => paragraph_props.to_string(),
@@ -975,11 +1147,11 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block) -> String {
     props
 }
 
-fn write_runs(block: &Block, run_props: &str, links: &mut Vec<String>) -> String {
+fn write_runs(block: &Block, run_props: &str, links: &mut Vec<String>, number: Option<u32>) -> String {
     let size = block.heading_level.map(|level| HEADING_SIZES[level - 1]);
     let mut out = match &block.list {
-        Some((_, marker)) => format!("<w:r>{run_props}<w:t>{marker}</w:t></w:r><w:r>{run_props}<w:tab/></w:r>"),
-        None => String::new(),
+        Some(item) if number.is_none() => format!("<w:r>{run_props}<w:t>{}</w:t></w:r><w:r>{run_props}<w:tab/></w:r>", item.format.marker(item.value)),
+        _ => String::new(),
     };
     let mut open_link: Option<&str> = None;
     for run in &block.runs {
@@ -1039,11 +1211,13 @@ fn write_run_props(run_props: &str, is_bold: bool, is_italic: bool, is_underline
         }
         inner.push_str(&format!("<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/>"));
     }
-    if is_bold && find_element_start(&inner, "<w:b").is_none() {
-        inner.push_str("<w:b/>");
+    if is_bold {
+        inner = set_child(&inner, "w:b", "<w:b/>", RUN_ORDER);
+        inner = set_child(&inner, "w:bCs", "<w:bCs/>", RUN_ORDER);
     }
-    if is_italic && find_element_start(&inner, "<w:i").is_none() {
-        inner.push_str("<w:i/>");
+    if is_italic {
+        inner = set_child(&inner, "w:i", "<w:i/>", RUN_ORDER);
+        inner = set_child(&inner, "w:iCs", "<w:iCs/>", RUN_ORDER);
     }
     if is_underlined && !inner.contains("<w:u ") {
         inner.push_str("<w:u w:val=\"single\"/>");
@@ -1065,9 +1239,11 @@ fn write_format(inner: &str, format: &Format) -> String {
     }
     if let Some(bold) = format.bold {
         inner = set_child(&inner, "w:b", &toggle(bold, "w:b"), RUN_ORDER);
+        inner = set_child(&inner, "w:bCs", &toggle(bold, "w:bCs"), RUN_ORDER);
     }
     if let Some(italic) = format.italic {
         inner = set_child(&inner, "w:i", &toggle(italic, "w:i"), RUN_ORDER);
+        inner = set_child(&inner, "w:iCs", &toggle(italic, "w:iCs"), RUN_ORDER);
     }
     if let Some(strike) = format.strike {
         inner = set_child(&inner, "w:strike", &toggle(strike, "w:strike"), RUN_ORDER);
@@ -1160,7 +1336,7 @@ mod tests {
 
     #[test]
     fn skips_a_tag_with_attributes_as_text() {
-        let blocks = read_html("<p class=\"x\">t</p>", false);
+        let blocks = read_html("<p class=\"x\">t</p>", false, SpaceEdges::default());
         assert_eq!(blocks[0].runs[0].text.as_deref(), Some("p class=\"x\">t"));
     }
 

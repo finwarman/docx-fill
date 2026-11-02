@@ -35,7 +35,7 @@ fn reads_inline_styles_in_schema_order() {
     let body = html(r#"<p><span style="color: #f00; font-size: 16px; font-family: 'Times New Roman', serif; font-weight: 700; font-style: italic; text-decoration: underline line-through; background-color: rgb(0, 128, 255)">x</span></p>"#);
 
     assert!(run_with(&body, "x").contains(
-        r#"<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:b/><w:i/><w:strike/><w:color w:val="FF0000"/><w:sz w:val="24"/><w:szCs w:val="24"/><w:u w:val="single"/><w:shd w:val="clear" w:color="auto" w:fill="0080FF"/></w:rPr>"#
+        r#"<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:b/><w:bCs/><w:i/><w:iCs/><w:strike/><w:color w:val="FF0000"/><w:sz w:val="24"/><w:szCs w:val="24"/><w:u w:val="single"/><w:shd w:val="clear" w:color="auto" w:fill="0080FF"/></w:rPr>"#
     ));
 }
 
@@ -112,7 +112,22 @@ fn builds_a_bordered_table_with_bold_header_cells_and_spans() {
     assert_eq!(read_rows(&body), vec![vec!["H1", "H2"], vec!["wide"], vec!["ab", ""]]);
     assert!(run_with(&body, "H1").contains("<w:b/>"));
     assert!(body.contains(r#"<w:gridSpan w:val="2"/>"#));
-    assert!(body.ends_with("</w:tbl><w:p></w:p>"));
+    assert!(body.ends_with("</w:tbl>"));
+}
+
+#[test]
+fn keeps_body_table_last() {
+    let body = html("<table><tr><td>A</td></tr></table>");
+
+    assert!(body.ends_with("</w:tbl>"));
+}
+
+#[test]
+fn keeps_table_cell_tail() {
+    let template = format!("<w:tbl><w:tr><w:tc>{TAG}</w:tc></w:tr></w:tbl>");
+    let body = fill(&template, json!({ "html": "<table><tr><td>A</td></tr></table>" }));
+
+    assert!(body.contains("</w:tbl><w:p/></w:tc>") || body.contains("</w:tbl><w:p></w:p></w:tc>"));
 }
 
 #[test]
