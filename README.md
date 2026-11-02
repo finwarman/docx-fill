@@ -84,6 +84,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 ## Other options
 
+`FillOptions::footnotes` controls inserted footnotes. `FootnoteContent::Raw` accepts complete Word runs. `ref_properties`, `ref_run`, `paragraph_properties` and `run_properties` customize the note marker, separator and text. JSON uses `footnotes: { raw, refProperties, refRun, paragraphProperties, runProperties }`. XML fragments must be valid WordprocessingML.
+
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
 
 Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
