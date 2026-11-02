@@ -54,7 +54,7 @@ pub use errors::{FillError, FillErrorId};
 pub use comments::CommentDefaults;
 pub use footnotes::{FootnoteContent, FootnoteOptions};
 pub use full_table::{TableOptions, TableResize, TableValidation};
-pub use images::{Image, ImageLength, ImageSize};
+pub use images::{Image, ImageAlignment, ImageBorder, ImageCaption, ImageLength, ImageProperties, ImageSize};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
@@ -434,6 +434,7 @@ impl PackageTemplate {
         let mut state = FillState {
             assignments: expressions::Assignments::default(),
             next_drawing_id: self.max_drawing_id + 1,
+            next_caption: 1,
             body: self.body,
             container_fill: CONTAINER_FILL,
             next_footnote_id: self.max_footnote_id + 1,
