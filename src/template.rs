@@ -649,21 +649,27 @@ fn read_tag(text: &str, options: &FillOptions) -> (TagKind, String) {
         (&prefixes.image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: false }),
         (&prefixes.centered_image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: options.extensions.centered_images }),
     ];
-    if let Some((prefix, _, kind)) = kinds.into_iter().filter(|(prefix, enabled, _)| *enabled && text.starts_with(prefix.as_str())).max_by_key(|(prefix, _, _)| prefix.len()) {
-        let rest = &text[prefix.len()..];
+    let found = kinds.into_iter().filter(|(prefix, enabled, _)| *enabled && text.starts_with(prefix.as_str())).max_by_key(|(prefix, _, _)| prefix.len());
+    let named = |kind: TagKind, rest: &str| {
         let name = if matches!(kind, TagKind::Image { .. } | TagKind::RawRun) { rest.trim() } else { rest };
-        return (kind, name.to_string());
-    }
+        (kind, name.to_string())
+    };
+    // An empty prefix only takes tags nothing else reads, element loops included.
+    let fallback = match found {
+        Some((prefix, _, kind)) if !prefix.is_empty() => return named(kind, &text[prefix.len()..]),
+        Some((_, _, kind)) => Some(kind),
+        None => None,
+    };
 
     let rest = text.get(1..).unwrap_or_default().to_string();
-    match text.as_bytes().first() {
-        // `-w:tr rows`: the element, then the name. Without both, `-a` is a plain name.
-        Some(b'-') => match rest.split_once(char::is_whitespace) {
-            Some((element, name)) if !element.is_empty() => (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string()),
-            _ => (TagKind::Value, text.to_string()),
-        },
-        _ => (TagKind::Value, text.to_string()),
+    // `-w:tr rows`: the element, then the name. Without both, `-a` is a plain name.
+    if text.starts_with('-')
+        && let Some((element, name)) = rest.split_once(char::is_whitespace)
+        && !element.is_empty()
+    {
+        return (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string());
     }
+    fallback.map_or_else(|| (TagKind::Value, text.to_string()), |kind| named(kind, text))
 }
 
 fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, String)> {

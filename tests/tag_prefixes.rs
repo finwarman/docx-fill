@@ -62,3 +62,13 @@ fn allows_unprefixed_html() {
     assert_eq!(text(&output), "word");
     assert!(output.contains("<w:b/>"));
 }
+
+#[test]
+fn keeps_element_loops_with_unprefixed_html() {
+    let options = FillOptions::default().read_json(&json!({"tagPrefixes":{"html":""}})).unwrap();
+    let row = "<w:tr><w:tc><w:p><w:r><w:t>{-w:tr rows}{value}{/rows}</w:t></w:r></w:p></w:tc></w:tr>";
+    let output = fill_part(&document(&format!("<w:tbl>{row}</w:tbl>")), &json!({"rows":[{"value":"<b>A</b>"},{"value":"B"}]}), &options).unwrap();
+
+    assert_eq!(output.matches("<w:tr>").count(), 2);
+    assert_eq!(text(&output), "AB");
+}
