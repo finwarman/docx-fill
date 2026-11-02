@@ -166,9 +166,11 @@ pub struct Template {
     pub(crate) top: Vec<usize>,
     pub(crate) linebreaks: bool,
     pub(crate) html_extras: bool,
+    pub(crate) table_resize: crate::TableResize,
     pub(crate) drop_style_paragraphs: bool,
     /// With comments on, the comment author and date a value gives none of.
     pub(crate) comment_defaults: Option<CommentDefaults>,
+    pub(crate) footnotes: crate::FootnoteOptions,
     /// Tag names read as expressions, with expressions on.
     pub(crate) expressions: BTreeMap<String, Expression>,
     /// The largest drawing id the part uses, so new drawings take ids after it.
@@ -354,8 +356,10 @@ impl Template {
             top: Vec::new(),
             linebreaks: options.linebreaks && layout == TextLayout::Paragraphs,
             html_extras: options.extensions.html_extras,
+            table_resize: options.table.resize,
             drop_style_paragraphs: options.drop_style_paragraphs,
             comment_defaults: options.extensions.comments.then(|| options.comments.clone()),
+            footnotes: options.footnotes.clone(),
         };
         template.nest_blocks()?;
         Ok(template)
@@ -870,7 +874,7 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                 blocks.push(Block { kind, start, end: end + 1, body_start: end + 1, body_end: end + 1, children: Vec::new(), open_tag: index });
             }
             TagKind::FullTable => {
-                if !tag.is_alone {
+                if !tag.is_alone && options.table.paragraph_validation == crate::TableValidation::Error {
                     return Err(FillError::new(format!("The table tag \"{}\" should be the only text in its paragraph", tag.text)));
                 }
                 let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;
