@@ -82,6 +82,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
 
+Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
+
 ```rust
 use docx_fill::{ImageLength, ImageSize};
 
