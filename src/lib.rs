@@ -376,7 +376,7 @@ impl PackageTemplate {
         let mut parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
         let chart_titles = if options.extensions.charts { charts::prepare(&mut parts, options) } else { BTreeMap::new() };
         #[cfg(feature = "qr-codes")]
-        if options.extensions.qr_codes && options.extensions.images { qr_codes::prepare(&mut parts, options); }
+        let mut qr_tags = if options.extensions.qr_codes && options.extensions.images { qr_codes::prepare(&parts, options) } else { BTreeMap::new() };
         let content_types = parts.iter().find(|(name, _)| name == CONTENT_TYPES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes));
         let kinds = PartKinds::read(content_types.as_deref());
         let main_part = parts.iter().map(|(name, _)| name).find(|name| kinds.kind(name) == PartKind::Main).cloned().unwrap_or_else(|| DOCUMENT_PART.to_string());
@@ -404,10 +404,25 @@ impl PackageTemplate {
                 Ok(xml) => xml,
                 Err(_) => { errors.push(FillError::new("The part is not UTF-8").with_id(FillErrorId::MalformedXml).in_part(&name)); continue; }
             };
+            #[cfg(feature = "qr-codes")]
+            let qr = qr_tags.remove(&name).unwrap_or_default();
+            #[cfg(feature = "qr-codes")]
+            let qr_errors: Vec<_> = qr.errors.into_iter().map(|error| error.in_part(&name)).collect();
             match Template::parse_text(&xml, options, layout) {
-                Ok(template) => parsed.push((name, PackagePart::Template(Box::new(template)))),
+                Ok(template) => {
+                    #[cfg(feature = "qr-codes")]
+                    let template = {
+                        let mut template = template;
+                        template.qr_tags = qr.tags;
+                        template.expressions.extend(qr.expressions);
+                        template
+                    };
+                    parsed.push((name, PackagePart::Template(Box::new(template))));
+                }
                 Err(error) => errors.push(error.in_part(&name)),
             }
+            #[cfg(feature = "qr-codes")]
+            errors.extend(qr_errors);
         }
         if !errors.is_empty() { return Err(FillError::many(errors)); }
 
