@@ -3,6 +3,34 @@
 use docx_fill::{FillOptions, fill_part};
 use serde_json::Value;
 
+/// Export complete chart packages for manual rendering when explicitly requested.
+pub fn export_chart_fixture(name: &str, parts: &std::collections::BTreeMap<String, Vec<u8>>) {
+    use std::io::Write;
+    let Ok(folder) = std::env::var("DOCX_FILL_CHART_FIXTURES") else { return };
+    let mut parts = parts.clone();
+    parts.entry("_rels/.rels".to_string()).or_insert_with(|| br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_vec());
+    for (path, bytes) in &mut parts {
+        if path.ends_with(".rels") { *bytes = String::from_utf8(bytes.clone()).unwrap().replace("<Relationships>", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">").into_bytes(); }
+    }
+    if let Some(bytes) = parts.get_mut("[Content_Types].xml") {
+        let mut xml = String::from_utf8(bytes.clone()).unwrap().replace("<Types>", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">");
+        if !xml.contains("wordprocessingml.document.main+xml") {
+            xml = xml.replace("</Types>", "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>");
+        }
+        *bytes = xml.into_bytes();
+    }
+    if let Some(bytes) = parts.get_mut("word/document.xml") {
+        let mut xml = String::from_utf8(bytes.clone()).unwrap().replace("cx=\"914400\" cy=\"914400\"", "cx=\"5486400\" cy=\"3200400\"");
+        if !xml.contains("<w:sectPr") { xml = xml.replace("</w:body>", "<w:sectPr><w:pgSz w:w=\"12240\" w:h=\"15840\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"/></w:sectPr></w:body>"); }
+        *bytes = xml.into_bytes();
+    }
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = std::fs::File::create(std::path::Path::new(&folder).join(format!("{name}.docx"))).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    for (path, bytes) in parts { zip.start_file(path, zip::write::SimpleFileOptions::default()).unwrap(); zip.write_all(&bytes).unwrap(); }
+    zip.finish().unwrap();
+}
+
 pub const NAMESPACES: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
 
 pub fn document(body: &str) -> String {
