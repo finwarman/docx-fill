@@ -90,6 +90,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
 
+`FillHooks::svg_fallback` can return PNG bytes for an SVG image. The package then includes both media files and uses the PNG in readers without SVG support. The caller supplies the preview; the crate does not rasterize SVG.
+
 Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
 
 ```rust
