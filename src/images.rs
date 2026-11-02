@@ -1,6 +1,10 @@
 //! Image tags: a drawing sized to its table cell or the page, and the media it shows.
 
 use std::sync::Arc;
+pub(crate) mod replacement;
+
+mod properties;
+pub use properties::{ImageAlignment, ImageBorder, ImageCaption, ImageProperties};
 
 use crate::template::PX_PER_TWIP;
 use crate::xml::{ElementKind, Token, read_attribute, tokenize};
