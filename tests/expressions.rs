@@ -533,3 +533,13 @@ fn reports_the_part_an_invalid_expression_is_in() {
 fn reads_the_loop_index_outside_loops_as_null() {
     assert_all(&[("{$index}", ""), ("{$index === null}", "true"), ("{0 <= $index}", "true"), ("{$index + 1}", "1"), ("{!$index}", "true")]);
 }
+
+#[test]
+fn reads_names_from_the_innermost_scope_when_trying_an_outer_one() {
+    let fill = |data: Value| fill_text("{#o}{#p}[{y ? q.r : 2}]{/p}{/o}", &data);
+
+    assert_eq!(fill(json!({ "y": 0, "o": { "q": { "r": "M" }, "p": { "y": 1, "q": {} } } })), "[M]");
+    assert_eq!(fill(json!({ "y": 1, "o": { "q": { "r": "M" }, "p": { "y": 0, "q": {} } } })), "[2]");
+    assert_eq!(fill(json!({ "o": { "y": null, "q": { "r": "M" }, "p": { "y": 1, "q": {} } } })), "[M]");
+    assert_eq!(fill_text("{#o}[{w ? p.q : 2}]{/o}", &json!({ "o": { "p": {}, "w": 1 }, "w": null, "p": { "q": "Q" } })), "[Q]");
+}
