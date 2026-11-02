@@ -619,7 +619,8 @@ impl<'a> Evaluation<'_, 'a> {
             Expression::Literal(value) => Evaluated::owned(value.clone()),
             Expression::Undefined | Expression::Call => Evaluated::Undefined,
             Expression::This => Evaluated::Data(Cow::Borrowed(self.scopes[level])),
-            Expression::LoopIndex => self.loop_indexes.iter().rev().find(|(position, _)| *position <= level).map_or(Evaluated::Undefined, |(_, index)| Evaluated::Float(*index as f64)),
+            // Null outside any loop, as in core.
+            Expression::LoopIndex => self.loop_indexes.iter().rev().find(|(position, _)| *position <= level).map_or(Evaluated::owned(Value::Null), |(_, index)| Evaluated::Float(*index as f64)),
             Expression::Identifier(name) => self.identifier(name, level),
             Expression::Property(object, name) => property(self.at_level(object, level), name),
             Expression::Index(object, key) => {

@@ -528,3 +528,8 @@ fn reports_the_part_an_invalid_expression_is_in() {
 
     assert_eq!(error.part.as_deref(), Some("word/document.xml"));
 }
+
+#[test]
+fn reads_the_loop_index_outside_loops_as_null() {
+    assert_all(&[("{$index}", ""), ("{$index === null}", "true"), ("{0 <= $index}", "true"), ("{$index + 1}", "1"), ("{!$index}", "true")]);
+}
