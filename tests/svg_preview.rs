@@ -130,3 +130,86 @@ fn rejects_hidden_svg_resources() {
         assert!(preview(&render(body, json!({"icon":"nested"}), &mut Svg(&svg))).is_none());
     }
 }
+
+fn effect(content: &str) -> Option<resvg::tiny_skia::Pixmap> {
+    let svg = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30">{content}</svg>"#);
+    preview(&render("<w:p><w:r><w:t>{%icon}</w:t></w:r></w:p>", json!({"icon":"effect"}), &mut Svg(&svg)))
+}
+
+#[test]
+fn previews_clip_paths_and_masks() {
+    let clipped = effect(r#"<defs><clipPath id="clip"><rect width="20" height="30"/></clipPath></defs><rect width="40" height="30" fill="red" clip-path="url(#clip)"/>"#).unwrap();
+    assert_eq!(clipped.pixel(5, 5).unwrap().red(), 255);
+    assert_eq!(clipped.pixel(30, 5).unwrap().alpha(), 0);
+    let masked = effect(r#"<defs><mask id="mask" maskUnits="userSpaceOnUse" x="0" y="0" width="40" height="30"><rect width="40" height="30" fill="black"/><rect width="20" height="30" fill="white"/></mask></defs><rect width="40" height="30" fill="red" mask="url(#mask)"/>"#).unwrap();
+    assert_eq!(masked.pixel(5, 5).unwrap().red(), 255);
+    assert_eq!(masked.pixel(30, 5).unwrap().alpha(), 0);
+}
+
+#[test]
+fn previews_patterns_and_transforms() {
+    let pixels = effect(r#"<defs><pattern id="p" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="scale(2)"><rect width="2" height="4" fill="blue"/></pattern></defs><rect width="40" height="30" fill="url(#p)"/>"#).unwrap();
+    assert_eq!(pixels.pixel(1, 5).unwrap().blue(), 255);
+    assert_eq!(pixels.pixel(6, 5).unwrap().alpha(), 0);
+}
+
+#[test]
+fn previews_blur_and_colour_filters() {
+    let blurred = effect(r#"<defs><filter id="blur" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="2"/></filter></defs><rect x="10" y="10" width="12" height="10" fill="red" style="filter:url('#blur')"/>"#).unwrap();
+    assert!(blurred.pixel(8, 15).unwrap().alpha() > 0);
+    assert!(blurred.pixel(8, 15).unwrap().alpha() < blurred.pixel(15, 15).unwrap().alpha());
+    let coloured = effect(r#"<defs><filter id="colour"><feColorMatrix type="matrix" values="0 0 1 0 0  0 1 0 0 0  1 0 0 0 0  0 0 0 1 0"/></filter></defs><rect width="40" height="30" fill="red" filter="url(#colour)"/>"#).unwrap();
+    assert_eq!(coloured.pixel(20, 15).unwrap().red(), 0);
+    assert_eq!(coloured.pixel(20, 15).unwrap().blue(), 255);
+}
+
+#[test]
+fn previews_filter_image_content() {
+    let pixels = effect(r##"<defs><g id="source"><rect width="40" height="30" fill="blue"/></g><filter id="image" x="0" y="0" width="100%" height="100%"><feImage href="#source"/></filter></defs><rect width="40" height="30" filter="url(#image)"/>"##).unwrap();
+    assert_eq!(pixels.pixel(20, 15).unwrap().blue(), 255);
+}
+
+#[test]
+fn rejects_recursive_effects() {
+    for content in [
+        r##"<defs><pattern id="a" href="#b"/><pattern id="b" href="#c"/><pattern id="c" href="#a"/></defs><rect width="40" height="30" fill="url(#a)"/>"##,
+        r#"<defs><mask id="a" mask="url(#b)"><rect width="40" height="30"/></mask><mask id="b" mask="url(#c)"><rect width="40" height="30"/></mask><mask id="c" mask="url(#a)"><rect width="40" height="30"/></mask></defs><rect width="40" height="30" mask="url(#a)"/>"#,
+        r#"<defs><clipPath id="a" clip-path="url(#b)"><rect width="40" height="30"/></clipPath><clipPath id="b" clip-path="url(#c)"><rect width="40" height="30"/></clipPath><clipPath id="c" clip-path="url(#a)"><rect width="40" height="30"/></clipPath></defs><rect width="40" height="30" clip-path="url(#a)"/>"#,
+        r#"<g fill="url(#p)"><defs><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4"/></pattern></defs><rect width="40" height="30"/></g>"#,
+    ] { assert!(effect(content).is_none()); }
+    let safe = r#"<g fill="url(#p)"><defs><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="red"/></pattern></defs><rect width="40" height="30"/></g>"#;
+    assert!(effect(safe).is_some());
+}
+
+#[test]
+fn rejects_excessive_filter_work() {
+    for primitive in [r#"<feConvolveMatrix order="65536 65536" kernelMatrix="1"/>"#, r#"<feTurbulence numOctaves="4294967295"/>"#, r#"<feGaussianBlur stdDeviation="100000000000000000000000"/>"#, r#"<feMorphology radius="1000000000"/>"#] {
+        assert!(effect(&format!(r#"<defs><filter id="f">{primitive}</filter></defs><rect width="40" height="30" filter="url(#f)"/>"#)).is_none());
+    }
+    let merge = "<feMergeNode in=\"SourceGraphic\"/>".repeat(20_000);
+    assert!(effect(&format!(r#"<defs><filter id="f"><feMerge>{merge}</feMerge></filter></defs><rect width="40" height="30" filter="url(#f)"/>"#)).is_none());
+}
+
+#[test]
+fn bounds_expanded_references() {
+    let mut content = String::from(r#"<defs><g id="n0"><rect width="1" height="1"/></g>"#);
+    for index in 1..22 { content.push_str(&format!(r##"<g id="n{index}"><use href="#n{}"/><use href="#n{}"/></g>"##, index - 1, index - 1)); }
+    content.push_str(r##"</defs><use href="#n21"/>"##);
+    assert!(effect(&content).is_none());
+}
+
+#[test]
+fn keeps_unresolved_stylesheet_paint() {
+    let styled = r#"<style>rect { fill: inherit; }</style><g fill="url(#p)"><defs><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="red"/></pattern></defs><rect width="40" height="30"/></g>"#;
+    assert!(effect(styled).is_none());
+}
+
+#[test]
+fn bounds_inline_paint_inheritance() {
+    assert!(effect(include_str!("fixtures/svg/inline-inheritance.svg")).is_none());
+}
+
+#[test]
+fn bounds_namespaced_filter_values() {
+    assert!(effect(r#"<defs><filter id="f"><feConvolveMatrix xmlns:xlink="http://www.w3.org/1999/xlink" xlink:order="65536 65536" kernelMatrix="1"/></filter></defs><rect width="40" height="30" filter="url(#f)"/>"#).is_none());
+}
