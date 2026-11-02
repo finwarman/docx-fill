@@ -638,7 +638,14 @@ pub(crate) fn add_relationship(parts: &mut Vec<(String, Cow<[u8]>)>, part: &str,
 pub(crate) fn insert_before_last(xml: &str, close: &str, added: &str) -> String {
     match xml.rfind(close) {
         Some(at) => format!("{}{added}{}", &xml[..at], &xml[at..]),
-        None => xml.to_string(),
+        None => {
+            let Some(name) = close.strip_prefix("</").and_then(|close| close.strip_suffix('>')) else { return xml.to_string() };
+            let open = format!("<{name}");
+            let Some(start) = xml.find(&open) else { return xml.to_string() };
+            let Some(end) = xml[start..].find('>').map(|end| start + end + 1) else { return xml.to_string() };
+            let Some(prefix) = xml[..end].strip_suffix("/>") else { return xml.to_string() };
+            format!("{prefix}>{added}{close}{}", &xml[end..])
+        }
     }
 }
 
