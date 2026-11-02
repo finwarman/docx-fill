@@ -70,6 +70,20 @@ impl FillOptions {
                 "modulePrefixes" => self.module_prefixes = read_array(value, key)?.iter().map(|each| read_string(each, key)).collect::<Result<_, _>>()?,
                 "dropStyleParagraphs" => self.drop_style_paragraphs = read_bool(value, key)?,
                 "comments" => self.comments = read_comment_defaults(value)?,
+                "paragraphPlaceholder" => {
+                    for (name, value) in read_object(value, key)? {
+                        match name.as_str() {
+                            "expandToShape" => self.paragraph_placeholder.expand_to_shape = read_bool(value, name)?,
+                            "expandSoftBreaks" => self.paragraph_placeholder.soft_breaks = if read_bool(value, name)? { crate::SoftBreakScope::All } else { crate::SoftBreakScope::None },
+                            "expandSoftBreaksInShapes" => {
+                                if read_bool(value, name)? {
+                                    if self.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::All { self.paragraph_placeholder.soft_breaks = crate::SoftBreakScope::Shapes; }
+                                } else if self.paragraph_placeholder.soft_breaks == crate::SoftBreakScope::Shapes { self.paragraph_placeholder.soft_breaks = crate::SoftBreakScope::None; }
+                            }
+                            _ => return Err(unknown(name)),
+                        }
+                    }
+                }
                 "table" => {
                     for (name, value) in read_object(value, key)? {
                         match name.as_str() {
@@ -169,6 +183,17 @@ impl FilledDocument {
                     self.replace_xml(&self.read_bookmark(edit)?, &read_field(edit, "xml")?)?;
                     Value::Null
                 }
+                "searchRegex" => Value::Array(self.search_regex(&read_field(edit, "pattern")?)?.iter().map(write_range).collect()),
+                "replaceAllRegex" => json!(self.replace_all_regex(&read_field(edit, "pattern")?, &text()?)?),
+                "setHyperlinkBase" => { self.set_hyperlink_base(&read_field(edit, "url")?); Value::Null }
+                "getPageBreaks" => Value::Array(self.page_breaks().iter().map(|page| json!({ "index": page.index, "position": page.position.map(|at| json!({ "paragraph": at.paragraph, "offset": at.offset })) })).collect()),
+                "dropContentBetween" => {
+                    let start = read_boundary(edit.get("start").ok_or_else(|| wrong_type("start"))?)?;
+                    let end = read_boundary(edit.get("end").ok_or_else(|| wrong_type("end"))?)?;
+                    self.drop_content_between(start, end)?;
+                    Value::Null
+                }
+                "getLoopTags" => Value::Array(self.loop_tags()?.iter().map(|tag| json!({"value":tag.name,"written":tag.written})).collect()),
                 other => return Err(FillError::new(format!("Unknown op \"{other}\""))),
             };
             results.push(result);
@@ -193,6 +218,15 @@ impl FilledDocument {
         let bookmark = found.next().ok_or_else(|| FillError::new("Bookmark not found"))?;
         if found.next().is_some() { return Err(FillError::new("Bookmark name is ambiguous; supply part")); }
         Ok(bookmark)
+    }
+}
+
+fn read_boundary(value: &Value) -> Result<crate::ContentBoundary, FillError> {
+    match value {
+        Value::String(name) if name == "start" => Ok(crate::ContentBoundary::Start),
+        Value::String(name) if name == "end" => Ok(crate::ContentBoundary::End),
+        Value::Number(number) => number.as_u64().and_then(|index| usize::try_from(index).ok()).map(crate::ContentBoundary::PageBreak).ok_or_else(|| wrong_type("boundary")),
+        _ => Err(wrong_type("boundary")),
     }
 }
 
