@@ -51,7 +51,7 @@ pub use document_edits::{DocumentEdits, Margins, Watermark, WatermarkLayout};
 pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
 pub use comments::CommentDefaults;
-pub use images::Image;
+pub use images::{Image, ImageLength, ImageSize};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};

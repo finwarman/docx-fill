@@ -73,6 +73,12 @@ pub trait FillHooks {
         None
     }
 
+    /// Exact display dimensions for an image. `None` keeps container fitting.
+    /// Called after `image`; the same media can have different display sizes.
+    fn image_size(&mut self, _part: &str, _value: &Value, _image: &Image) -> Option<crate::ImageSize> {
+        None
+    }
+
     /// The result of `{input | name:arguments}`, with a filter named in `FillOptions::filters`. A
     /// missing input or argument is null. Returns the input by default.
     fn filter(&mut self, _name: &str, input: &Value, _arguments: &[Value]) -> Value {
@@ -650,9 +656,14 @@ impl<'a> Render<'a, '_> {
             paragraph.style.get_or_insert_with(Style::default).align = Some("center");
         }
 
-        let (body_width, body_height) = body_or_default(self.template.body.or(self.state.body));
-        let width = cell_width.unwrap_or(body_width) * self.state.container_fill;
-        let (width, height) = drawing_size(&image, width, cell_width.is_some(), body_height);
+        let (width, height) = match self.hooks.image_size(self.part, value, &image) {
+            Some(size) => size.dimensions(),
+            None => {
+                let (body_width, body_height) = body_or_default(self.template.body.or(self.state.body));
+                let width = cell_width.unwrap_or(body_width) * self.state.container_fill;
+                drawing_size(&image, width, cell_width.is_some(), body_height)
+            }
+        };
         let media = MediaUse::for_image(image);
         let id = self.state.next_drawing_id;
         self.state.next_drawing_id += 1;

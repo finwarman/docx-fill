@@ -78,6 +78,17 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 ## Other options
 
+`FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
+
+```rust
+use docx_fill::{ImageLength, ImageSize};
+
+let pixels = ImageSize::pixels(120.0, 80.0);
+let physical = ImageSize::new(ImageLength::Inches(2.0), ImageLength::Centimeters(2.54));
+```
+
+Dimensions accept pixels at 96 DPI, inches, centimeters, millimeters, points, picas and EMUs. Constructors return `None` for non-finite, non-positive or out-of-range Word dimensions. Explicit sizes are not padded or fitted to the page or cell.
+
 | Option | Does |
 |---|---|
 | `drop_empty_last_page` | Drops an empty last page left by a loop that printed nothing |
