@@ -17,6 +17,12 @@ let filled = template.render(&json!({ "name": "Value" }));
 
 `parts` is the package's `(name, bytes)` pairs. The body, headers and footers are filled; other parts pass through.
 
+[`examples/fill_docx.rs`](examples/fill_docx.rs) shows the whole path, unzipping a `.docx`, filling it and zipping it again with the `zip` crate:
+
+```sh
+cargo run --example fill_docx -- in.docx data.json out.docx
+```
+
 ## Core tags
 
 | Tag | Does |
