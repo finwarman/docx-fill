@@ -52,6 +52,19 @@ impl FillOptions {
                 "modulePrefixes" => self.module_prefixes = read_array(value, key)?.iter().map(|each| read_string(each, key)).collect::<Result<_, _>>()?,
                 "dropStyleParagraphs" => self.drop_style_paragraphs = read_bool(value, key)?,
                 "comments" => self.comments = read_comment_defaults(value)?,
+                "table" => {
+                    for (name, value) in read_object(value, key)? {
+                        match name.as_str() {
+                            "paragraphValidation" => self.table.paragraph_validation = match read_string(value, name)?.as_str() {
+                                "error" => crate::TableValidation::Error,
+                                "ignore" => crate::TableValidation::Ignore,
+                                other => return Err(FillError::new(format!("Unknown table paragraph validation {other}"))),
+                            },
+                            "autoResizeTable" => self.table.resize = if read_bool(value, name)? { crate::TableResize::KeepColumns } else { crate::TableResize::KeepWidth },
+                            _ => return Err(unknown(name)),
+                        }
+                    }
+                }
                 "footnotes" => {
                     for (name, value) in read_object(value, key)? {
                         match name.as_str() {

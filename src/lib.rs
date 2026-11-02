@@ -52,6 +52,7 @@ pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
 pub use comments::CommentDefaults;
 pub use footnotes::{FootnoteContent, FootnoteOptions};
+pub use full_table::{TableOptions, TableResize, TableValidation};
 pub use images::{Image, ImageLength, ImageSize};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
@@ -208,6 +209,7 @@ pub struct FillOptions {
     pub comments: CommentDefaults,
     /// Content mode and formatting of inserted footnotes.
     pub footnotes: FootnoteOptions,
+    pub table: TableOptions,
     /// A bookmark prefix such as `tag_`. When rich text turns a tag's paragraph into several, and
     /// the tag's paragraph has a bookmark named this prefix and a number (`tag_3`), each later
     /// paragraph gets its own bookmark `tag_3_1`, `tag_3_2`, …, so a reader can find them all.
@@ -242,6 +244,7 @@ impl Default for FillOptions {
             drop_style_paragraphs: false,
             comments: CommentDefaults::default(),
             footnotes: FootnoteOptions::default(),
+            table: TableOptions::default(),
             continued_bookmarks: None,
             fill_properties: true,
             expressions: false,

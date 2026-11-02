@@ -3,12 +3,13 @@
 use std::collections::BTreeMap;
 
 use crate::properties::set_attribute;
+use crate::TableResize;
 use crate::xml::{ElementKind, Token, read_attribute, tokenize};
 
 /// `xml` with each table whose widest row no longer matches its `w:tblGrid` given a grid of that
 /// many columns, keeping the table's width. Column widths follow the widest row's cell widths,
 /// scaled with every cell width in the table. `None` when every grid matches.
-pub(crate) fn fit_table_grids(xml: &str) -> Option<String> {
+pub(crate) fn fit_table_grids(xml: &str, resize: TableResize) -> Option<String> {
     let tokens = tokenize(xml).ok()?;
     let mut tables: Vec<Table> = Vec::new();
     let mut edits = Edits::default();
@@ -19,7 +20,7 @@ pub(crate) fn fit_table_grids(xml: &str) -> Option<String> {
             ("w:tbl", true) => tables.push(Table::default()),
             ("w:tbl", false) => {
                 if let Some(table) = tables.pop() {
-                    table.refit(&mut edits);
+                    table.refit(&mut edits, resize);
                 }
             }
             _ => {
@@ -65,6 +66,7 @@ struct Table {
     grid: Option<(String, usize, Option<usize>)>,
     widths: Vec<Option<u64>>,
     rows: Vec<Vec<Cell>>,
+    table_width: Option<(usize, String)>,
 }
 
 struct Cell {
@@ -77,6 +79,7 @@ impl Table {
     /// Reads one token of this table, outside any table nested in it.
     fn read(&mut self, index: usize, name: &str, raw: &str, is_start: bool) {
         match (name, is_start) {
+            ("w:tblW", true) => self.table_width = Some((index, raw.to_string())),
             ("w:tblGrid", true) if !raw.ends_with("/>") => self.grid = Some((raw.to_string(), index, None)),
             ("w:tblGrid", false) => {
                 if let Some(grid) = &mut self.grid {
@@ -109,7 +112,7 @@ impl Table {
         self.rows.last_mut()?.last_mut()
     }
 
-    fn refit(self, edits: &mut Edits) {
+    fn refit(self, edits: &mut Edits, resize: TableResize) {
         let Some((open, start, Some(end))) = self.grid else { return };
         let columns = |row: &Vec<Cell>| row.iter().map(|cell| cell.span).sum::<usize>();
         let Some(widest) = self.rows.iter().max_by_key(|row| columns(row)) else { return };
@@ -130,7 +133,11 @@ impl Table {
         // Keep the table's width, scaling cell widths with the grid.
         let table_width: u64 = known.iter().sum();
         let new_width: u64 = widths.iter().flatten().sum();
-        let scale = |width: u64| if table_width > 0 && new_width > 0 { width * table_width / new_width } else { width };
+        let scale = |width: u64| if resize == TableResize::KeepWidth && table_width > 0 && new_width > 0 { width * table_width / new_width } else { width };
+        if resize == TableResize::KeepColumns
+            && let Some((index, raw)) = self.table_width {
+            edits.insert(index, Edit::Replace(set_attribute(&set_attribute(&raw, "w:type", "dxa"), "w:w", &new_width.to_string())));
+        }
         let mut grid = open;
         for width in &widths {
             match width {
