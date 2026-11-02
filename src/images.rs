@@ -2,6 +2,9 @@
 
 use std::sync::Arc;
 
+mod properties;
+pub use properties::{ImageAlignment, ImageBorder, ImageCaption, ImageProperties};
+
 use crate::template::PX_PER_TWIP;
 use crate::xml::{ElementKind, Token, read_attribute, tokenize};
 

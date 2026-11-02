@@ -86,6 +86,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 `FillHooks::svg_fallback` can return PNG bytes for an SVG image. The package then includes both media files and uses the PNG in readers without SVG support. The caller supplies the preview; the crate does not rasterize SVG.
 
+`FillHooks::image_properties` returns `ImageProperties` for alt text, names, paragraph alignment, solid borders, links and captions. Configure them with the `alt`, `name`, `align`, `border`, `link` and `caption` builders. `ImageBorder::new` takes a hex color and a width in points. Captions are paragraphs after the image paragraph; they do not use inline text boxes. `ImageCaption` supports prefix, sequence, style and alignment.
+
 Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
 
 ```rust
