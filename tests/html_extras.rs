@@ -112,7 +112,22 @@ fn builds_a_bordered_table_with_bold_header_cells_and_spans() {
     assert_eq!(read_rows(&body), vec![vec!["H1", "H2"], vec!["wide"], vec!["ab", ""]]);
     assert!(run_with(&body, "H1").contains("<w:b/>"));
     assert!(body.contains(r#"<w:gridSpan w:val="2"/>"#));
-    assert!(body.ends_with("</w:tbl><w:p></w:p>"));
+    assert!(body.ends_with("</w:tbl>"));
+}
+
+#[test]
+fn keeps_body_table_last() {
+    let body = html("<table><tr><td>A</td></tr></table>");
+
+    assert!(body.ends_with("</w:tbl>"));
+}
+
+#[test]
+fn keeps_table_cell_tail() {
+    let template = format!("<w:tbl><w:tr><w:tc>{TAG}</w:tc></w:tr></w:tbl>");
+    let body = fill(&template, json!({ "html": "<table><tr><td>A</td></tr></table>" }));
+
+    assert!(body.contains("</w:tbl><w:p/></w:tc>") || body.contains("</w:tbl><w:p></w:p></w:tc>"));
 }
 
 #[test]
