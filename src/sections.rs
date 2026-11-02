@@ -58,7 +58,7 @@ pub(crate) struct SectionUse {
 }
 
 /// Applies the body's section tags at their marks, last first so earlier marks keep their place.
-pub(crate) fn apply_sections(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[SectionUse], includes: &BTreeMap<String, Subtemplate>, hooks: &mut dyn FillHooks, mut count: usize) {
+pub(crate) fn apply_sections(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[SectionUse], includes: &BTreeMap<String, Subtemplate>, hooks: &mut dyn FillHooks, mut count: usize, errors: &mut Vec<crate::FillError>) {
     if uses.is_empty() {
         return;
     }
@@ -78,7 +78,7 @@ pub(crate) fn apply_sections(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[Secti
         }
         let Some((name, include)) = used.value.as_str().and_then(|name| includes.get(name).map(|include| (name, include))) else { continue };
         count += 1;
-        let (references, is_title_page) = import_section_headers(parts, include, name, &used.scope, hooks, count);
+        let (references, is_title_page) = import_section_headers(parts, include, name, &used.scope, hooks, count, errors);
 
         // The next section inherits what this one had, not the subtemplate's.
         if let Some(next) = find_starts(&xml, "w:sectPr").into_iter().find(|next| *next >= end)

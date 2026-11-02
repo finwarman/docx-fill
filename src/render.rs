@@ -63,6 +63,9 @@ pub enum MissingKind {
 
 /// What a fill asks of its caller.
 pub trait FillHooks {
+    fn html_custom_tag(&mut self, _element: &crate::HtmlElement<'_>) -> Option<crate::HtmlFragment> { None }
+    fn html_customize(&mut self, _element: &crate::HtmlElement<'_>) -> crate::HtmlCustomization { crate::HtmlCustomization::default() }
+    fn html_style_transform(&mut self, _element: &crate::HtmlElement<'_>) -> Option<String> { None }
     /// Escaped XML text printed for a module tag in `part`. Prints nothing by default.
     fn module_tag(&mut self, _part: &str, _tag: ModuleTag) -> String {
         String::new()
@@ -135,6 +138,7 @@ pub(crate) struct FillState {
 pub(crate) struct FilledPart {
     pub xml: String,
     pub charts: Vec<crate::charts::ChartUse>,
+    pub html_errors: Vec<crate::FillError>,
     pub media: Vec<MediaUse>,
     /// Footnote ids and their text, referenced from the part.
     pub footnotes: Vec<(u32, String)>,
@@ -180,6 +184,7 @@ struct Render<'a, 'h> {
     sections: Vec<SectionUse>,
     segment_depth: usize,
     rich_values: Vec<RichValue>,
+    html_errors: Vec<crate::FillError>,
     media: Vec<MediaUse>,
     footnotes: Vec<(u32, String)>,
     links: Vec<String>,
@@ -200,8 +205,23 @@ impl Template {
     /// The part filled with `data`, asking `hooks` for module tags and images. An image's media
     /// part and relationship are not added: fill a [`crate::PackageTemplate`] for that.
     pub fn render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> String {
+        self.render_result(data, hooks).0
+    }
+
+    /// Renders once and returns HTML validation errors instead of partial output.
+    pub fn try_render(&self, data: &Value) -> Result<String, crate::FillError> { self.try_render_with(data, &mut NoHooks) }
+
+    /// Checked rendering with callbacks, each invoked once per element.
+    pub fn try_render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Result<String, crate::FillError> {
+        let (xml, errors) = self.render_result(data, hooks);
+        crate::check_html_errors(errors)?;
+        Ok(xml)
+    }
+
+    fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (String, Vec<crate::FillError>) {
         let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id + 1, next_caption: 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
         let filled = self.fill(data, "", hooks, &mut state);
+        let errors = filled.html_errors;
         // Only a package prints subtemplates.
         let xml = if filled.includes.is_empty() {
             filled.xml
@@ -219,7 +239,7 @@ impl Template {
             xml
         };
         let xml = crate::unique_ids::make_ids_unique(&xml, self.continued_bookmarks.as_deref()).unwrap_or(xml);
-        repair_structure(&xml).unwrap_or(xml)
+        (repair_structure(&xml).unwrap_or(xml), errors)
     }
 
     pub(crate) fn fill(&self, data: &Value, part: &str, hooks: &mut dyn FillHooks, state: &mut FillState) -> FilledPart {
@@ -243,6 +263,7 @@ impl Template {
             sections: Vec::new(),
             segment_depth: 0,
             rich_values: Vec::new(),
+            html_errors: Vec::new(),
             media: Vec::new(),
             footnotes: Vec::new(),
             links: Vec::new(),
@@ -256,7 +277,7 @@ impl Template {
         let xml = if render.ranges.is_empty() { render.out } else { style_ranges(&render.out, &render.ranges) };
         let xml = if self.soft_placeholders { crate::placeholder_lines::collapse(&xml) } else { xml };
         let xml = if self.has_cell_loops { crate::table_grid::fit_table_grids(&xml, self.table_resize).unwrap_or(xml) } else { xml };
-        FilledPart { xml, charts: render.charts, media: render.media, footnotes: render.footnotes, links: render.links, style_definitions: render.style_definitions, includes: render.includes, comments: render.comments, sections: render.sections }
+        FilledPart { xml, charts: render.charts, html_errors: render.html_errors, media: render.media, footnotes: render.footnotes, links: render.links, style_definitions: render.style_definitions, includes: render.includes, comments: render.comments, sections: render.sections }
     }
 }
 
@@ -538,8 +559,23 @@ impl<'a> Render<'a, '_> {
                         TagKind::Footnote => self.print_footnote(value, tag.run_props.as_deref()),
                         TagKind::RichText { is_block } => {
                             let html = value.and_then(Value::as_str).unwrap_or_default().to_string();
+                            let prepared = rich_text::prepare_html(&html, &self.template.html_options, &self.template.html_style_sheet, self.hooks);
+                            let mut errors = prepared.errors;
+                            if is_block && !tag.is_alone && self.template.html_options.on_invalid_block == crate::HtmlBlockMode::Error {
+                                errors.push(crate::FillError::new("HTML block tag must be alone in its paragraph").with_id(crate::FillErrorId::HtmlBlockInvalid));
+                            }
+                            if !is_block && prepared.has_block && self.template.html_options.on_invalid_block == crate::HtmlBlockMode::Error {
+                                errors.push(crate::FillError::new("Inline HTML contains block elements").with_id(crate::FillErrorId::HtmlBlockInvalid));
+                            }
+                            self.html_errors.extend(errors.into_iter().map(|mut error| {
+                                error.part = (!self.part.is_empty()).then(|| self.part.to_string());
+                                error.tag = Some(tag.name.clone().into_boxed_str());
+                                error.paragraph = Some(tag.paragraph);
+                                error
+                            }));
+                            let is_block = is_block || (prepared.has_block && self.template.html_options.on_invalid_block == crate::HtmlBlockMode::Block);
                             self.out.push_str(&rich_text::mark(self.rich_values.len()));
-                            self.rich_values.push(RichValue { html, is_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone() });
+                            self.rich_values.push(RichValue { html: prepared.html, raw: prepared.raw, is_block, block_mode: self.template.html_options.on_invalid_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone() });
                             if let Some(paragraph) = self.paragraphs.last_mut() {
                                 paragraph.has_rich_text = true;
                             }

@@ -27,7 +27,7 @@ pub(super) struct Cascade {
 
 impl Cascade {
     pub(super) fn new(sheets: &[&str]) -> Self {
-        Self { rules: sheets.iter().flat_map(|sheet| read_rules(sheet).unwrap_or_default()).collect(), nodes: Vec::new(), stack: Vec::new(), last_children: BTreeMap::new() }
+        Self { rules: sheets.iter().flat_map(|sheet| recover_rules(sheet)).collect(), nodes: Vec::new(), stack: Vec::new(), last_children: BTreeMap::new() }
     }
 
     pub(super) fn open(&mut self, tag: &str, attributes: &[(String, String)]) -> String {
@@ -46,7 +46,7 @@ impl Cascade {
             }
         }
         if let Some((_, inline)) = attributes.iter().find(|(name, _)| name == "style") {
-            for (at, declaration) in read_declarations(inline).unwrap_or_default().iter().enumerate() {
+            for (at, declaration) in recover_declarations(inline).iter().enumerate() {
                 let rank = (declaration.important, (u32::MAX, 0, 0), self.rules.len(), at);
                 if values.get(&declaration.name).is_none_or(|(previous, _)| rank >= *previous) {
                     values.insert(declaration.name.clone(), (rank, declaration.value.clone()));
@@ -56,12 +56,18 @@ impl Cascade {
         values.into_iter().map(|(name, (_, value))| format!("{name}:{value};")).collect()
     }
 
+    pub(super) fn matches_current(&self, selector: &str) -> bool {
+        let Some(index) = self.nodes.len().checked_sub(1) else { return false };
+        read_selector(selector).is_ok_and(|selector| matches_selector(&selector, &self.nodes, index))
+    }
+
     pub(super) fn close(&mut self, tag: &str) {
         if let Some(at) = self.stack.iter().rposition(|index| self.nodes[*index].tag == tag) { self.stack.truncate(at); }
     }
 }
 
 pub(super) fn validate_sheet(sheet: &str) -> Result<(), String> { read_rules(sheet).map(|_| ()) }
+pub(super) fn validate_style(style: &str) -> Result<(), String> { read_declarations(style).map(|_| ()) }
 
 fn read_rules(sheet: &str) -> Result<Vec<Rule>, String> {
     let sheet = strip_comments(sheet)?;
@@ -76,6 +82,30 @@ fn read_rules(sheet: &str) -> Result<Vec<Rule>, String> {
         rest = rest[close + 1..].trim();
     }
     Ok(rules)
+}
+
+fn recover_rules(sheet: &str) -> Vec<Rule> {
+    let sheet = strip_comments(sheet).unwrap_or_else(|_| sheet.to_string());
+    let mut rest = sheet.as_str();
+    let mut rules = Vec::new();
+    while let Some(open) = boundary(rest, '{') {
+        let body = &rest[open + 1..];
+        let close = boundary(body, '}').unwrap_or(body.len());
+        for selector in split_outside(&rest[..open], ',').unwrap_or_default() {
+            if let Ok(selector) = read_selector(selector.trim()) {
+                rules.push(Rule { selector, declarations: recover_declarations(&body[..close]) });
+            }
+        }
+        if close == body.len() { break; }
+        rest = &body[close + 1..];
+    }
+    rules
+}
+
+fn recover_declarations(style: &str) -> Vec<Declaration> {
+    let style = strip_comments(style).unwrap_or_else(|_| style.to_string());
+    split_outside(&style, ';').unwrap_or_else(|_| style.split(';').collect()).into_iter()
+        .flat_map(|declaration| read_declarations(declaration).unwrap_or_default()).collect()
 }
 
 fn read_declarations(style: &str) -> Result<Vec<Declaration>, String> {

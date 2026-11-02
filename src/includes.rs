@@ -68,10 +68,10 @@ impl Subtemplate {
         Ok(Subtemplate { parts, template, styles })
     }
 
-    pub(crate) fn render(&self, scope: &Value, hooks: &mut dyn FillHooks) -> Vec<(String, Cow<'_, [u8]>)> {
+    fn render(&self, scope: &Value, hooks: &mut dyn FillHooks) -> (crate::PackageParts<'_>, Vec<FillError>) {
         match &self.template {
-            Some(template) => template.render_with(scope, hooks),
-            None => self.parts.iter().map(|(name, bytes)| (name.clone(), Cow::Borrowed(bytes.as_slice()))).collect(),
+            Some(template) => template.render_result(scope, hooks),
+            None => (self.parts.iter().map(|(name, bytes)| (name.clone(), Cow::Borrowed(bytes.as_slice()))).collect(), Vec::new()),
         }
     }
 }
@@ -80,7 +80,7 @@ impl Subtemplate {
 /// nothing.
 ///
 /// @returns How many includes printed, to number later imports after them.
-pub(crate) fn print_includes(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, Vec<(String, Value)>)], includes: &BTreeMap<String, Subtemplate>, hooks: &mut dyn FillHooks) -> usize {
+pub(crate) fn print_includes(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, Vec<(String, Value)>)], includes: &BTreeMap<String, Subtemplate>, hooks: &mut dyn FillHooks, errors: &mut Vec<FillError>) -> usize {
     let mut count = 0;
     for (part, used) in uses {
         let Some(index) = parts.iter().position(|(name, _)| name == part) else { continue };
@@ -92,7 +92,8 @@ pub(crate) fn print_includes(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(Stri
                 continue;
             };
             count += 1;
-            let rendered = include.render(scope, hooks);
+            let (rendered, found) = include.render(scope, hooks);
+            errors.extend(found);
             let import = Import { parts: &mut *parts, part, from: &rendered, count, name, styles: include.styles, copied: BTreeMap::new() };
             bodies.push(import.run(&mut next_drawing_id));
         }
@@ -106,8 +107,9 @@ pub(crate) fn print_includes(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(Stri
 /// The header and footer references of a subtemplate's last section, with the parts they name
 /// copied into the package under the body's new relationships, and whether the section has a
 /// first-page header. The styles and lists they use are imported as for a body include.
-pub(crate) fn import_section_headers(parts: &mut Vec<(String, Cow<[u8]>)>, include: &Subtemplate, name: &str, scope: &Value, hooks: &mut dyn FillHooks, count: usize) -> (String, bool) {
-    let rendered = include.render(scope, hooks);
+pub(crate) fn import_section_headers(parts: &mut Vec<(String, Cow<[u8]>)>, include: &Subtemplate, name: &str, scope: &Value, hooks: &mut dyn FillHooks, count: usize, errors: &mut Vec<FillError>) -> (String, bool) {
+    let (rendered, found) = include.render(scope, hooks);
+    errors.extend(found);
     let mut import = Import { parts, part: DOCUMENT_PART, from: &rendered, count, name, styles: include.styles, copied: BTreeMap::new() };
     let document = import.read_from(DOCUMENT_PART);
     let Some(section) = find_starts(&document, "w:sectPr").last().and_then(|&start| find_element_end(&document, start, "w:sectPr").map(|end| &document[start..end])) else {

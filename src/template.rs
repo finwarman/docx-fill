@@ -174,6 +174,7 @@ pub struct Template {
     pub(crate) soft_placeholders: bool,
     pub(crate) table_resize: crate::TableResize,
     pub(crate) html_style_sheet: String,
+    pub(crate) html_options: crate::HtmlOptions,
     pub(crate) drop_style_paragraphs: bool,
     /// With comments on, the comment author and date a value gives none of.
     pub(crate) comment_defaults: Option<CommentDefaults>,
@@ -417,6 +418,7 @@ impl Template {
             soft_placeholders: options.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::None,
             table_resize: options.table.resize,
             html_style_sheet: options.html_style_sheet.clone(),
+            html_options: options.html.clone(),
             drop_style_paragraphs: options.drop_style_paragraphs,
             comment_defaults: options.extensions.comments.then(|| options.comments.clone()),
             footnotes: options.footnotes.clone(),

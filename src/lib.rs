@@ -24,6 +24,7 @@ mod errors;
 mod expressions;
 mod footnotes;
 mod full_table;
+mod html;
 mod images;
 mod includes;
 mod json;
@@ -49,6 +50,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+/// Rendered package parts, borrowing unchanged bytes from the template.
+pub type PackageParts<'a> = Vec<(String, Cow<'a, [u8]>)>;
+
 pub use document_edits::{DocumentEdits, Margins, Watermark, WatermarkLayout};
 pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
@@ -57,6 +61,7 @@ pub use comments::CommentDefaults;
 pub use placeholder_lines::{ParagraphPlaceholderOptions, SoftBreakScope};
 pub use footnotes::{FootnoteContent, FootnoteOptions};
 pub use full_table::{TableOptions, TableResize, TableValidation};
+pub use html::{HtmlBlockMode, HtmlCustomization, HtmlElement, HtmlFragment, HtmlOptions, HtmlTagKind};
 pub use images::{Image, ImageAlignment, ImageBorder, ImageCaption, ImageFloat, ImageLayer, ImageLength, ImageProperties, ImageRelative, ImageSize, ImageWrap};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
@@ -269,6 +274,7 @@ pub struct FillOptions {
     pub filters: Vec<String>,
     /// CSS applied to HTML values before their inline styles.
     pub html_style_sheet: String,
+    pub html: HtmlOptions,
 }
 
 impl Default for FillOptions {
@@ -297,6 +303,7 @@ impl Default for FillOptions {
             expressions: false,
             filters: Vec::new(),
             html_style_sheet: String::new(),
+            html: HtmlOptions::default(),
         }
     }
 }
@@ -306,6 +313,10 @@ impl FillOptions {
     pub fn core() -> FillOptions {
         FillOptions { extensions: Extensions::NONE, drop_empty_last_page: false, ..FillOptions::default() }
     }
+}
+
+fn check_html_errors(errors: Vec<FillError>) -> Result<(), FillError> {
+    if errors.is_empty() { Ok(()) } else { Err(FillError::many(errors)) }
 }
 
 /// Whether a package part holds tags: the body, a header or a footer.
@@ -446,6 +457,20 @@ impl PackageTemplate {
     /// [`PackageTemplate::render`], asking `hooks` for module tags and images. Images add their
     /// media parts, relationships and content types.
     pub fn render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Vec<(String, Cow<'_, [u8]>)> {
+        self.render_result(data, hooks).0
+    }
+
+    /// Renders once and returns HTML validation errors from this package and its includes.
+    pub fn try_render(&self, data: &Value) -> Result<PackageParts<'_>, FillError> { self.try_render_with(data, &mut NoHooks) }
+
+    /// Checked rendering with callbacks, each invoked once per element.
+    pub fn try_render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Result<PackageParts<'_>, FillError> {
+        let (parts, errors) = self.render_result(data, hooks);
+        check_html_errors(errors)?;
+        Ok(parts)
+    }
+
+    fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (PackageParts<'_>, Vec<FillError>) {
         let mut state = FillState {
             assignments: expressions::Assignments::default(),
             next_drawing_id: self.max_drawing_id + 1,
@@ -470,11 +495,13 @@ impl PackageTemplate {
         let mut includes = Vec::new();
         let mut sections = Vec::new();
         let mut chart_uses = Vec::new();
+        let mut errors = Vec::new();
         for (name, part) in &self.parts {
             let bytes = match part {
                 PackagePart::Bytes(bytes) => Cow::Borrowed(bytes.as_slice()),
                 PackagePart::Template(template) => {
                     let filled = template.fill(data, name, hooks, &mut state);
+                    errors.extend(filled.html_errors);
                     media.extend(filled.media.into_iter().map(|used| (name.clone(), used)));
                     chart_uses.extend(filled.charts.into_iter().map(|used| (name.clone(), used)));
                     if *name == self.main_part {
@@ -503,12 +530,12 @@ impl PackageTemplate {
         if let Some(numbering) = state.numbering {
             numbering.write(&mut out, &self.main_part);
         }
-        let count = includes::print_includes(&mut out, &includes, &self.includes, hooks);
-        sections::apply_sections(&mut out, &sections, &self.includes, hooks, count);
+        let count = includes::print_includes(&mut out, &includes, &self.includes, hooks, &mut errors);
+        sections::apply_sections(&mut out, &sections, &self.includes, hooks, count, &mut errors);
         self.finish_template_parts(&mut out);
         apply_theme_colors(&mut out, &self.theme_colors);
         self.document.apply(&mut out);
-        out
+        (out, errors)
     }
 
     /// Renumbers repeated ids and repairs each template part's structure, now that subtemplates

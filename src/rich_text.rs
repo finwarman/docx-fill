@@ -42,6 +42,9 @@ const POINTS_PER_CSS_PIXEL: f64 = 0.75;
 const LINE_HEIGHT_UNIT: f64 = 240.0;
 const DEFAULT_FONT_POINTS: f64 = 11.0;
 const CELL_SIDES: [&str; 4] = ["top", "left", "bottom", "right"];
+const RAW_INLINE: &str = "docx-fill-inline";
+const RAW_BLOCK: &str = "docx-fill-block";
+const STYLE_ATTRIBUTE: &str = "data-docx-fill-style";
 const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
 // Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
 const TABLE_COLUMN_TWIPS: u32 = 2000;
@@ -57,6 +60,15 @@ pub(crate) struct RichValue {
     pub is_block: bool,
     pub has_extras: bool,
     pub style_sheet: String,
+    pub block_mode: crate::HtmlBlockMode,
+    pub raw: Vec<crate::HtmlFragment>,
+}
+
+pub(crate) struct PreparedHtml {
+    pub html: String,
+    pub raw: Vec<crate::HtmlFragment>,
+    pub errors: Vec<crate::FillError>,
+    pub has_block: bool,
 }
 
 /// How a run looks beyond the tag run's own properties.
@@ -76,6 +88,7 @@ struct Format {
     link: Option<String>,
     pre_spaces: Option<bool>,
     rtl: Option<bool>,
+    paragraph_style: Option<String>,
 }
 
 impl Format {
@@ -94,6 +107,7 @@ impl Format {
         self.link = over.link.clone().or(self.link);
         self.pre_spaces = over.pre_spaces.or(self.pre_spaces);
         self.rtl = over.rtl.or(self.rtl);
+        self.paragraph_style = over.paragraph_style.clone().or(self.paragraph_style);
         self
     }
 }
@@ -107,6 +121,7 @@ struct Run {
     is_underlined: bool,
     format: Format,
     preserve_spaces: bool,
+    raw_xml: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -119,6 +134,8 @@ struct Block {
     is_rule: bool,
     table: Option<Vec<Vec<Cell>>>,
     layout: ParagraphLayout,
+    raw_xml: Option<String>,
+    paragraph_style: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,13 +289,13 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
         let other_text = read_text(&paragraph).replacen(&mark, "", 1);
         let run = find_run(&paragraph, &mark);
         let run_props = run.and_then(|run| find_between(run, "<w:rPr>", "</w:rPr>")).unwrap_or("");
-        let is_block = value.is_block && other_text.trim().is_empty() && run.is_some();
+        let is_block = value.is_block && (other_text.trim().is_empty() || value.block_mode == crate::HtmlBlockMode::Block) && run.is_some();
         let spaces = if is_block { SpaceEdges::default() } else {
             let text = read_flow_text(&paragraph);
             let (before, after) = text.split_once(&mark).unwrap_or(("", ""));
             SpaceEdges::between(before.chars().next_back(), after.chars().next())
         };
-        let blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet);
+        let blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet, &value.raw);
 
         // Alone in its paragraph: the paragraph becomes the value's paragraphs.
         if is_block && !blocks.is_empty() {
@@ -305,7 +322,7 @@ fn without_empty_marks(paragraph: &str, values: &[RichValue]) -> String {
         let at = rest.find(&mark).unwrap_or(0);
         out.push_str(&rest[..at]);
         if let Some(value) = values.get(index)
-            && !read_html(&value.html, value.has_extras, SpaceEdges { start: true, end: true }, &value.style_sheet).is_empty() {
+            && !read_html(&value.html, value.has_extras, SpaceEdges { start: true, end: true }, &value.style_sheet, &value.raw).is_empty() {
             out.push_str(&mark);
         }
         rest = &rest[at + mark.len()..];
@@ -348,7 +365,7 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
             previous = before.chars().next_back().or(previous);
             if let Some(value) = values.get(index) {
                 let spaces = SpaceEdges::between(previous, after.chars().next());
-                let inline = join_inline(&read_html(&value.html, value.has_extras, spaces, &value.style_sheet), run_props, links);
+                let inline = join_inline(&read_html(&value.html, value.has_extras, spaces, &value.style_sheet, &value.raw), run_props, links);
                 previous = read_flow_text(&inline).chars().next_back().or(previous);
                 out.push_str(&inline);
             }
@@ -395,6 +412,7 @@ fn join_inline(blocks: &[Block], run_props: &str, links: &mut Vec<String>) -> St
 }
 
 fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &str, block: &Block, writer: &mut BlockWriter) {
+    if let Some(raw) = &block.raw_xml { out.push_str(raw); return; }
     let Some(rows) = &block.table else {
         let number = block.list.as_ref().and_then(|item| writer.lists.id_for(item));
         let after = if block.layout.page_after { "<w:r><w:br w:type=\"page\"/></w:r>" } else { "" };
@@ -453,6 +471,7 @@ fn follows_table(blocks: &[Block], index: usize) -> bool {
 /// A block's runs for printing inside a paragraph; a table's cells are joined by tabs and its
 /// rows by breaks.
 fn write_inline(block: &Block, run_props: &str, links: &mut Vec<String>) -> String {
+    if let Some(raw) = &block.raw_xml { return write_text_run("<w:r>", run_props, &read_text(raw)); }
     let Some(rows) = &block.table else { return write_runs(block, run_props, links, None) };
     let mut lines = Vec::new();
     for row in rows {
@@ -682,7 +701,8 @@ impl Reader {
 
     fn start_block(&mut self, block: Block) {
         let container = self.container();
-        let block = Block { align: block.align.or(container.align), quote_level: container.quote_level, layout: container.layout.inherited().and(block.layout), ..block };
+        let paragraph_style = block.paragraph_style.clone().or_else(|| self.format().paragraph_style);
+        let block = Block { align: block.align.or(container.align), quote_level: container.quote_level, layout: container.layout.inherited().and(block.layout), paragraph_style, ..block };
         self.blocks().push(block);
         self.current = Some(self.blocks().len() - 1);
     }
@@ -693,7 +713,7 @@ impl Reader {
         }
         let (bold, italic, underline) = self.counts;
         let preserve_spaces = self.preformatted();
-        let run = Run { text, is_break, is_bold: bold > 0, is_italic: italic > 0, is_underlined: underline > 0, format: self.format(), preserve_spaces };
+        let run = Run { text, is_break, is_bold: bold > 0, is_italic: italic > 0, is_underlined: underline > 0, format: self.format(), preserve_spaces, raw_xml: None };
         let index = self.current.expect("started above");
         if is_break && !preserve_spaces {
             trim_spaces(&mut self.blocks()[index]);
@@ -705,7 +725,7 @@ impl Reader {
     fn add_text(&mut self, text: &str) {
         let keep_start = self.spaces.start && self.collections.len() == 1 && self.blocks().is_empty();
         let mut space = self.current.map_or(!keep_start, |index| {
-            self.blocks()[index].runs.last().is_none_or(|run| run.is_break || run.text.as_deref().is_none_or(|text| text.ends_with(' ')))
+            self.blocks()[index].runs.last().is_none_or(|run| run.is_break || (run.raw_xml.is_none() && run.text.as_deref().is_none_or(|text| text.ends_with(' '))))
         });
         let mut collapsed = String::new();
         for c in text.chars() {
@@ -768,7 +788,7 @@ impl Reader {
 }
 
 /// The HTML's paragraphs, headings, list items and, with extras, tables, with their runs.
-fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges, style_sheet: &str) -> Vec<Block> {
+fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges, style_sheet: &str, raw: &[crate::HtmlFragment]) -> Vec<Block> {
     let mut reader = Reader {
         collections: vec![Vec::new()],
         current: None,
@@ -805,6 +825,19 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges, style_sheet: &str
             }
             HtmlToken::Tag { is_closing, name, attributes } => (is_closing, name.to_ascii_lowercase(), attributes),
         };
+        if !is_closing && matches!(tag.as_str(), RAW_INLINE | RAW_BLOCK) {
+            if let Some(fragment) = read_attribute(&attributes, "index").and_then(|index| index.parse::<usize>().ok()).and_then(|index| raw.get(index)) {
+                match fragment.kind {
+                    crate::HtmlTagKind::Block => { reader.start_block(Block { raw_xml: Some(fragment.xml.clone()), ..Block::default() }); reader.current = None; }
+                    crate::HtmlTagKind::Inline => {
+                        if reader.current.is_none() { reader.start_block(Block::default()); }
+                        let index = reader.current.unwrap();
+                        reader.blocks()[index].runs.push(Run { raw_xml: Some(fragment.xml.clone()), ..Run::default() });
+                    }
+                }
+            }
+            continue;
+        }
         if has_extras {
             if is_closing { cascade.close(&tag); }
             else {
@@ -891,6 +924,113 @@ fn is_html_space(c: char) -> bool {
 
 pub(crate) fn validate_style_sheet(sheet: &str) -> Result<(), String> { css::validate_sheet(sheet) }
 
+const KNOWN_HTML: &[&str] = &["p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b", "em", "i", "u", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "input", "table", "tr", "td", "th", "thead", "tbody", "tfoot", "col", "colgroup", "caption", "img", "svg", "script", "style", "template", "cite", "var", "ins", "s", "strike", "del", "sup", "sub", "mark", "code", "kbd", "samp", "tt", "a", "span", "font", "small", "big", "abbr", "q"];
+const BLOCK_HTML: &[&str] = &["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "table"];
+const VOID_HTML: &[&str] = &["br", "hr", "input", "img", "col"];
+
+pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str, hooks: &mut dyn crate::FillHooks) -> PreparedHtml {
+    let mut prepared = PreparedHtml { html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false };
+    if !options.ignore_css_errors {
+        for sheet in std::iter::once(sheet.to_string()).chain(embedded_sheets(html)) {
+            if let Err(error) = css::validate_sheet(&sheet) { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::HtmlCssInvalid)); }
+        }
+    }
+    let mut rest = html;
+    let mut renamed: Vec<(String, String)> = Vec::new();
+    let mut context = css::Cascade::new(&[]);
+    while let Some(start) = rest.find('<') {
+        prepared.html.push_str(&rest[..start]);
+        rest = &rest[start..];
+        if rest.starts_with("<!--") {
+            let Some(end) = rest.find("-->") else { break };
+            rest = &rest[end + 3..]; continue;
+        }
+        let Some((token, length)) = read_html_tag(rest, true) else { prepared.html.push('<'); rest = &rest[1..]; continue };
+        let HtmlToken::Tag { is_closing, name, mut attributes } = token else { unreachable!() };
+        let name = name.to_ascii_lowercase();
+        if is_closing {
+            context.close(&name);
+            let emitted = if let Some(at) = renamed.iter().rposition(|(original, _)| original == &name) { renamed.remove(at).1 } else { name };
+            prepared.html.push_str(&format!("</{emitted}>"));
+            rest = &rest[length..]; continue;
+        }
+        context.open(&name, &attributes);
+        if is_hidden(&name) {
+            context.close(&name);
+            let skip = find_closing_tag(&rest[length..], &name).unwrap_or(rest.len() - length);
+            prepared.html.push_str(&rest[..length + skip]);
+            rest = &rest[length + skip..]; continue;
+        }
+        let self_closing = rest[..length].ends_with("/>") || VOID_HTML.contains(&name.as_str());
+        let body = if self_closing { "" } else { &rest[length..] };
+        let matches = |selector: &str| context.matches_current(selector);
+        let element = crate::HtmlElement::new(&name, &attributes, body, &matches);
+        if options.custom_tags.contains_key(&name)
+            && let Some(fragment) = hooks.html_custom_tag(&element) {
+            let valid = tokenize(&fragment.xml).and_then(|tokens| crate::xml::check_balanced(&tokens));
+            if let Err(error) = valid { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::MalformedXml)); }
+            else {
+                let tag = match fragment.kind { crate::HtmlTagKind::Inline => RAW_INLINE, crate::HtmlTagKind::Block => { prepared.has_block = true; RAW_BLOCK } };
+                prepared.html.push_str(&format!("<{tag} index=\"{}\"/>", prepared.raw.len()));
+                prepared.raw.push(fragment);
+            }
+            let consumed = if self_closing { 0 } else { element_inner(&name, body).1 };
+            context.close(&name);
+            rest = &rest[length + consumed..]; continue;
+        }
+        let transformed = hooks.html_style_transform(&element);
+        let custom = hooks.html_customize(&element);
+        let known = KNOWN_HTML.contains(&name.as_str());
+        if !known && !options.ignore_unknown_tags && !options.custom_tags.contains_key(&name) && transformed.is_none() {
+            prepared.errors.push(crate::FillError::new(format!("Unsupported HTML tag {name}")).with_id(crate::FillErrorId::HtmlUnknownTag));
+        }
+        let mut style = read_attribute(&attributes, "style").unwrap_or_default().to_string();
+        if !custom.css.is_empty() { style.push(';'); style.push_str(&custom.css); }
+        if !options.ignore_css_errors
+            && let Err(error) = css::validate_style(&style) { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::HtmlCssInvalid)); }
+        attributes.retain(|(name, _)| name != "style" && name != STYLE_ATTRIBUTE);
+        if !style.is_empty() { attributes.push(("style".to_string(), style)); }
+        if let Some(style) = custom.paragraph_style.or(transformed) { attributes.push((STYLE_ATTRIBUTE.to_string(), style)); }
+        let emitted = if known { name.clone() } else if options.custom_tags.get(&name) == Some(&crate::HtmlTagKind::Block) { "p".into() } else { "span".into() };
+        prepared.has_block |= BLOCK_HTML.contains(&emitted.as_str());
+        prepared.html.push('<'); prepared.html.push_str(&emitted);
+        for (name, value) in &attributes {
+            prepared.html.push(' '); prepared.html.push_str(name); prepared.html.push_str("=\""); escape(value, &mut prepared.html); prepared.html.push('"');
+        }
+        prepared.html.push('>');
+        if self_closing {
+            context.close(&name);
+            if !VOID_HTML.contains(&emitted.as_str()) { prepared.html.push_str(&format!("</{emitted}>")); }
+        } else { renamed.push((name, emitted)); }
+        rest = &rest[length..];
+    }
+    prepared.html.push_str(rest);
+    prepared
+}
+
+pub(crate) fn element_inner<'a>(name: &str, body: &'a str) -> (&'a str, usize) {
+    let mut depth = 1usize;
+    let mut at = 0;
+    while let Some(start) = body[at..].find('<').map(|index| at + index) {
+        if body[start..].starts_with("<!--") {
+            let Some(end) = body[start..].find("-->") else { break };
+            at = start + end + 3; continue;
+        }
+        let Some((HtmlToken::Tag { is_closing, name: tag, .. }, length)) = read_html_tag(&body[start..], true) else { at = start + 1; continue };
+        if tag.eq_ignore_ascii_case(name) {
+            if is_closing { depth -= 1; }
+            else if !body[start..start + length].ends_with("/>") { depth += 1; }
+            if depth == 0 { return (&body[..start], start + length); }
+        }
+        at = start + length;
+    }
+    (body, body.len())
+}
+
+pub(crate) fn plain_html(html: &str) -> String {
+    read_html_tokens(html, true).into_iter().filter_map(|token| match token { HtmlToken::Text(text) => Some(decode_entities(text)), HtmlToken::Tag { name: "br", .. } => Some("\n".into()), _ => None }).collect()
+}
+
 fn embedded_sheets(html: &str) -> Vec<String> {
     let mut sheets = Vec::new();
     let mut rest = html;
@@ -916,7 +1056,7 @@ fn embedded_sheets(html: &str) -> Vec<String> {
 
 fn trim_spaces(block: &mut Block) {
     for run in block.runs.iter_mut().rev() {
-        if run.is_break || run.preserve_spaces {
+        if run.is_break || run.preserve_spaces || run.raw_xml.is_some() {
             break;
         }
         let Some(text) = &mut run.text else { continue };
@@ -933,7 +1073,7 @@ fn trim_blocks(blocks: &mut [Block], spaces: SpaceEdges) {
         if index != last || !spaces.end {
             trim_spaces(block);
         }
-        block.runs.retain(|run| run.is_break || run.text.as_deref().is_some_and(|text| !text.is_empty()));
+        block.runs.retain(|run| run.is_break || run.raw_xml.is_some() || run.text.as_deref().is_some_and(|text| !text.is_empty()));
         if let Some(rows) = &mut block.table {
             for cell in rows.iter_mut().flatten() {
                 trim_blocks(&mut cell.blocks, SpaceEdges::default());
@@ -1196,6 +1336,7 @@ fn read_css(attributes: &[(String, String)]) -> Format {
         size: style("font-size").and_then(read_font_size),
         font: style("font-family").map(|family| family.split(',').next().unwrap_or(family).trim().trim_matches(['"', '\'']).to_string()).filter(|family| !family.is_empty()),
         pre_spaces: style("white-space").and_then(|value| match value { "pre" | "pre-wrap" | "break-spaces" => Some(true), "normal" | "nowrap" => Some(false), _ => None }),
+        paragraph_style: read_attribute(attributes, STYLE_ATTRIBUTE).map(str::to_string),
         rtl: style("direction").and_then(|value| match value { "rtl" => Some(true), "ltr" => Some(false), _ => None }),
         ..Format::default()
     }
@@ -1301,7 +1442,7 @@ fn find_closing_tag(html: &str, name: &str) -> Option<usize> {
 fn read_html_tag(text: &str, has_extras: bool) -> Option<(HtmlToken<'_>, usize)> {
     let is_closing = text[1..].starts_with('/');
     let name_start = if is_closing { 2 } else { 1 };
-    let name_length = text[name_start..].bytes().take_while(u8::is_ascii_alphanumeric).count();
+    let name_length = text[name_start..].bytes().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_')).count();
     if name_length == 0 {
         return None;
     }
@@ -1384,11 +1525,15 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
         }
         None => paragraph_props.to_string(),
     };
-    if block.align.is_none() && block.quote_level == 0 && !block.is_rule && layout_is_empty(block.layout) {
+    if block.align.is_none() && block.quote_level == 0 && !block.is_rule && layout_is_empty(block.layout) && block.paragraph_style.is_none() {
         return props;
     }
 
     let mut inner = props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("").to_string();
+    if let Some(style) = &block.paragraph_style {
+        let mut escaped = String::new(); escape(style, &mut escaped);
+        inner = set_child(&inner, "w:pStyle", &format!("<w:pStyle w:val=\"{escaped}\"/>"), PARAGRAPH_ORDER);
+    }
     if block.is_rule {
         inner = set_child(&inner, "w:pBdr", "<w:pBdr><w:bottom w:val=\"single\" w:sz=\"6\" w:space=\"1\" w:color=\"auto\"/></w:pBdr>", PARAGRAPH_ORDER);
     }
@@ -1404,13 +1549,18 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
 }
 
 fn write_runs(block: &Block, run_props: &str, links: &mut Vec<String>, number: Option<u32>) -> String {
-    let size = block.heading_level.map(|level| HEADING_SIZES[level - 1]);
+    let size = block.heading_level.filter(|_| block.paragraph_style.is_none()).map(|level| HEADING_SIZES[level - 1]);
     let mut out = match &block.list {
         Some(item) if number.is_none() => format!("<w:r>{run_props}<w:t>{}</w:t></w:r><w:r>{run_props}<w:tab/></w:r>", item.format.marker(item.value)),
         _ => String::new(),
     };
     let mut open_link: Option<&str> = None;
     for run in &block.runs {
+        if let Some(raw) = &run.raw_xml {
+            if open_link.take().is_some() { out.push_str("</w:hyperlink>"); }
+            out.push_str(raw);
+            continue;
+        }
         let link = run.format.link.as_deref();
         if link != open_link {
             if open_link.is_some() {
@@ -1421,7 +1571,7 @@ fn write_runs(block: &Block, run_props: &str, links: &mut Vec<String>, number: O
             }
             open_link = link;
         }
-        let props = write_run_props(run_props, run.is_bold || block.heading_level.is_some(), run.is_italic, run.is_underlined, size, &run.format);
+        let props = write_run_props(run_props, run.is_bold || (block.heading_level.is_some() && block.paragraph_style.is_none()), run.is_italic, run.is_underlined, size, &run.format);
         out.push_str("<w:r>");
         out.push_str(&props);
         if run.is_break {
@@ -1593,7 +1743,7 @@ mod tests {
 
     #[test]
     fn skips_a_tag_with_attributes_as_text() {
-        let blocks = read_html("<p class=\"x\">t</p>", false, SpaceEdges::default(), "");
+        let blocks = read_html("<p class=\"x\">t</p>", false, SpaceEdges::default(), "", &[]);
         assert_eq!(blocks[0].runs[0].text.as_deref(), Some("p class=\"x\">t"));
     }
 
