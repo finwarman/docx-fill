@@ -599,8 +599,8 @@ fn index<'a>(object: Evaluated<'a>, key: &Evaluated) -> Evaluated<'a> {
 /// What one evaluation reads.
 pub(crate) struct Evaluation<'e, 'a> {
     pub scopes: &'e [&'a Value],
-    /// Each loop item's scope position and index, innermost last.
-    pub loop_indexes: &'e [(usize, usize)],
+    /// Each array loop item's index, innermost last.
+    pub loop_indexes: &'e [usize],
     pub hooks: &'e mut dyn FillHooks,
 }
 
@@ -619,8 +619,9 @@ impl<'a> Evaluation<'_, 'a> {
             Expression::Literal(value) => Evaluated::owned(value.clone()),
             Expression::Undefined | Expression::Call => Evaluated::Undefined,
             Expression::This => Evaluated::Data(Cow::Borrowed(self.scopes[level])),
-            // Null outside any loop, as in core.
-            Expression::LoopIndex => self.loop_indexes.iter().rev().find(|(position, _)| *position <= level).map_or(Evaluated::owned(Value::Null), |(_, index)| Evaluated::Float(*index as f64)),
+            // The innermost loop's, even when tried again from an outer scope, and null outside
+            // any loop, as in core.
+            Expression::LoopIndex => self.loop_indexes.last().map_or(Evaluated::owned(Value::Null), |&index| Evaluated::Float(index as f64)),
             Expression::Identifier(name) => self.identifier(name, level),
             Expression::Property(object, name) => property(self.at_level(object, level), name),
             Expression::Index(object, key) => {
