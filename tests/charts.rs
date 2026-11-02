@@ -32,6 +32,58 @@ fn chart_xml(parts: &BTreeMap<String, Vec<u8>>) -> Vec<String> {
     parts.iter().filter(|(path, _)| path.contains("/docxFillChart") && path.ends_with(".xml")).map(|(_, bytes)| String::from_utf8(bytes.clone()).unwrap()).collect()
 }
 
+fn two_charts(body: &str) -> Result<PackageTemplate, docx_fill::FillError> {
+    let parts = [
+        ("word/document.xml".into(), document(body).into_bytes()),
+        ("word/charts/chart1.xml".into(), CHART.replace("Sales", "First source").into_bytes()),
+        ("word/charts/chart2.xml".into(), CHART.replace("Sales", "Second source").into_bytes()),
+        ("word/_rels/document.xml.rels".into(), br#"<Relationships><Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/><Relationship Id="rIdSecond" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart2.xml"/></Relationships>"#.to_vec()),
+    ];
+    PackageTemplate::parse(parts, &FillOptions::default())
+}
+
+#[test]
+fn rejects_ambiguous_chart() {
+    let body = drawing().trim_end_matches("</w:p>").to_string()
+        + drawing().replace("rIdChart", "rIdSecond").trim_start_matches("<w:p>")
+        + &paragraph(&["{$sales}"]);
+
+    let error = two_charts(&body).expect_err("two charts cannot share a following tag");
+    assert!(error.message.contains("ambiguous"), "{}", error.message);
+}
+
+#[test]
+fn binds_tag_between_drawings() {
+    let body = drawing().trim_end_matches("</w:p>").to_string()
+        + "<w:r><w:t>{$sales}</w:t></w:r>"
+        + drawing().replace("rIdChart", "rIdSecond").trim_start_matches("<w:p>");
+    let parts = render(&two_charts(&body).unwrap(), json!({"sales":{"categories":["Updated"],"series":[{"data":[7]}]}}));
+    let charts = chart_xml(&parts);
+
+    assert_eq!(charts.len(), 1);
+    assert!(charts[0].contains("First source") && charts[0].contains(">Updated</c:v>"));
+    let body = String::from_utf8_lossy(&parts["word/document.xml"]);
+    assert!(body.contains("r:id=\"rIdDocxFillChart1\"") && body.contains("r:id=\"rIdSecond\""));
+    assert!(!body.contains("r:id=\"rIdChart\""));
+}
+
+#[test]
+fn rejects_tag_before_a_chart() {
+    let body = drawing().to_string()
+        + "<w:p><w:r><w:t>{$sales}</w:t></w:r>"
+        + drawing().replace("rIdChart", "rIdSecond").trim_start_matches("<w:p>");
+
+    assert!(two_charts(&body).is_err(), "a tag before its drawing must not edit the previous paragraph's chart");
+}
+
+#[test]
+fn accepts_paired_chart_ref() {
+    let body = drawing().replace("<c:chart r:id=\"rIdChart\"/>", "<c:chart r:id=\"rIdChart\"></c:chart>") + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, CHART, &json!({})), json!({"sales":{"categories":["A"],"series":[{"data":[7]}]}}));
+
+    assert_eq!(chart_xml(&parts).len(), 1);
+}
+
 #[test]
 fn fills_categories_and_series() {
     let body = drawing().to_string() + &paragraph(&["{$sales}"]);

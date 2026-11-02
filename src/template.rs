@@ -1004,11 +1004,16 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
             }
             TagKind::Chart => {
                 let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;
-                let has_chart = parts[start..tag.part].iter().any(|part| matches!(part, Part::Element { name, .. } if name == "c:chart"));
+                let chart_count = |items: &[Part]| items.iter().filter(|part| matches!(part, Part::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name, .. } if name == "c:chart")).count();
+                let has_chart = chart_count(&parts[start..tag.part]) > 0;
                 if !has_chart {
                     let previous = parts[..start].iter().rposition(|part| matches!(part, Part::Element { kind: ElementKind::Open, name, .. } if name == PARAGRAPH));
-                    let has_previous = previous.is_some_and(|previous| parts[previous..start].iter().any(|part| matches!(part, Part::Element { name, .. } if name == "c:chart")));
-                    if !tag.is_alone || !has_previous {
+                    let previous_count = previous.map_or(0, |previous| chart_count(&parts[previous..start]));
+                    let has_later = chart_count(&parts[tag.part..=end]) > 0;
+                    if !has_later && tag.is_alone && previous_count > 1 {
+                        return Err(FillError::new(format!("The chart tag \"{}\" is ambiguous because the preceding paragraph contains multiple charts", tag.text)));
+                    }
+                    if has_later || !tag.is_alone || previous_count != 1 {
                         return Err(FillError::new(format!("The chart tag \"{}\" must be in its chart's paragraph or alone immediately after it", tag.text)));
                     }
                     blocks.push(Block { kind: BlockKind::Chart { name: tag.name.clone() }, start, end: end + 1, body_start: end + 1, body_end: end + 1, children: Vec::new(), open_tag: index });
