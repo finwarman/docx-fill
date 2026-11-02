@@ -370,16 +370,22 @@ fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<St
     let plot = &xml[start..end];
     let templates: Vec<_> = find_starts(plot, "c:ser").into_iter().filter_map(|start| find_element_end(plot, start, "c:ser").map(|end| (start, end))).filter(|&(start, end)| plot[start..end].ends_with("</c:ser>")).collect();
     let &(first, _) = templates.first()?;
+    // Series hidden by a filter keep their ids, which must stay unique.
+    let taken: BTreeSet<usize> = find_starts(plot, "c:idx").into_iter()
+        .filter(|at| !templates.iter().any(|&(start, end)| start < *at && *at < end))
+        .filter_map(|at| read_attribute(&plot[at..at + plot[at..].find('>')?], "val")?.parse().ok())
+        .collect();
+    let ids: Vec<usize> = (0..).filter(|id| !taken.contains(id)).take(data.series.len()).collect();
     let mut series = String::new();
-    for (index, value) in data.series.iter().enumerate() {
+    for ((index, value), id) in data.series.iter().enumerate().zip(ids) {
         let &(start, end) = templates.get(index).unwrap_or(&templates[0]);
         let template = &plot[start..end];
         let open = template.find('>')? + 1;
         let mut inner = template[open..template.len() - "</c:ser>".len()].to_string();
         // An added series takes the theme's next colour, not a copy of the first one's.
         if index >= templates.len() { inner = remove_children(&inner, &["c:spPr", "c:dPt", "c:extLst"]); }
-        inner = set_child(&inner, "c:idx", &format!("<c:idx val=\"{index}\"/>"), order);
-        inner = set_child(&inner, "c:order", &format!("<c:order val=\"{index}\"/>"), order);
+        inner = set_child(&inner, "c:idx", &format!("<c:idx val=\"{id}\"/>"), order);
+        inner = set_child(&inner, "c:order", &format!("<c:order val=\"{id}\"/>"), order);
         if let Some(title) = value.title.clone().or_else(|| series_title(template)) {
             let mut escaped = String::new(); escape(&title, &mut escaped);
             inner = set_child(&inner, "c:tx", &format!("<c:tx><c:v>{escaped}</c:v></c:tx>"), order);

@@ -394,3 +394,15 @@ fn rebinds_single_quoted_chart_id() {
     let document = String::from_utf8_lossy(&parts["word/document.xml"]).to_string();
     assert_eq!(document.matches("r:id=").count(), 1, "{document}");
 }
+
+#[test]
+fn skips_ids_of_filtered_series() {
+    let filtered = "<c:extLst><c:ext uri=\"f\" xmlns:c15=\"http://schemas.microsoft.com/office/drawing/2012/chart\"><c15:filteredBarSeries><c15:ser><c:idx val=\"1\"/><c:order val=\"1\"/></c15:ser></c15:filteredBarSeries></c:ext></c:extLst>";
+    let chart = CHART.replace("</c:barChart>", &format!("{filtered}</c:barChart>"));
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let parts = render(&template(&body, &chart, &json!({})), json!({"sales":{"categories":["A"],"series":[{"data":[1]},{"data":[2]}]}}));
+    let chart = &chart_xml(&parts)[0];
+
+    assert_eq!(chart.matches("<c:idx val=\"1\"/>").count(), 1, "{chart}");
+    assert!(chart.contains("<c:idx val=\"2\"/>"), "{chart}");
+}
