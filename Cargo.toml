@@ -13,6 +13,7 @@ regex = "1"
 image = { version = "0.25", default-features = false, optional = true, features = ["png", "jpeg", "gif", "bmp", "tiff"] }
 quircs = { version = "0.10", optional = true }
 imagesize = { version = "0.15", optional = true }
+simplecss = { version = "0.2", optional = true }
 resvg = { version = "0.49", default-features = false, features = ["text", "raster-images"], optional = true }
 
 zip = { version = "9", default-features = false, optional = true, features = ["deflate-flate2-zlib-rs"] }
@@ -23,7 +24,7 @@ qr-codes = ["dep:image", "dep:quircs"]
 # Updates cloned embedded XLSX chart data without editing existing worksheet cells.
 chart-workbook = ["dep:zip"]
 # Generates PNG previews for SVG images without a caller-supplied fallback.
-svg-preview = ["dep:resvg", "dep:imagesize"]
+svg-preview = ["dep:resvg", "dep:imagesize", "dep:simplecss"]
 
 [dev-dependencies]
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }

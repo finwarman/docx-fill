@@ -199,7 +199,7 @@ fn bounds_expanded_references() {
 }
 
 #[test]
-fn keeps_unresolved_stylesheet_paint() {
+fn rejects_stylesheet_cycles() {
     let styled = r#"<style>rect { fill: inherit; }</style><g fill="url(#p)"><defs><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="red"/></pattern></defs><rect width="40" height="30"/></g>"#;
     assert!(effect(styled).is_none());
 }
@@ -212,4 +212,46 @@ fn bounds_inline_paint_inheritance() {
 #[test]
 fn bounds_namespaced_filter_values() {
     assert!(effect(r#"<defs><filter id="f"><feConvolveMatrix xmlns:xlink="http://www.w3.org/1999/xlink" xlink:order="65536 65536" kernelMatrix="1"/></filter></defs><rect width="40" height="30" filter="url(#f)"/>"#).is_none());
+}
+
+#[test]
+fn previews_stylesheet_resources() {
+    let pixels = effect(r#"<style>.area { fill: url('#p'); } .stripe { fill: blue; }</style><defs><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><rect class="stripe" width="4" height="4"/></pattern></defs><rect class="area" width="40" height="30"/>"#).unwrap();
+    assert_eq!(pixels.pixel(20, 15).unwrap().blue(), 255);
+    let inherited = effect(r#"<style>rect { fill: inherit; }</style><g fill="red"><rect width="40" height="30"/></g>"#).unwrap();
+    assert_eq!(inherited.pixel(20, 15).unwrap().red(), 255);
+}
+
+#[test]
+fn previews_cdata_stylesheets() {
+    let pixels = effect(r#"<style><![CDATA[.area { filter: url('#blue'); }]]></style><defs><filter id="blue"><feColorMatrix values="0 0 1 0 0 0 1 0 0 0 1 0 0 0 0 0 0 0 1 0"/></filter></defs><rect class="area" width="40" height="30" fill="red"/>"#).unwrap();
+    assert_eq!(pixels.pixel(20, 15).unwrap().blue(), 255);
+}
+
+#[test]
+fn honours_overridden_css_resources() {
+    let pixels = effect(r#"<style>.stripe { fill:url(#p); }</style><defs><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><rect class="stripe" style="fill:blue" width="4" height="4"/></pattern></defs><rect width="40" height="30" fill="url(#p)"/>"#).unwrap();
+    assert_eq!(pixels.pixel(20, 15).unwrap().blue(), 255);
+}
+
+#[test]
+fn preserves_mixed_cdata_rules() {
+    let pixels = effect(r#"<style><![CDATA[@media print {]]>.paint { fill:url('#p'); } }</style><defs><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="blue"/></pattern></defs><rect class="paint" width="40" height="30" fill="red"/>"#).unwrap();
+    assert_eq!(pixels.pixel(20, 15).unwrap().red(), 255);
+    assert_eq!(pixels.pixel(20, 15).unwrap().blue(), 0);
+}
+
+#[test]
+fn resets_unresolved_inheritance() {
+    let pixels = effect(r#"<defs><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="4" height="4" fill="url(#p)" style="fill:inherit"/></pattern></defs><rect width="40" height="30" fill="url(#p)"/>"#).unwrap();
+    let pixel = pixels.pixel(20, 15).unwrap();
+    assert_eq!((pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()), (0, 0, 0, 255));
+}
+
+#[test]
+fn prefers_unprefixed_references() {
+    for attributes in [r##"href="#safe" xlink:href="#p""##, r##"xlink:href="#p" href="#safe""##] {
+        let body = format!(r##"<defs xmlns:xlink="http://www.w3.org/1999/xlink"><rect id="safe" width="4" height="4" fill="blue"/><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><use {attributes}/></pattern></defs><rect width="40" height="30" fill="url(#p)"/>"##);
+        assert_eq!(effect(&body).unwrap().pixel(20, 15).unwrap().blue(), 255);
+    }
 }
