@@ -7,6 +7,7 @@ use crate::properties::{find_element_end, set_child};
 use crate::xml::{ElementKind, Token, check_balanced, escape, is_xml_char, read_attribute, tokenize, unescape};
 use crate::{FillError, FillErrorId};
 
+const CHART_EX_NS: &str = "http://schemas.microsoft.com/office/drawing/2014/chartex";
 const SHEET_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const REL_NS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
 const OFFICE_REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -58,9 +59,11 @@ pub(super) fn prepare(sources: &BTreeMap<&str, &[u8]>, source_path: &str, source
     let replacement = set_attribute(raw, "Target", &target);
     let mut relations = relations.to_string();
     relations.replace_range(relationship.start..relationship.open_end, &replacement);
-    let root = one(&updated.chart, "chartSpace")?;
+    let modern = external.name == "cx:externalData";
+    let root = one(&updated.chart, if modern { "chartData" } else { "chartSpace" })?;
     let inner = &updated.chart[root.open_end..root.close_start];
-    let inner = set_child(inner, "c:externalData", &source[external.start..external.end], CHART_ORDER);
+    let order: &[&str] = if modern { &["cx:externalData", "cx:data", "cx:extLst"] } else { CHART_ORDER };
+    let inner = set_child(inner, external.name, &source[external.start..external.end], order);
     let chart = format!("{}{}{}", &updated.chart[..root.open_end], inner, &updated.chart[root.close_start..]);
     let content_type = format!("<Override PartName=\"/{}\" ContentType=\"{PACKAGE_TYPE}\"/>", escaped(&path));
     Ok(Prepared { chart, relations: relations.into_bytes(), path, bytes: updated.archive, content_type })
@@ -76,9 +79,10 @@ fn set_attribute(raw: &str, name: &str, value: &str) -> String {
     crate::properties::set_attribute(raw, name, value)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CellKind { Text, Number }
 
+#[derive(Debug)]
 struct Column {
     header: String,
     kind: CellKind,
@@ -141,7 +145,9 @@ fn update(bytes: &[u8], chart: &str) -> Result<Updated, FillError> {
         let id = format!("rIdDocxFillData{index}");
         (!sheet_names.contains(&sheet.to_lowercase()) && !names.contains(&path) && !ids.contains(&id)).then_some((sheet, path, id))
     }).expect("finite workbook entries");
-    let (chart, columns) = chart_data(chart, &sheet_name)?;
+    let (chart, columns) = if one(chart, "chartSpace")?.name == "cx:chartSpace" {
+        extended_data(chart, &sheet_name)?
+    } else { chart_data(chart, &sheet_name)? };
     let sheet_xml = write_sheet(&columns)?;
     let sheet = format!("<{wb_prefix}sheet name=\"{sheet_name}\" sheetId=\"{sheet_id}\" xmlns:r=\"{OFFICE_REL_NS}\" r:id=\"{id}\"/>");
     workbook = append_to(&workbook, "sheets", &sheet)?;
@@ -384,6 +390,92 @@ fn chart_data(chart: &str, sheet: &str) -> Result<(String, Vec<Column>), FillErr
     Ok((out, columns))
 }
 
+fn extended_data(chart: &str, sheet: &str) -> Result<(String, Vec<Column>), FillError> {
+    root(chart, "chartSpace", CHART_EX_NS)?;
+    let data = one(chart, "chartData")?;
+    let data_xml = &chart[data.start..data.end];
+    let mut columns = Vec::new();
+    let mut edits = Vec::new();
+    let mut values = BTreeMap::new();
+    let mut total = 0usize;
+    for item in children(data_xml, "data")? {
+        let xml = &data_xml[item.start..item.end];
+        let id = read_attribute(&xml[..item.open_end - item.start], "id").ok_or_else(|| error("Missing extended-chart data ID"))?;
+        if values.contains_key(id) { return Err(error("Duplicate extended-chart data ID")); }
+        let mut primary = None;
+        for dimension in children(xml, "strDim")?.into_iter().chain(children(xml, "numDim")?) {
+            let raw = &xml[dimension.start..dimension.end];
+            let kind = if local(dimension.name) == "strDim" { CellKind::Text } else { CellKind::Number };
+            let role = read_attribute(&raw[..dimension.open_end - dimension.start], "type").ok_or_else(|| error("Missing extended-chart dimension type"))?;
+            let levels = children(raw, "lvl")?;
+            if levels.is_empty() { return Err(error("Extended-chart dimensions need cached levels")); }
+            if kind == CellKind::Number && levels.len() != 1 { return Err(error("Numeric extended-chart dimensions need one cached level")); }
+            let first_column = columns.len();
+            let mut count = None;
+            // Office stores cached hierarchy levels leaf-first, opposite worksheet columns.
+            for (index, level) in levels.iter().rev().enumerate() {
+                let level_xml = &raw[level.start..level.end];
+                let points = level_points(level_xml, kind)?;
+                if count.is_some_and(|count| count != points.len()) { return Err(error("Hierarchy levels must have equal point counts")); }
+                count = Some(points.len());
+                total = total.checked_add(points.len()).filter(|total| *total <= MAX_CELLS).ok_or_else(|| error("Chart data exceeds one million cells"))?;
+                if columns.len() >= MAX_COLUMNS { return Err(error("Chart data exceeds the worksheet column limit")); }
+                let header = read_attribute(&level_xml[..level.open_end - level.start], "name").map(unescape).unwrap_or_else(|| format!("{role} {}", index + 1));
+                columns.push(Column { header, kind, values: points, shared: false });
+            }
+            if kind == CellKind::Number && (primary.is_none() || role == "val") { primary = Some(first_column); }
+            let last_column = columns.len() - 1;
+            let first = column_name(first_column);
+            let last = column_name(last_column);
+            let count = count.expect("nonempty levels");
+            let reference = if first_column == last_column && count == 1 { format!("${first}$2") } else { format!("${first}$2:${last}${}", count + 1) };
+            let header = if first_column == last_column { format!("${first}$1") } else { format!("${first}$1:${last}$1") };
+            let cached: String = levels.iter().map(|level| &raw[level.start..level.end]).collect();
+            let replacement = format!("{}<cx:f dir=\"col\">'{sheet}'!{reference}</cx:f><cx:nf>'{sheet}'!{header}</cx:nf>{cached}</{}>", &raw[..dimension.open_end - dimension.start], dimension.name);
+            edits.push((data.start + item.start + dimension.start, data.start + item.start + dimension.end, replacement));
+        }
+        values.insert(id.to_string(), primary.ok_or_else(|| error("Extended-chart data has no numeric dimension"))?);
+    }
+    if values.is_empty() { return Err(error("Extended chart has no cached data")); }
+    for series in elements(chart, "series")? {
+        if series.name != "cx:series" { continue; }
+        let xml = &chart[series.start..series.end];
+        let id = one(xml, "dataId")?;
+        let id = read_attribute(&xml[id.start..id.open_end], "val").ok_or_else(|| error("Missing extended-chart series data ID"))?;
+        let column = *values.get(id).ok_or_else(|| error("Unknown extended-chart series data ID"))?;
+        let Some(tx) = children(xml, "tx")?.into_iter().next() else { continue };
+        let tx_xml = &xml[tx.start..tx.end];
+        let Some(text) = elements(tx_xml, "txData")?.into_iter().next() else { continue };
+        let title = super::element_text(&tx_xml[text.start..text.end], "cx:v").ok_or_else(|| error("Missing cached extended-chart series title"))?;
+        columns[column].header = title.clone();
+        let name = column_name(column);
+        let replacement = format!("<cx:txData><cx:f>'{sheet}'!${name}$1</cx:f><cx:v>{}</cx:v></cx:txData>", escaped(&title));
+        edits.push((series.start + tx.start + text.start, series.start + tx.start + text.end, replacement));
+    }
+    edits.sort_by_key(|edit| edit.0);
+    let mut output = chart.to_string();
+    for (start, end, value) in edits.into_iter().rev() { output.replace_range(start..end, &value); }
+    Ok((output, columns))
+}
+
+fn level_points(xml: &str, kind: CellKind) -> Result<Vec<Option<String>>, FillError> {
+    let level = one(xml, "lvl")?;
+    let count = read_attribute(&xml[level.start..level.open_end], "ptCount").and_then(|value| value.parse::<usize>().ok()).filter(|count| *count > 0 && *count < MAX_ROWS && *count <= MAX_CELLS).ok_or_else(|| error("Workbook ranges require 1 to 1,000,000 points"))?;
+    let mut values = vec![None; count];
+    let mut used = BTreeSet::new();
+    for point in children(xml, "pt")? {
+        let at = read_attribute(&xml[point.start..point.open_end], "idx").and_then(|value| value.parse::<usize>().ok()).filter(|index| *index < count).ok_or_else(|| error("Invalid extended-chart point index"))?;
+        if !used.insert(at) { return Err(error("Duplicate extended-chart point index")); }
+        let raw = &xml[point.open_end..point.close_start];
+        if raw.contains('<') { return Err(error("Extended-chart points must contain text")); }
+        let value = unescape(raw);
+        if value.encode_utf16().count() > MAX_CELL_CHARS || !value.chars().all(is_xml_char) { return Err(error("Invalid or oversized worksheet text")); }
+        if kind == CellKind::Number && !value.parse::<f64>().is_ok_and(f64::is_finite) { return Err(error("Invalid numeric chart value")); }
+        values[at] = Some(value);
+    }
+    Ok(values)
+}
+
 fn read_points(xml: &str, kind: CellKind) -> Result<Vec<Option<String>>, FillError> {
     let count = one(xml, "ptCount")?;
     let count = read_attribute(&xml[count.start..count.open_end], "val").and_then(|value| value.parse::<usize>().ok()).filter(|count| *count > 0 && *count < MAX_ROWS && *count <= MAX_CELLS).ok_or_else(|| error("Workbook ranges require 1 to 1,000,000 points"))?;
@@ -437,4 +529,32 @@ fn write_cell(out: &mut String, cell: &str, value: &str, kind: CellKind) -> Resu
         CellKind::Number => out.push_str(&format!("<c r=\"{cell}\"><v>{escaped}</v></c>")),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hierarchy() -> String {
+        format!("<cx:chartSpace xmlns:cx=\"{CHART_EX_NS}\"><cx:chartData><cx:data id=\"0\"><cx:strDim type=\"cat\"><cx:lvl ptCount=\"2\"><cx:pt idx=\"0\">Leaf A</cx:pt><cx:pt idx=\"1\">Leaf B</cx:pt></cx:lvl><cx:lvl ptCount=\"2\"><cx:pt idx=\"0\">Parent</cx:pt><cx:pt idx=\"1\">Parent</cx:pt></cx:lvl></cx:strDim><cx:numDim type=\"size\"><cx:lvl ptCount=\"2\" formatCode=\"0.00\"><cx:pt idx=\"0\">10</cx:pt><cx:pt idx=\"1\">20</cx:pt></cx:lvl></cx:numDim></cx:data></cx:chartData><cx:chart><cx:plotArea><cx:plotAreaRegion><cx:series layoutId=\"sunburst\"><cx:tx><cx:txData><cx:v>Revenue</cx:v></cx:txData></cx:tx><cx:dataId val=\"0\"/></cx:series></cx:plotAreaRegion></cx:plotArea></cx:chart></cx:chartSpace>")
+    }
+
+    #[test]
+    fn reverses_hierarchy_columns() {
+        let (xml, columns) = extended_data(&hierarchy(), "Data").unwrap();
+        assert_eq!(columns[0].values, [Some("Parent".into()), Some("Parent".into())]);
+        assert_eq!(columns[1].values, [Some("Leaf A".into()), Some("Leaf B".into())]);
+        assert_eq!(columns[2].values, [Some("10".into()), Some("20".into())]);
+        assert_eq!(columns[2].header, "Revenue");
+        assert!(xml.contains("<cx:f dir=\"col\">'Data'!$A$2:$B$3</cx:f>"));
+        assert!(xml.contains("<cx:f dir=\"col\">'Data'!$C$2:$C$3</cx:f>"));
+        assert!(xml.contains("<cx:f>'Data'!$C$1</cx:f><cx:v>Revenue</cx:v>"));
+        assert!(xml.find("Leaf A").unwrap() < xml.find("Parent").unwrap());
+    }
+
+    #[test]
+    fn rejects_unequal_levels() {
+        let xml = hierarchy().replacen("ptCount=\"2\"", "ptCount=\"1\"", 1).replacen("<cx:pt idx=\"1\">Leaf B</cx:pt>", "", 1);
+        assert!(extended_data(&xml, "Data").unwrap_err().message.contains("equal point counts"));
+    }
 }
