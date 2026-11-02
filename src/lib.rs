@@ -168,7 +168,7 @@ pub struct Extensions {
     pub full_tables: bool,
     /// Rich text also reads the HTML module's further elements and inline styles: links, tables,
     /// strike, sup/sub, mark, code, pre, hr, blockquote, alignment, colours and sizes. Off, it
-    /// reads only p, br, h1-h6, b/strong, i/em, u and lists, without attributes.
+    /// reads only p, br, h1-h6, b/strong, i/em, u and lists, ignoring attributes.
     pub html_extras: bool,
     /// `{%%name}`, alone in its paragraph, centres the paragraph. Off, it draws as `{%name}` does.
     pub centered_images: bool,

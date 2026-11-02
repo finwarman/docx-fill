@@ -131,3 +131,33 @@ fn keeps_custom_tag_children() {
 
     assert_eq!(paragraph_texts(&xml), ["A", "B"]);
 }
+
+#[test]
+fn hooks_keep_core_html_elements() {
+    struct Styled;
+    impl FillHooks for Styled {
+        fn html_customize(&mut self, _: &HtmlElement<'_>) -> HtmlCustomization {
+            HtmlCustomization::default().css("color:red")
+        }
+        fn html_style_transform(&mut self, _: &HtmlElement<'_>) -> Option<String> { Some("Heading1".into()) }
+    }
+    let mut options = FillOptions::default();
+    options.extensions.html_extras = false;
+    let xml = template("<w:p><w:r><w:t>{~~html}</w:t></w:r></w:p>", &options)
+        .try_render_with(&json!({"html":"<p title='1 > 0'>A <b>B</b></p><p>C</p>"}), &mut Styled).unwrap();
+
+    assert_eq!(paragraph_texts(&xml), ["A B", "C"]);
+    assert!(xml.contains("<w:b/>") && !xml.contains("<w:color") && !xml.contains("<w:pStyle"));
+}
+
+#[test]
+fn keeps_literal_angle_brackets() {
+    for extras in [false, true] {
+        let mut options = FillOptions::default();
+        options.extensions.html_extras = extras;
+        let xml = template("<w:p><w:r><w:t>{~~html}</w:t></w:r></w:p>", &options)
+            .try_render(&json!({"html":"<p title='1 > 0'>A < 2</p>"})).unwrap();
+
+        assert_eq!(paragraph_texts(&xml), ["A &lt; 2"]);
+    }
+}

@@ -1462,7 +1462,10 @@ fn read_html_tokens(html: &str, has_extras: bool) -> Vec<HtmlToken<'_>> {
                 tokens.push(token);
                 at += length;
             }
-            None => at += 1,
+            None => {
+                tokens.push(HtmlToken::Text(&rest[..1]));
+                at += 1;
+            }
         }
     }
     tokens
@@ -1486,10 +1489,12 @@ fn read_html_tag(text: &str, has_extras: bool) -> Option<(HtmlToken<'_>, usize)>
     if name_length == 0 {
         return None;
     }
+    let name = &text[name_start..name_start + name_length];
     let mut at = name_start + name_length;
     let mut attributes = Vec::new();
-    // The markers this module writes carry attributes even without extras.
-    if !is_closing && (has_extras || text[name_start..].starts_with("docx-fill-")) {
+    // Read recognized tags completely; extras control how their attributes render.
+    let known = KNOWN_HTML.iter().any(|known| known.eq_ignore_ascii_case(name));
+    if !is_closing && (has_extras || known || name.starts_with("docx-fill-")) {
         at += read_attributes(&text[at..], &mut attributes)?;
     }
     at += text[at..].bytes().take_while(u8::is_ascii_whitespace).count();
@@ -1499,7 +1504,7 @@ fn read_html_tag(text: &str, has_extras: bool) -> Option<(HtmlToken<'_>, usize)>
     if !text[at..].starts_with('>') {
         return None;
     }
-    Some((HtmlToken::Tag { is_closing, name: &text[name_start..name_start + name_length], attributes }, at + 1))
+    Some((HtmlToken::Tag { is_closing, name, attributes }, at + 1))
 }
 
 /// Reads `name="value"`, `name='value'`, `name=value` and bare `name` attributes up to the tag's
@@ -1779,9 +1784,9 @@ mod tests {
     }
 
     #[test]
-    fn skips_a_tag_with_attributes_as_text() {
+    fn ignores_core_html_attributes() {
         let blocks = read_html("<p class=\"x\">t</p>", false, SpaceEdges::default(), "", &[]);
-        assert_eq!(blocks[0].runs[0].text.as_deref(), Some("p class=\"x\">t"));
+        assert_eq!(blocks[0].runs[0].text.as_deref(), Some("t"));
     }
 
     #[test]
