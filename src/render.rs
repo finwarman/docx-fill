@@ -79,6 +79,13 @@ pub trait FillHooks {
         input.clone()
     }
 
+    /// The value of a tag read in the caller's own syntax, as docxtemplater's `parser` gives.
+    /// `name` is the tag after its prefix, as written. `scopes` are the data and then each loop's
+    /// item, innermost last. A null is a missing value. `None`, the default, reads the tag as usual.
+    fn tag_value(&mut self, _name: &str, _scopes: &[&Value]) -> Option<Value> {
+        None
+    }
+
     /// The text a value or raw tag in `part` prints when its value is missing or null, as
     /// docxtemplater's `nullGetter` gives. `None` prints nothing, the default.
     fn missing_value(&mut self, _part: &str, _tag: MissingValue) -> Option<String> {
@@ -228,9 +235,12 @@ impl Template {
 }
 
 impl<'a> Render<'a, '_> {
-    /// The value a tag's name gives: its expression's result with expressions on, else the name's
-    /// value in the innermost scope that has one.
+    /// The value a tag's name gives: the hook's if it reads the tag, else its expression's result
+    /// with expressions on, else the name's value in the innermost scope that has one.
     fn look_up(&mut self, scopes: &[&'a Value], name: &str) -> Option<&'a Value> {
+        if let Some(value) = self.hooks.tag_value(name, scopes) {
+            return if value.is_null() { None } else { Some(self.computed.keep(value)) };
+        }
         let template = self.template;
         let Some(expression) = template.expressions.get(name) else { return look_up(scopes, name) };
         let mut evaluation = Evaluation { scopes, loop_indexes: &self.loop_indexes, hooks: &mut *self.hooks };
