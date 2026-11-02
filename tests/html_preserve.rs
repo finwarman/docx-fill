@@ -126,3 +126,48 @@ fn ignores_markers_in_attributes() {
     let xml = render(body, json!({"html":"<p>body</p>"}));
     assert_eq!(text(&xml), "beforebodyafter");
 }
+
+#[test]
+fn drops_proofing_marks_around_lone_tags() {
+    let body = "<w:p><w:proofErr w:type=\"spellStart\"/><w:r><w:t>{~html}</w:t></w:r><w:proofErr w:type=\"spellEnd\"/></w:p>";
+    let xml = render(body, json!({"html":"<p>A</p><p>B</p>"}));
+    assert_eq!(paragraph_texts(&xml), ["A", "B"], "{xml}");
+}
+
+#[test]
+fn drops_page_break_hints_around_lone_tags() {
+    let body = "<w:p><w:r><w:lastRenderedPageBreak/><w:t>{~html}</w:t></w:r></w:p>";
+    let xml = render(body, json!({"html":"<p>A</p><p>B</p>"}));
+    assert_eq!(paragraph_texts(&xml), ["A", "B"], "{xml}");
+}
+
+#[test]
+fn keeps_bookmarks_without_empty_paragraphs() {
+    let body = "<w:p><w:bookmarkStart w:id=\"1\" w:name=\"b\"/><w:r><w:t>{~html}</w:t></w:r><w:bookmarkEnd w:id=\"1\"/></w:p>";
+    let xml = render(body, json!({"html":"<p>A</p><p>B</p>"}));
+    assert_eq!(paragraph_texts(&xml), ["A", "B"], "{xml}");
+    assert!(xml.contains("<w:bookmarkStart") && xml.contains("<w:bookmarkEnd"), "{xml}");
+}
+
+#[test]
+fn closes_cells_after_tables() {
+    for cell in ["{~html}", "before{~html}"] {
+        let body = format!("<w:tbl><w:tr><w:tc><w:p><w:r><w:t>{cell}</w:t></w:r></w:p></w:tc></w:tr></w:tbl>");
+        let xml = render(&body, json!({"html":"<table><tr><td>inner</td></tr></table>"}));
+        assert!(!xml.contains("</w:tbl></w:tc>"), "{xml}");
+    }
+}
+
+#[test]
+fn keeps_one_simple_field() {
+    let body = "<w:p><w:fldSimple w:instr=\" MERGEFIELD x \"><w:r><w:t>a{~html}b</w:t></w:r></w:fldSimple></w:p>";
+    let xml = render(body, json!({"html":"<p>body</p>"}));
+    assert_eq!(xml.matches("<w:fldSimple").count(), 1, "{xml}");
+}
+
+#[test]
+fn numbers_split_paragraphs_once() {
+    let body = "<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr></w:pPr><w:r><w:t>Item {~html} end</w:t></w:r></w:p>";
+    let xml = render(body, json!({"html":"<p>A</p>"}));
+    assert_eq!(xml.matches("<w:numPr>").count(), 1, "{xml}");
+}
