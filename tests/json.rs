@@ -12,6 +12,7 @@ fn reads_every_option() {
         "modulePrefixes": ["$"],
         "dropStyleParagraphs": true,
         "comments": { "author": "Jane", "initials": "J", "date": "2026-11-02T09:00:00Z" },
+        "footnotes": { "raw": true, "refProperties": "<w:b/>", "refRun": "<w:r/>", "paragraphProperties": "<w:keepNext/>", "runProperties": "<w:i/>" },
         "table": { "paragraphValidation": "ignore", "autoResizeTable": true },
         "document": {
             "readOnly": true,
@@ -29,6 +30,11 @@ fn reads_every_option() {
     assert_eq!(options.extensions, Extensions { table_merge: false, ..Extensions::ALL });
     assert_eq!(options.module_prefixes, ["$"]);
     assert_eq!((options.comments.author.as_str(), options.comments.initials.as_deref()), ("Jane", Some("J")));
+    assert_eq!(options.footnotes.content, docx_fill::FootnoteContent::Raw);
+    assert_eq!(options.footnotes.ref_properties.as_deref(), Some("<w:b/>"));
+    assert_eq!(options.footnotes.ref_run.as_deref(), Some("<w:r/>"));
+    assert_eq!(options.footnotes.paragraph_properties.as_deref(), Some("<w:keepNext/>"));
+    assert_eq!(options.footnotes.run_properties.as_deref(), Some("<w:i/>"));
     assert_eq!(options.table.paragraph_validation, docx_fill::TableValidation::Ignore);
     assert_eq!(options.table.resize, docx_fill::TableResize::KeepColumns);
     let document = &options.document;

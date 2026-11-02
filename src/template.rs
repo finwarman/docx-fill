@@ -170,6 +170,7 @@ pub struct Template {
     pub(crate) drop_style_paragraphs: bool,
     /// With comments on, the comment author and date a value gives none of.
     pub(crate) comment_defaults: Option<CommentDefaults>,
+    pub(crate) footnotes: crate::FootnoteOptions,
     /// Tag names read as expressions, with expressions on.
     pub(crate) expressions: BTreeMap<String, Expression>,
     /// The largest drawing id the part uses, so new drawings take ids after it.
@@ -357,6 +358,7 @@ impl Template {
             table_resize: options.table.resize,
             drop_style_paragraphs: options.drop_style_paragraphs,
             comment_defaults: options.extensions.comments.then(|| options.comments.clone()),
+            footnotes: options.footnotes.clone(),
         };
         template.nest_blocks()?;
         Ok(template)

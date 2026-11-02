@@ -51,6 +51,7 @@ pub use document_edits::{DocumentEdits, Margins, Watermark, WatermarkLayout};
 pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
 pub use comments::CommentDefaults;
+pub use footnotes::{FootnoteContent, FootnoteOptions};
 pub use full_table::{TableOptions, TableResize, TableValidation};
 pub use images::{Image, ImageLength, ImageSize};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
@@ -206,6 +207,8 @@ pub struct FillOptions {
     /// Drops the paragraphs holding `{::stylepar}` tags.
     pub drop_style_paragraphs: bool,
     pub comments: CommentDefaults,
+    /// Content mode and formatting of inserted footnotes.
+    pub footnotes: FootnoteOptions,
     pub table: TableOptions,
     /// A bookmark prefix such as `tag_`. When rich text turns a tag's paragraph into several, and
     /// the tag's paragraph has a bookmark named this prefix and a number (`tag_3`), each later
@@ -240,6 +243,7 @@ impl Default for FillOptions {
             document: DocumentEdits::default(),
             drop_style_paragraphs: false,
             comments: CommentDefaults::default(),
+            footnotes: FootnoteOptions::default(),
             table: TableOptions::default(),
             continued_bookmarks: None,
             fill_properties: true,

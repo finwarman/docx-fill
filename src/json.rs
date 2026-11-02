@@ -65,6 +65,18 @@ impl FillOptions {
                         }
                     }
                 }
+                "footnotes" => {
+                    for (name, value) in read_object(value, key)? {
+                        match name.as_str() {
+                            "raw" => self.footnotes.content = if read_bool(value, name)? { crate::FootnoteContent::Raw } else { crate::FootnoteContent::Text },
+                            "refProperties" => self.footnotes.ref_properties = Some(read_string(value, name)?),
+                            "refRun" => self.footnotes.ref_run = Some(read_string(value, name)?),
+                            "paragraphProperties" => self.footnotes.paragraph_properties = Some(read_string(value, name)?),
+                            "runProperties" => self.footnotes.run_properties = Some(read_string(value, name)?),
+                            _ => return Err(unknown(name)),
+                        }
+                    }
+                }
                 "document" => self.document = read_document_edits(value)?,
                 "fillProperties" => self.fill_properties = read_bool(value, key)?,
                 "continuedBookmarks" => self.continued_bookmarks = Some(read_string(value, key)?),
