@@ -257,6 +257,7 @@ impl Template {
     }
 
     pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout) -> Result<Template, FillError> {
+        options.tag_prefixes.validate()?;
         let tokens = tokenize(xml).map_err(FillError::new)?;
         check_balanced(&tokens).map_err(FillError::new)?;
         let (paragraph_tokens, text_tokens) = scan_paragraphs(&tokens, layout);
@@ -636,19 +637,39 @@ fn read_tag(text: &str, options: &FillOptions) -> (TagKind, String) {
         return found;
     }
 
+    let prefixes = &options.tag_prefixes;
+    let kinds = [
+        (&prefixes.loop_start, true, TagKind::Open { is_inverted: false, element: None }),
+        (&prefixes.inverted_loop, true, TagKind::Open { is_inverted: true, element: None }),
+        (&prefixes.loop_end, true, TagKind::Close),
+        (&prefixes.raw, true, TagKind::Raw),
+        (&prefixes.word_run, options.extensions.word_run, TagKind::RawRun),
+        (&prefixes.html, options.extensions.rich_text, TagKind::RichText { is_block: false }),
+        (&prefixes.block_html, options.extensions.rich_text, TagKind::RichText { is_block: true }),
+        (&prefixes.image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: false }),
+        (&prefixes.centered_image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: options.extensions.centered_images }),
+    ];
+    let found = kinds.into_iter().filter(|(prefix, enabled, _)| *enabled && text.starts_with(prefix.as_str())).max_by_key(|(prefix, _, _)| prefix.len());
+    let named = |kind: TagKind, rest: &str| {
+        let name = if matches!(kind, TagKind::Image { .. } | TagKind::RawRun) { rest.trim() } else { rest };
+        (kind, name.to_string())
+    };
+    // An empty prefix only takes tags nothing else reads, element loops included.
+    let fallback = match found {
+        Some((prefix, _, kind)) if !prefix.is_empty() => return named(kind, &text[prefix.len()..]),
+        Some((_, _, kind)) => Some(kind),
+        None => None,
+    };
+
     let rest = text.get(1..).unwrap_or_default().to_string();
-    match text.as_bytes().first() {
-        Some(b'#') => (TagKind::Open { is_inverted: false, element: None }, rest),
-        Some(b'^') => (TagKind::Open { is_inverted: true, element: None }, rest),
-        Some(b'/') => (TagKind::Close, rest),
-        Some(b'@') => (TagKind::Raw, rest),
-        // `-w:tr rows`: the element, then the name. Without both, `-a` is a plain name.
-        Some(b'-') => match rest.split_once(char::is_whitespace) {
-            Some((element, name)) if !element.is_empty() => (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string()),
-            _ => (TagKind::Value, text.to_string()),
-        },
-        _ => (TagKind::Value, text.to_string()),
+    // `-w:tr rows`: the element, then the name. Without both, `-a` is a plain name.
+    if text.starts_with('-')
+        && let Some((element, name)) = rest.split_once(char::is_whitespace)
+        && !element.is_empty()
+    {
+        return (TagKind::Open { is_inverted: false, element: Some(element.to_string()) }, name.trim_start().to_string());
     }
+    fallback.map_or_else(|| (TagKind::Value, text.to_string()), |kind| named(kind, text))
 }
 
 fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, String)> {
@@ -725,11 +746,6 @@ fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, S
     {
         return Some((TagKind::Footnote, name.trim().to_string()));
     }
-    if extensions.word_run
-        && let Some(name) = text.strip_prefix("r@")
-    {
-        return Some((TagKind::RawRun, name.trim().to_string()));
-    }
     if extensions.paragraph_placeholder
         && let Some(name) = text.strip_prefix('?')
     {
@@ -748,21 +764,6 @@ fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, S
         && let Some(name) = text.strip_prefix(":stylecell ")
     {
         return Some((TagKind::CellStyle, name.trim().to_string()));
-    }
-    if extensions.rich_text {
-        if let Some(name) = text.strip_prefix("~~") {
-            return Some((TagKind::RichText { is_block: true }, name.to_string()));
-        }
-        if let Some(name) = text.strip_prefix('~') {
-            return Some((TagKind::RichText { is_block: false }, name.to_string()));
-        }
-    }
-    if extensions.images {
-        if let Some(name) = text.strip_prefix("%%") {
-            return Some((TagKind::Image { cell_width: None, is_centered: extensions.centered_images }, name.trim().to_string()));
-        }
-        let name = text.strip_prefix('%')?;
-        return Some((TagKind::Image { cell_width: None, is_centered: false }, name.trim().to_string()));
     }
     None
 }
