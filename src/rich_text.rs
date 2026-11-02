@@ -157,7 +157,57 @@ impl ListWriter<'_> {
 #[derive(Debug, Clone, Default)]
 struct Cell {
     span: usize,
+    row_span: usize,
     blocks: Vec<Block>,
+}
+
+#[derive(Clone, Copy)]
+enum CellMerge { None, Start, Continue }
+
+struct PlacedCell<'a> {
+    span: usize,
+    merge: CellMerge,
+    blocks: &'a [Block],
+}
+
+fn place_cells(rows: &[Vec<Cell>]) -> Vec<Vec<PlacedCell<'_>>> {
+    let mut active = BTreeMap::<usize, (usize, usize)>::new();
+    let mut placed = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let mut occupied = active.into_iter().peekable();
+        active = BTreeMap::new();
+        let mut cells = row.iter().peekable();
+        let mut column = 0;
+        let mut output = Vec::new();
+        while cells.peek().is_some() || occupied.peek().is_some() {
+            if occupied.peek().is_some_and(|(at, _)| *at == column) {
+                let (_, (span, left)) = occupied.next().expect("checked above");
+                output.push(PlacedCell { span, merge: CellMerge::Continue, blocks: &[] });
+                if left > 1 { active.insert(column, (span, left - 1)); }
+                column += span;
+                continue;
+            }
+            let next = occupied.peek().map(|(at, _)| *at);
+            if let Some(cell) = cells.peek()
+                && next.is_none_or(|at| column + cell.span <= at) {
+                let cell = cells.next().expect("checked above");
+                let height = if cell.row_span == 0 { rows.len() - index } else { cell.row_span.min(rows.len() - index) };
+                let merge = if height > 1 {
+                    active.insert(column, (cell.span, height - 1));
+                    CellMerge::Start
+                } else { CellMerge::None };
+                output.push(PlacedCell { span: cell.span, merge, blocks: &cell.blocks });
+                column += cell.span;
+                continue;
+            }
+            if let Some(next) = next {
+                output.push(PlacedCell { span: next - column, merge: CellMerge::None, blocks: &[] });
+                column = next;
+            }
+        }
+        placed.push(output);
+    }
+    placed
 }
 
 pub(crate) fn mark(index: usize) -> String {
@@ -307,6 +357,7 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
         out.push_str(&format!("{open}{}{bookmarks}{}</w:p>", write_paragraph_props(paragraph_props, block, number), write_runs(block, writer.run_props, writer.links, number)));
         return;
     };
+    let rows = place_cells(rows);
     let columns = rows.iter().map(|row| row.iter().map(|cell| cell.span).sum::<usize>()).max().unwrap_or(1).max(1);
     out.push_str(&format!("<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/>{TABLE_BORDERS}</w:tblPr><w:tblGrid>"));
     for _ in 0..columns {
@@ -321,9 +372,14 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
             if cell.span > 1 {
                 out.push_str(&format!("<w:gridSpan w:val=\"{}\"/>", cell.span));
             }
+            match cell.merge {
+                CellMerge::Start => out.push_str("<w:vMerge w:val=\"restart\"/>"),
+                CellMerge::Continue => out.push_str("<w:vMerge/>"),
+                CellMerge::None => {}
+            }
             out.push_str("</w:tcPr>");
             for (index, block) in cell.blocks.iter().enumerate() {
-                if follows_table(&cell.blocks, index) {
+                if follows_table(cell.blocks, index) {
                     out.push_str("<w:p/>");
                 }
                 write_block(out, "<w:p>", "", "", block, writer);
@@ -882,11 +938,12 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
             reader.close_cell();
             if !is_closing {
                 let span = read_attribute(attributes, "colspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, MAX_COLUMN_SPAN);
+                let row_span = read_attribute(attributes, "rowspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1);
                 if let Some((_, rows)) = reader.tables.last_mut() {
                     if rows.is_empty() {
                         rows.push(Vec::new());
                     }
-                    rows.last_mut().expect("pushed above").push(Cell { span, blocks: Vec::new() });
+                    rows.last_mut().expect("pushed above").push(Cell { span, row_span, blocks: Vec::new() });
                 }
                 reader.collections.push(Vec::new());
                 reader.current = None;

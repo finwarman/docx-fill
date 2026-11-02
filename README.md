@@ -58,6 +58,8 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 
 Package rendering writes HTML lists as native Word lists, with numbering definitions, nesting, ordered starts and item-value resets. Existing numbering IDs are preserved. Word supports nine nesting levels; deeper HTML lists use the ninth level. Standalone `Template` and `fill_part` rendering keep literal markers because they do not return package parts.
 
+HTML table cells support combined `rowspan` and `colspan`. Vertical spans keep later cells in their columns and stop at the table's final row.
+
 Inline HTML keeps spaces needed to separate surrounding text, including adjacent HTML values. Normal HTML whitespace collapses at line boundaries; the template's own spaces remain unchanged.
 
 A style value looks like this. `fontSize` is in half-points. It can also include `text`, which is printed at the styling tag and escaped as Word text.
@@ -81,6 +83,10 @@ template.set_theme_colors(BTreeMap::from([
 The method updates standard slots in `word/theme/theme1.xml`; color values accept three- or six-digit hex with an optional `#`.
 
 ## Other options
+
+`FillOptions::footnotes` controls inserted footnotes. `FootnoteContent::Raw` accepts complete Word runs. `ref_properties`, `ref_run`, `paragraph_properties` and `run_properties` customize the note marker, separator and text. JSON uses `footnotes: { raw, refProperties, refRun, paragraphProperties, runProperties }`. XML fragments must be valid WordprocessingML.
+
+`FillOptions::table` accepts `TableValidation::Ignore` to drop other text around a full-table tag, and `TableResize::KeepColumns` to resize vertical tables while retaining column widths. JSON uses `table: { paragraphValidation: "ignore", autoResizeTable: true }`. Table data can supply `fixedColumns`, with non-null entries spanning the body rows of each table chunk. Headers remain separate; cell spans stop before a fixed column.
 
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
 
