@@ -88,6 +88,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 ## Other options
 
+With expressions enabled, assignments store values for the current fill and print nothing: `{total = price * count}{total}`. Semicolon-separated expressions print their last result. Bare names are assigned on the current loop item; property assignments update the visible object. The caller's JSON remains unchanged. Object values are copied, and array assignments are limited to index 1,000,000.
+
 Paragraph placeholders inside text boxes expand to the whole shape by default. Set `paragraphPlaceholder: { expandToShape: false }` to target only the paragraph. `expandSoftBreaksInShapes: true` targets individual soft lines within shapes; `expandSoftBreaks: true` also enables this outside shapes. Surviving lines remain joined by soft breaks. In this opt-in mode, parser paragraph positions count logical soft lines.
 
 `FillOptions::footnotes` controls inserted footnotes. `FootnoteContent::Raw` accepts complete Word runs. `ref_properties`, `ref_run`, `paragraph_properties` and `run_properties` customize the note marker, separator and text. JSON uses `footnotes: { raw, refProperties, refRun, paragraphProperties, runProperties }`. XML fragments must be valid WordprocessingML.
