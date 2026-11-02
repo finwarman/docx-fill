@@ -9,6 +9,7 @@ use crate::styling::{RANGE_END, RANGE_START, RANGE_START_END, Style, StyleKind, 
 use crate::table_merge::{Merge, merge_table};
 use crate::full_table::{Grid, write_table};
 use crate::images::{Image, MediaUse, body_or_default, drawing_size, drawing_xml};
+use crate::images::replacement::{PictureFrame, PictureReplacement, replace_picture};
 use crate::rich_text::{self, RichValue};
 use crate::template::{Block, BlockKind, LoopPageBreaks, Part, StyleTarget, TagKind, Template};
 use crate::cell_styling;
@@ -87,6 +88,10 @@ pub trait FillHooks {
         None
     }
 
+    fn image_properties(&mut self, _part: &str, _value: &Value, _image: &Image) -> crate::ImageProperties {
+        crate::ImageProperties::default()
+    }
+
     /// The result of `{input | name:arguments}`, with a filter named in `FillOptions::filters`. A
     /// missing input or argument is null. Returns the input by default.
     fn filter(&mut self, _name: &str, input: &Value, _arguments: &[Value]) -> Value {
@@ -116,6 +121,7 @@ impl FillHooks for NoHooks {}
 pub(crate) struct FillState {
     pub assignments: Assignments,
     pub next_drawing_id: u32,
+    pub next_caption: u32,
     /// Page width and height less margins, in pixels, when the part does not give its own.
     pub body: Option<(f64, f64)>,
     /// Images `{%name}` sizes to fill, as a share of their container's width.
@@ -153,6 +159,7 @@ struct ParagraphFrame {
     style: Option<Style>,
     /// Held a `{::stylepar}` tag, with such paragraphs dropped.
     is_dropped: bool,
+    captions: Vec<String>,
 }
 
 struct Render<'a, 'h> {
@@ -184,6 +191,7 @@ struct Render<'a, 'h> {
     computed: ComputedEnd<'a>,
     /// Each array loop item's index, innermost last.
     loop_indexes: Vec<usize>,
+    pictures: Vec<PictureFrame>,
 }
 
 impl Template {
@@ -209,7 +217,7 @@ impl Template {
     }
 
     fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (String, Vec<crate::FillError>) {
-        let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id + 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
+        let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id + 1, next_caption: 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
         let filled = self.fill(data, "", hooks, &mut state);
         let errors = filled.html_errors;
         // Only a package prints subtemplates.
@@ -259,6 +267,7 @@ impl Template {
             links: Vec::new(),
             computed: computed.end(),
             loop_indexes: Vec::new(),
+            pictures: Vec::new(),
         };
         let mut scopes = vec![data];
         render.render_range(0, self.parts.len(), &self.top, &mut scopes);
@@ -456,7 +465,14 @@ impl<'a> Render<'a, '_> {
         let template = self.template;
         for part in &template.parts[from..to] {
             match part {
-                Part::Element { kind, name, raw } => self.print_element(*kind, name, raw),
+                Part::Element { kind, name, raw } => {
+                    if name == "w:drawing" && *kind == ElementKind::Open {
+                        self.pictures.push(PictureFrame { start: self.out.len(), replacement: None });
+                    }
+                    if name == "wp:docPr" { self.prepare_picture(raw, scopes); }
+                    self.print_element(*kind, name, raw);
+                    if name == "w:drawing" && *kind == ElementKind::Close { self.finish_picture(); }
+                }
                 Part::Text(text) => self.out.push_str(text),
                 Part::Tag(index) => {
                     let tag = &template.tags[*index];
@@ -570,25 +586,49 @@ impl<'a> Render<'a, '_> {
         }
     }
 
+    fn prepare_picture(&mut self, raw: &str, scopes: &[&'a Value]) {
+        if self.pictures.is_empty() { return; }
+        let tag = ["descr", "name"].iter().filter_map(|name| read_attribute(raw, name)).map(crate::xml::unescape)
+            .find_map(|text| self.template.picture_tags.get(&text));
+        let Some(tag) = tag else { return };
+        let Some(value) = self.look_up(scopes, &tag.name).filter(|value| is_truthy(value)) else { return };
+        let Some(image) = self.hooks.image(self.part, value) else { return };
+        let size = self.hooks.image_size(self.part, value, &image);
+        self.pictures.last_mut().expect("checked above").replacement = Some(PictureReplacement { image, size, tag: tag.literal.clone() });
+    }
+
+    fn finish_picture(&mut self) {
+        let Some(PictureFrame { start, replacement: Some(replacement) }) = self.pictures.pop() else { return };
+        let id = self.state.next_drawing_id;
+        self.state.next_drawing_id += 1;
+        let mut media = MediaUse::for_image(replacement.image);
+        media.relationship_id = format!("rIdDocxFillReplacement_{id}");
+        media.target = format!("media/replacements/{id}.{}", media.image.extension);
+        if let Some(xml) = replace_picture(&self.out[start..], &media.relationship_id, replacement.size, &replacement.tag) {
+            self.out.replace_range(start.., &xml);
+            self.media.push(media);
+        }
+    }
+
     /// Prints an element, rewriting a paragraph with rich text, or a styled or merged element, as
     /// it closes.
     fn print_element(&mut self, kind: ElementKind, name: &str, raw: &str) {
         let start = self.out.len();
         self.out.push_str(raw);
         match (kind, name) {
-            (ElementKind::Open, PARAGRAPH) => self.paragraphs.push(ParagraphFrame { start, has_rich_text: false, style: None, is_dropped: false }),
+            (ElementKind::Open, PARAGRAPH) => self.paragraphs.push(ParagraphFrame { start, has_rich_text: false, style: None, is_dropped: false, captions: Vec::new() }),
             (ElementKind::Open, shape) if SHAPES.contains(&shape) => self.shapes.push((start, None)),
             (ElementKind::Open, CELL) => self.cells.push((start, None)),
             (ElementKind::Open, ROW) => self.rows.push((start, None)),
             (ElementKind::Open, RUN) => self.runs.push((start, None)),
             (ElementKind::Open, TABLE) => self.tables.push((start, Vec::new())),
             (ElementKind::Close, PARAGRAPH) => {
-                let Some(ParagraphFrame { start: opened, has_rich_text, style, is_dropped }) = self.paragraphs.pop() else { return };
+                let Some(ParagraphFrame { start: opened, has_rich_text, style, is_dropped, captions }) = self.paragraphs.pop() else { return };
                 if is_dropped {
                     self.out.truncate(opened);
                     return;
                 }
-                if !has_rich_text && style.is_none() {
+                if !has_rich_text && style.is_none() && captions.is_empty() {
                     return;
                 }
                 let mut written = if has_rich_text { rich_text::write_paragraph(&self.out[opened..], &self.rich_values, &mut self.links, self.template.continued_bookmarks.as_deref().map(|prefix| (prefix, &mut self.state.next_bookmark_id)), self.state.numbering.as_mut()) } else { self.out[opened..].to_string() };
@@ -596,6 +636,7 @@ impl<'a> Render<'a, '_> {
                     written = edit_each(&written, PARAGRAPH, |paragraph| style_paragraph(paragraph, &style, true));
                 }
                 self.out.replace_range(opened.., &written);
+                for caption in captions { self.out.push_str(&caption); }
             }
             (ElementKind::Close, CELL) => {
                 let frame = self.cells.pop();
@@ -700,8 +741,12 @@ impl<'a> Render<'a, '_> {
     fn print_image(&mut self, value: Option<&Value>, cell_width: Option<f64>, is_centered: bool) {
         let Some(value) = value.filter(|value| is_truthy(value)) else { return };
         let Some(image) = self.hooks.image(self.part, value) else { return };
+        let properties = self.hooks.image_properties(self.part, value, &image);
         if let (true, Some(paragraph)) = (is_centered, self.paragraphs.last_mut()) {
             paragraph.style.get_or_insert_with(Style::default).align = Some("center");
+        }
+        if let (Some(align), Some(paragraph)) = (properties.alignment(), self.paragraphs.last_mut()) {
+            paragraph.style.get_or_insert_with(Style::default).align = Some(align);
         }
 
         let (width, height) = match self.hooks.image_size(self.part, value, &image) {
@@ -724,8 +769,17 @@ impl<'a> Render<'a, '_> {
         self.out.push_str("</w:t>");
         let displayed = fallback.as_ref().unwrap_or(&media);
         let svg = fallback.as_ref().map(|_| media.relationship_id.as_str());
-        self.out.push_str(&drawing_xml(id, &displayed.relationship_id, width, height, svg));
+        let link = properties.link_target().map(|target| {
+            let id = rich_text::link_relationship_id(self.links.len());
+            self.links.push(target.to_string());
+            id
+        });
+        self.out.push_str(&properties.apply(drawing_xml(id, &displayed.relationship_id, width, height, svg), link.as_deref()));
         self.out.push_str("<w:t xml:space=\"preserve\">");
+        if let (Some(caption), Some(paragraph)) = (properties.caption_xml(self.state.next_caption), self.paragraphs.last_mut()) {
+            paragraph.captions.push(caption);
+            self.state.next_caption += 1;
+        }
         for media in std::iter::once(media).chain(fallback) {
             if !self.media.iter().any(|used| used.relationship_id == media.relationship_id) {
                 self.media.push(media);

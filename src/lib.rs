@@ -48,6 +48,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+/// Rendered package parts, borrowing unchanged bytes from the template.
+pub type PackageParts<'a> = Vec<(String, Cow<'a, [u8]>)>;
+
 pub use document_edits::{DocumentEdits, Margins, Watermark, WatermarkLayout};
 pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
@@ -56,7 +59,7 @@ pub use comments::CommentDefaults;
 pub use footnotes::{FootnoteContent, FootnoteOptions};
 pub use full_table::{TableOptions, TableResize, TableValidation};
 pub use html::{HtmlBlockMode, HtmlCustomization, HtmlElement, HtmlFragment, HtmlOptions, HtmlTagKind};
-pub use images::{Image, ImageLength, ImageSize};
+pub use images::{Image, ImageAlignment, ImageBorder, ImageCaption, ImageFloat, ImageLayer, ImageLength, ImageProperties, ImageRelative, ImageSize, ImageWrap};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
@@ -446,19 +449,20 @@ impl PackageTemplate {
     }
 
     /// Renders once and returns HTML validation errors from this package and its includes.
-    pub fn try_render(&self, data: &Value) -> Result<Vec<(String, Cow<'_, [u8]>)>, FillError> { self.try_render_with(data, &mut NoHooks) }
+    pub fn try_render(&self, data: &Value) -> Result<PackageParts<'_>, FillError> { self.try_render_with(data, &mut NoHooks) }
 
     /// Checked rendering with callbacks, each invoked once per element.
-    pub fn try_render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Result<Vec<(String, Cow<'_, [u8]>)>, FillError> {
+    pub fn try_render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Result<PackageParts<'_>, FillError> {
         let (parts, errors) = self.render_result(data, hooks);
         check_html_errors(errors)?;
         Ok(parts)
     }
 
-    fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (Vec<(String, Cow<'_, [u8]>)>, Vec<FillError>) {
+    fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (PackageParts<'_>, Vec<FillError>) {
         let mut state = FillState {
             assignments: expressions::Assignments::default(),
             next_drawing_id: self.max_drawing_id + 1,
+            next_caption: 1,
             body: self.body,
             container_fill: CONTAINER_FILL,
             next_footnote_id: self.max_footnote_id + 1,

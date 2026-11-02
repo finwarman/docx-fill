@@ -108,6 +108,12 @@ With expressions enabled, assignments store values for the current fill and prin
 
 `FillHooks::svg_fallback` can return PNG bytes for an SVG image. The package then includes both media files and uses the PNG in readers without SVG support. The caller supplies the preview; the crate does not rasterize SVG.
 
+`FillHooks::image_properties` returns `ImageProperties` for alt text, names, paragraph alignment, solid borders, links and captions. Configure them with the `alt`, `name`, `align`, `border`, `link` and `caption` builders. `ImageBorder::new` takes a hex color and a width in points. Captions are paragraphs after the image paragraph; they do not use inline text boxes. `ImageCaption` supports prefix, sequence, style and alignment.
+
+`ImageProperties::floating` accepts an `ImageFloat` with offsets, reference frames, wrap mode, layer and margins. `rotate`, `flip_horizontal` and `flip_vertical` transform either inline or floating pictures. Offsets accept `ImageLength`; invalid coordinates and reference-frame combinations are rejected. Tight and through wrapping use the rectangular image outline.
+
+An image tag in an existing picture's alt text or name replaces that picture through `FillHooks::image`. Its size, position, crop and rotation stay unchanged unless `image_size` returns explicit dimensions. Tags use the configured delimiters and prefixes and resolve in the current loop scope. A missing value keeps the original picture.
+
 Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
 
 ```rust

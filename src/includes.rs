@@ -68,7 +68,7 @@ impl Subtemplate {
         Ok(Subtemplate { parts, template, styles })
     }
 
-    fn render(&self, scope: &Value, hooks: &mut dyn FillHooks) -> (Vec<(String, Cow<'_, [u8]>)>, Vec<FillError>) {
+    fn render(&self, scope: &Value, hooks: &mut dyn FillHooks) -> (crate::PackageParts<'_>, Vec<FillError>) {
         match &self.template {
             Some(template) => template.render_result(scope, hooks),
             None => (self.parts.iter().map(|(name, bytes)| (name.clone(), Cow::Borrowed(bytes.as_slice()))).collect(), Vec::new()),
