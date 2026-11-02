@@ -177,6 +177,8 @@ A syntax error or unknown filter is an error when parsing. Names such as `table:
 
 Positions are a paragraph index and a character offset.
 
+`FilledDocument::annotate_errors` adds Word comments at the located diagnostics from a `FillError`, using `CommentDefaults` for their author and date. It supports body and header/footer paragraphs. Errors without a usable paragraph location are left unannotated; the original diagnostics remain available.
+
 For callers that pass settings as JSON, such as a wasm build, `FillOptions::read_json` reads every option (camelCase keys, unknown keys refused), `read_include_options` a subtemplate's options, and `FilledDocument::run_json` a list of text edits.
 
 ## Contributing
