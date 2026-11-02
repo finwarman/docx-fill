@@ -1,0 +1,62 @@
+mod common;
+
+use common::{document, paragraph, paragraph_texts, text};
+use docx_fill::{FillOptions, PackageTemplate, fill_part};
+use serde_json::json;
+
+fn fill(body: &str, data: serde_json::Value) -> String {
+    fill_part(&document(body), &data, &FillOptions { expressions: true, ..FillOptions::default() }).unwrap()
+}
+
+#[test]
+fn stores_values_without_printing() {
+    let xml = fill(&paragraph(&["{full = a + b}{full}|{x=y=2}{x}{y}"]), json!({"a":2,"b":3}));
+
+    assert_eq!(text(&xml), "5|22");
+}
+
+#[test]
+fn returns_last_statement() {
+    let xml = fill(&paragraph(&["{a=1;a}|{a;2}|{;}|{1;a=2}{a}|{1+(a=1)}"]), json!({}));
+
+    assert_eq!(text(&xml), "1|2||2|2");
+}
+
+#[test]
+fn writes_to_current_loop_item() {
+    let data = json!({"value":9,"rows":[{"n":2},{"n":4}]});
+    let xml = fill(&paragraph(&["{#rows}{value=n+1}{value},{/rows}|{value}"]), data.clone());
+
+    assert_eq!(text(&xml), "3,5,|9");
+    assert_eq!(data["value"], 9);
+    assert!(data["rows"][0].get("value").is_none());
+}
+
+#[test]
+fn supports_nested_targets() {
+    let xml = fill(&paragraph(&["{a.b=2}{a.b}|{items[1]=4}{items[1]}|{a.c.d=5}{a.c.d}"]), json!({"a":{"b":1},"items":[0,0]}));
+
+    assert_eq!(text(&xml), "2|4|5");
+}
+
+#[test]
+fn raw_assignment_drops_paragraph() {
+    let body = paragraph(&["{@full=a}"]) + &paragraph(&["{full}"]);
+    let xml = fill(&body, json!({"a":"value"}));
+
+    assert_eq!(paragraph_texts(&xml), ["value"]);
+}
+
+#[test]
+fn assignments_share_package_scope() {
+    let options = FillOptions { expressions: true, ..FillOptions::default() };
+    let parts = [
+        ("word/document.xml".into(), document(&paragraph(&["{name='filled'}"])).into_bytes()),
+        ("word/header1.xml".into(), b"<w:hdr xmlns:w=\"w\"><w:p><w:r><w:t>{name}</w:t></w:r></w:p></w:hdr>".to_vec()),
+    ];
+    let template = PackageTemplate::parse(parts, &options).unwrap();
+    let parts = template.render(&json!({}));
+    let header = parts.iter().find(|(name, _)| name == "word/header1.xml").unwrap();
+
+    assert_eq!(text(&String::from_utf8_lossy(&header.1)), "filled");
+}

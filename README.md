@@ -89,6 +89,8 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 ## Other options
 
+With expressions enabled, assignments store values for the current fill and print nothing: `{total = price * count}{total}`. Semicolon-separated expressions print their last result. Bare names are assigned on the current loop item; property assignments update the visible object. The caller's JSON remains unchanged. Object values are copied, and array assignments are limited to index 1,000,000.
+
 Place `{$sales}` alone in the paragraph after a bar chart, in the chart's paragraph, or in its title. Package rendering accepts `{"sales":{"categories":["A","B"],"series":[{"title":"Revenue","data":[10,20]}]}}`. Series titles are optional; omitted titles keep the template title. Numeric data and `null` gaps must match the category count. Chart layout, series formatting and number formats are preserved. Loops create separate chart parts for each value.
 
 Only standard `c:barChart` charts are filled. Title tags need one chart in their drawing paragraph. Other chart types and invalid data keep the original chart. The generated chart uses literal data; its embedded workbook stays unchanged and is detached from the generated chart. JSON can disable this feature with `extensions.charts`.

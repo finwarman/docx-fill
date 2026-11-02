@@ -468,6 +468,7 @@ impl PackageTemplate {
     /// media parts, relationships and content types.
     pub fn render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Vec<(String, Cow<'_, [u8]>)> {
         let mut state = FillState {
+            assignments: expressions::Assignments::default(),
             next_drawing_id: self.max_drawing_id + 1,
             next_caption: 1,
             body: self.body,
