@@ -35,7 +35,7 @@ fn reads_inline_styles_in_schema_order() {
     let body = html(r#"<p><span style="color: #f00; font-size: 16px; font-family: 'Times New Roman', serif; font-weight: 700; font-style: italic; text-decoration: underline line-through; background-color: rgb(0, 128, 255)">x</span></p>"#);
 
     assert!(run_with(&body, "x").contains(
-        r#"<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:b/><w:i/><w:strike/><w:color w:val="FF0000"/><w:sz w:val="24"/><w:szCs w:val="24"/><w:u w:val="single"/><w:shd w:val="clear" w:color="auto" w:fill="0080FF"/></w:rPr>"#
+        r#"<w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:b/><w:bCs/><w:i/><w:iCs/><w:strike/><w:color w:val="FF0000"/><w:sz w:val="24"/><w:szCs w:val="24"/><w:u w:val="single"/><w:shd w:val="clear" w:color="auto" w:fill="0080FF"/></w:rPr>"#
     ));
 }
 

@@ -1039,11 +1039,13 @@ fn write_run_props(run_props: &str, is_bold: bool, is_italic: bool, is_underline
         }
         inner.push_str(&format!("<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/>"));
     }
-    if is_bold && find_element_start(&inner, "<w:b").is_none() {
-        inner.push_str("<w:b/>");
+    if is_bold {
+        inner = set_child(&inner, "w:b", "<w:b/>", RUN_ORDER);
+        inner = set_child(&inner, "w:bCs", "<w:bCs/>", RUN_ORDER);
     }
-    if is_italic && find_element_start(&inner, "<w:i").is_none() {
-        inner.push_str("<w:i/>");
+    if is_italic {
+        inner = set_child(&inner, "w:i", "<w:i/>", RUN_ORDER);
+        inner = set_child(&inner, "w:iCs", "<w:iCs/>", RUN_ORDER);
     }
     if is_underlined && !inner.contains("<w:u ") {
         inner.push_str("<w:u w:val=\"single\"/>");
@@ -1065,9 +1067,11 @@ fn write_format(inner: &str, format: &Format) -> String {
     }
     if let Some(bold) = format.bold {
         inner = set_child(&inner, "w:b", &toggle(bold, "w:b"), RUN_ORDER);
+        inner = set_child(&inner, "w:bCs", &toggle(bold, "w:bCs"), RUN_ORDER);
     }
     if let Some(italic) = format.italic {
         inner = set_child(&inner, "w:i", &toggle(italic, "w:i"), RUN_ORDER);
+        inner = set_child(&inner, "w:iCs", &toggle(italic, "w:iCs"), RUN_ORDER);
     }
     if let Some(strike) = format.strike {
         inner = set_child(&inner, "w:strike", &toggle(strike, "w:strike"), RUN_ORDER);
