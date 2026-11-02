@@ -159,6 +159,12 @@ impl FilledDocument {
                     json!(self.add_comment(&self.read_target(edit)?, &read_field(edit, "comment")?, &by)?)
                 }
                 "comments" => Value::Array(self.comments().iter().map(write_comment).collect()),
+                "getBookmarks" => Value::Array(self.bookmarks().iter().map(|bookmark| json!({ "name": bookmark.name, "id": bookmark.id, "part": bookmark.part })).collect()),
+                "getXml" => Value::String(self.get_xml(&self.read_bookmark(edit)?)?),
+                "replaceXml" => {
+                    self.replace_xml(&self.read_bookmark(edit)?, &read_field(edit, "xml")?)?;
+                    Value::Null
+                }
                 other => return Err(FillError::new(format!("Unknown op \"{other}\""))),
             };
             results.push(result);
@@ -174,6 +180,15 @@ impl FilledDocument {
         let find = read_field(edit, "find")?;
         let index = edit.get("index").map_or(Some(0), Value::as_u64).ok_or_else(|| wrong_type("index"))? as usize;
         self.search(&find).into_iter().nth(index).ok_or_else(|| FillError::new(format!("No match {index} of \"{find}\"")))
+    }
+
+    fn read_bookmark(&self, edit: &Map<String, Value>) -> Result<crate::Bookmark, FillError> {
+        let name = read_field(edit, "bookmark")?;
+        let part = edit.get("part").map(|value| read_string(value, "part")).transpose()?;
+        let mut found = self.bookmarks().into_iter().filter(|bookmark| bookmark.name == name && part.as_ref().is_none_or(|part| part == &bookmark.part));
+        let bookmark = found.next().ok_or_else(|| FillError::new("Bookmark not found"))?;
+        if found.next().is_some() { return Err(FillError::new("Bookmark name is ambiguous; supply part")); }
+        Ok(bookmark)
     }
 }
 
