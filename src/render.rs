@@ -553,7 +553,8 @@ impl<'a> Render<'a, '_> {
         let Some(value) = self.look_up(scopes, &tag.name).filter(|value| is_truthy(value)) else { return };
         let Some(image) = self.hooks.image(self.part, value) else { return };
         let size = self.hooks.image_size(self.part, value, &image);
-        self.pictures.last_mut().expect("checked above").replacement = Some(PictureReplacement { image, size, tag: tag.literal.clone() });
+        let fallback = if image.extension.eq_ignore_ascii_case("svg") { self.hooks.svg_fallback(self.part, value, &image) } else { None };
+        self.pictures.last_mut().expect("checked above").replacement = Some(PictureReplacement { image, size, tag: tag.literal.clone(), fallback });
     }
 
     fn finish_picture(&mut self) {
@@ -563,9 +564,18 @@ impl<'a> Render<'a, '_> {
         let mut media = MediaUse::for_image(replacement.image);
         media.relationship_id = format!("rIdDocxFillReplacement_{id}");
         media.target = format!("media/replacements/{id}.{}", media.image.extension);
-        if let Some(xml) = replace_picture(&self.out[start..], &media.relationship_id, replacement.size, &replacement.tag) {
+        let fallback = replacement.fallback.map(|bytes| {
+            let mut fallback = MediaUse::svg_fallback(&media.image, bytes);
+            fallback.relationship_id = format!("rIdDocxFillReplacementFallback_{id}");
+            fallback.target = format!("media/replacements/{id}.png");
+            fallback
+        });
+        let displayed = fallback.as_ref().unwrap_or(&media);
+        let svg = fallback.as_ref().map(|_| media.relationship_id.as_str());
+        if let Some(xml) = replace_picture(&self.out[start..], &displayed.relationship_id, replacement.size, &replacement.tag, svg) {
             self.out.replace_range(start.., &xml);
             self.media.push(media);
+            self.media.extend(fallback);
         }
     }
 
