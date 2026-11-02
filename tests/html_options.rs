@@ -9,7 +9,7 @@ fn template(body: &str, options: &FillOptions) -> Template {
 }
 
 #[test]
-fn checked_render_rejects_unknown_tags() {
+fn rejects_unknown_tags() {
     let template = template("<w:p><w:r><w:t>{~~html}</w:t></w:r></w:p>", &FillOptions::default());
     let data = json!({"html":"<p><unknown-tag>A</unknown-tag></p>"});
     let error = template.try_render(&data).unwrap_err();
@@ -21,7 +21,7 @@ fn checked_render_rejects_unknown_tags() {
 }
 
 #[test]
-fn ignored_tags_keep_their_children() {
+fn keeps_unknown_children() {
     let options = FillOptions::default().read_json(&json!({"html":{"ignoreUnknownTags":true}})).unwrap();
     let template = template("<w:p><w:r><w:t>{~~html}</w:t></w:r></w:p>", &options);
     let xml = template.try_render(&json!({"html":"<unknown-tag><b>A</b></unknown-tag>"})).unwrap();
@@ -31,7 +31,7 @@ fn ignored_tags_keep_their_children() {
 }
 
 #[test]
-fn css_recovery_keeps_valid_declarations() {
+fn recovers_valid_css() {
     let options = FillOptions::default().read_json(&json!({"html":{"ignoreCssErrors":true},"htmlStyleSheet":"p {color:red;broken}"})).unwrap();
     let xml = template("<w:p><w:r><w:t>{~~html}</w:t></w:r></w:p>", &options)
         .try_render(&json!({"html":"<p style='font-weight:bold;bad'>A</p>"})).unwrap();
@@ -43,7 +43,7 @@ fn css_recovery_keeps_valid_declarations() {
 }
 
 #[test]
-fn invalid_block_modes_control_inline_content() {
+fn controls_invalid_blocks() {
     let body = "<w:p><w:r><w:t>before {~html} after</w:t></w:r></w:p>";
     let data = json!({"html":"<p>A</p><p>B</p>"});
     let mut options = FillOptions::default();
@@ -80,7 +80,7 @@ impl FillHooks for CustomHooks {
 }
 
 #[test]
-fn callbacks_customize_elements_and_raw_xml() {
+fn customizes_elements() {
     let mut options = FillOptions::default();
     options.html.custom_tags.insert("check-box".into(), HtmlTagKind::Inline);
     options.html.custom_tags.insert("block-box".into(), HtmlTagKind::Block);
@@ -96,7 +96,7 @@ fn callbacks_customize_elements_and_raw_xml() {
 }
 
 #[test]
-fn packages_collect_errors_from_includes() {
+fn collects_include_errors() {
     let options = FillOptions::default();
     let mut package = PackageTemplate::parse([("word/document.xml".into(), document("<w:p><w:r><w:t>{:include child}</w:t></w:r></w:p>").into_bytes())], &options).unwrap();
     let child = Subtemplate::parse([("word/document.xml".into(), document("<w:p><w:r><w:t>{~~html}</w:t></w:r></w:p>").into_bytes())], &options, IncludeMode::Templated, IncludeStyles::UseMain).unwrap();
@@ -124,7 +124,7 @@ fn rejects_unbalanced_custom_xml() {
 }
 
 #[test]
-fn registered_tags_can_keep_children() {
+fn keeps_custom_tag_children() {
     let options = FillOptions::default().read_json(&json!({"html":{"customTags":{"box":"block"}}})).unwrap();
     let xml = template("<w:p><w:r><w:t>{~~html}</w:t></w:r></w:p>", &options)
         .try_render(&json!({"html":"<box>A</box><box>B</box>"})).unwrap();
