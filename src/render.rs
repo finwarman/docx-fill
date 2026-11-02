@@ -662,7 +662,8 @@ impl<'a> Render<'a, '_> {
             None => {
                 let (body_width, body_height) = body_or_default(self.template.body.or(self.state.body));
                 let width = cell_width.unwrap_or(body_width) * self.state.container_fill;
-                drawing_size(&image, width, cell_width.is_some(), body_height)
+                let height = body_height * self.state.container_fill;
+                drawing_size(&image, width, cell_width.is_some(), height)
             }
         };
         let media = MediaUse::for_image(image);
