@@ -677,11 +677,12 @@ impl<'a> Evaluation<'_, 'a> {
         self.at_level(expression, level).into_value().map_or(Value::Null, Cow::into_owned)
     }
 
-    /// The name's value from `level` out. A null is passed over for an outer value, and only
-    /// stays when no scope has one.
+    /// The name's value in the scope at `level`, else in the innermost scope that has one, as core
+    /// reads it when it tries an expression again from an outer scope. A null is passed over for
+    /// another value, and only stays when no scope has one.
     fn identifier(&self, name: &str, level: usize) -> Evaluated<'a> {
         let mut found = Evaluated::Undefined;
-        for scope in self.scopes[..=level].iter().rev() {
+        for scope in std::iter::once(&self.scopes[level]).chain(self.scopes.iter().rev()) {
             match scope.get(name) {
                 Some(value) if !value.is_null() => return Evaluated::Data(Cow::Borrowed(value)),
                 Some(value) => found = Evaluated::Data(Cow::Borrowed(value)),
