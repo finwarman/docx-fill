@@ -106,6 +106,7 @@ pub(crate) struct Tag {
     pub text: String,
     pub part: usize,
     pub paragraph: usize,
+    pub offset: usize,
     /// Nothing else is in its paragraph's text.
     pub is_alone: bool,
     /// A value tag's `<w:rPr>`, empty when its run has none; `None` outside a run or without
@@ -256,18 +257,17 @@ impl TagKind {
 }
 
 /// Each name a value tag reads, parsed, with expressions on.
-fn parse_expressions(tags: &[Tag], options: &FillOptions) -> Result<BTreeMap<String, Expression>, FillError> {
+fn parse_expressions(tags: &[Tag], options: &FillOptions, errors: &mut Vec<FillError>) -> BTreeMap<String, Expression> {
     let mut expressions = BTreeMap::new();
-    if !options.expressions {
-        return Ok(expressions);
-    }
+    if !options.expressions { return expressions; }
     for tag in tags.iter().filter(|tag| tag.kind.reads_value()) {
-        if !expressions.contains_key(&tag.name) {
-            let expression = Expression::parse(&tag.name, &options.filters).map_err(|reason| FillError::new(format!("The tag \"{}\" is not a valid expression: {reason}", tag.name)))?;
-            expressions.insert(tag.name.clone(), expression);
+        if expressions.contains_key(&tag.name) { continue; }
+        match Expression::parse(&tag.name, &options.filters) {
+            Ok(expression) => { expressions.insert(tag.name.clone(), expression); }
+            Err(reason) => errors.push(FillError::new(format!("The tag \"{}\" is not a valid expression: {reason}", tag.name)).with_id(crate::FillErrorId::ScopeParserCompilation).at(tag.text.clone(), tag.offset, tag.paragraph)),
         }
     }
-    Ok(expressions)
+    expressions
 }
 
 impl Template {
@@ -292,17 +292,18 @@ impl Template {
             expanded = crate::placeholder_lines::expand(xml, options.paragraph_placeholder.soft_breaks);
             expanded.as_str()
         } else { xml };
-        let tokens = tokenize(xml).map_err(FillError::new)?;
-        check_balanced(&tokens).map_err(FillError::new)?;
+        let tokens = tokenize(xml).map_err(|message| FillError::new(message).with_id(crate::FillErrorId::MalformedXml))?;
+        check_balanced(&tokens).map_err(|message| FillError::new(message).with_id(crate::FillErrorId::MalformedXml))?;
         let (paragraph_tokens, text_tokens) = scan_paragraphs(&tokens, layout);
 
         // Tags by paragraph, found in its `<w:t>` text joined, since Word splits a tag across runs.
         let mut found = Vec::with_capacity(text_tokens.len());
         let mut joined_texts = Vec::with_capacity(text_tokens.len());
         let mut delimiters = options.delimiters.clone();
-        for texts in &text_tokens {
+        let mut errors = Vec::new();
+        for (paragraph, texts) in text_tokens.iter().enumerate() {
             let joined: String = texts.iter().map(|&i| text_of(&tokens[i])).collect();
-            found.push(find_tags(&joined, &mut delimiters, options)?);
+            found.push(find_tags(&joined, &mut delimiters, options, paragraph, &mut errors));
             joined_texts.push(joined);
         }
 
@@ -374,9 +375,9 @@ impl Template {
             }
         }
 
-        let blocks = pair_blocks(&parts, &tags, &paragraphs, options)?;
+        let blocks = pair_blocks(&parts, &tags, &paragraphs, options, &mut errors);
         let has_cell_loops = blocks.iter().any(|block| matches!(&tags[block.open_tag].kind, TagKind::Open { element: Some(element), .. } if element == CELL));
-        let mut expressions = parse_expressions(&tags, options)?;
+        let mut expressions = parse_expressions(&tags, options, &mut errors);
         let mut picture_tags = BTreeMap::new();
         if options.extensions.images {
             for part in &parts {
@@ -386,8 +387,14 @@ impl Template {
                     let Some(text) = read_attribute(raw, attribute).map(unescape) else { continue };
                     let Some(tag) = read_image_tag(&text, options) else { continue };
                     if options.expressions {
-                        let expression = Expression::parse(&tag.name, &options.filters).map_err(|reason| FillError::new(format!("The tag \"{}\" is not a valid expression: {reason}", tag.name)))?;
-                        expressions.insert(tag.name.clone(), expression);
+                        match Expression::parse(&tag.name, &options.filters) {
+                            Ok(expression) => { expressions.insert(tag.name.clone(), expression); }
+                            Err(reason) => {
+                                let mut error = FillError::new(format!("The tag \"{}\" is not a valid expression: {reason}", tag.name)).with_id(crate::FillErrorId::ScopeParserCompilation);
+                                error.tag = Some(tag.literal.clone().into_boxed_str());
+                                errors.push(error);
+                            }
+                        }
                     }
                     picture_tags.insert(text, tag);
                 }
@@ -414,12 +421,13 @@ impl Template {
             comment_defaults: options.extensions.comments.then(|| options.comments.clone()),
             footnotes: options.footnotes.clone(),
         };
-        template.nest_blocks()?;
+        template.nest_blocks(&mut errors);
+        if !errors.is_empty() { return Err(FillError::many(errors)); }
         Ok(template)
     }
 
     /// Puts each block under the innermost block containing it.
-    fn nest_blocks(&mut self) -> Result<(), FillError> {
+    fn nest_blocks(&mut self, errors: &mut Vec<FillError>) {
         let mut order: Vec<usize> = (0..self.blocks.len()).collect();
         order.sort_by_key(|&b| (self.blocks[b].start, std::cmp::Reverse(self.blocks[b].end), self.blocks[b].open_tag));
 
@@ -430,14 +438,15 @@ impl Template {
             }
             match open.last() {
                 Some(&outer) if self.blocks[block].end > self.blocks[outer].end => {
-                    return Err(FillError::new(format!("The loops \"{}\" and \"{}\" overlap", self.block_name(outer), self.block_name(block))));
+                    let tag = &self.tags[self.blocks[block].open_tag];
+                    errors.push(FillError::new(format!("The loops \"{}\" and \"{}\" overlap", self.block_name(outer), self.block_name(block))).with_id(crate::FillErrorId::LoopPositionInvalid).at(tag.text.clone(), tag.offset, tag.paragraph));
+                    continue;
                 }
                 Some(&outer) => self.blocks[outer].children.push(block),
                 None => self.top.push(block),
             }
             open.push(block);
         }
-        Ok(())
     }
 
     fn block_name(&self, block: usize) -> &str {
@@ -468,7 +477,7 @@ impl Builder {
             if tag.start >= offset && !tag.changes_delimiters {
                 let written = &joined[tag.name.clone()];
                 let (kind, name) = read_tag(&unescape(written), options);
-                self.tags.push(Tag { kind, name, text: written.to_string(), part: self.parts.len(), paragraph, is_alone: false, run_props: None });
+                self.tags.push(Tag { kind, name, text: written.to_string(), part: self.parts.len(), paragraph, offset: tag.start, is_alone: false, run_props: None });
                 self.parts.push(Part::Tag(self.tags.len() - 1));
             }
             cursor = tag.end.min(end);
@@ -494,6 +503,10 @@ fn scan_paragraphs(tokens: &[Token], layout: TextLayout) -> (Vec<ParagraphTokens
             Token::Element { kind: ElementKind::Open, name: PARAGRAPH, .. } => {
                 open.push(paragraphs.len());
                 paragraphs.push((index, None));
+                texts.push(Vec::new());
+            }
+            Token::Element { kind: ElementKind::SelfClosing, name: PARAGRAPH, .. } => {
+                paragraphs.push((index, Some(index)));
                 texts.push(Vec::new());
             }
             Token::Element { kind: ElementKind::Close, name: PARAGRAPH, .. } => {
@@ -537,11 +550,10 @@ fn preserve_space(raw: &str) -> String {
 }
 
 /// The tags in a paragraph's joined text.
-fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions) -> Result<Vec<FoundTag>, FillError> {
+fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions, paragraph: usize, errors: &mut Vec<FillError>) -> Vec<FoundTag> {
     let mut start = DelimiterForms::new(&delimiters.start);
     let mut end = DelimiterForms::new(&delimiters.end);
     let mut tags: Vec<FoundTag> = Vec::new();
-    // The open delimiter's offset and the name's start.
     let mut open: Option<(usize, usize)> = None;
     let mut at = 0;
     while at < text.len() {
@@ -549,42 +561,38 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions) -> 
         let rest = &text[at..];
         let closed = if let Some(length) = start.find(rest) {
             let closed = match open {
-                // Same start and end (e.g. `%name%`): the next delimiter closes the tag.
                 Some((opened, name)) if identical => Some(FoundTag { start: opened, name: name..at, end: at + length, changes_delimiters: false }),
-                // A stray open delimiter prints as text.
-                Some(_) if options.allow_unclosed_tag => {
+                Some(_) if options.allow_unclosed_tag => { open = Some((at, at + length)); None }
+                Some((opened, name)) => {
+                    let error = if name == at { duplicate_open_tag(text, opened, &end) } else { unclosed_tag(&text[opened..at]) };
+                    let context = if name == at { tag_context(text, at + length, &end) } else { unescape(&text[name..at]) };
+                    errors.push(error.at(context, opened, paragraph));
                     open = Some((at, at + length));
                     None
                 }
-                Some((opened, name)) if name == at => return Err(duplicate_open_tag(text, opened, &end)),
-                Some((opened, _)) => return Err(unclosed_tag(&text[opened..at])),
-                // `[[[name]]` holds two `[[`, as core reads it. Allowed, the first `[` is text.
                 None if start.overlap_end(text, at, length).is_some() => {
                     if !options.allow_unclosed_tag {
-                        return Err(unclosed_tag(&text[at..]));
+                        errors.push(unclosed_tag(&text[at..]).at(tag_context(text, at + length, &end), at, paragraph));
                     }
                     at += rest.chars().next().map_or(1, char::len_utf8);
                     continue;
                 }
-                None => {
-                    open = Some((at, at + length));
-                    None
-                }
+                None => { open = Some((at, at + length)); None }
             };
             at += length;
             closed
         } else if let Some(length) = end.find(rest).filter(|_| !identical) {
             let Some((opened, name)) = open.take() else {
-                if options.allow_unopened_tag {
-                    at += length;
-                    continue;
+                if !options.allow_unopened_tag {
+                    let context_start = tags.last().map_or(0, |tag| tag.end);
+                    errors.push(unopened_tag(text, &tags, at, length).at(unescape(&text[context_start..at]), at, paragraph));
                 }
-                return Err(unopened_tag(text, &tags, at, length));
+                at += length;
+                continue;
             };
-            // `[[name]]]` holds two `]]`, as core reads it.
             if let Some(overlap_end) = end.overlap_end(text, at, length).filter(|_| !options.allow_unopened_tag) {
                 let context = unescape(&text[name..overlap_end]);
-                return Err(FillError::new(format!("The tag ending with \"{context}\" has duplicate close tags")));
+                errors.push(FillError::new(format!("The tag ending with \"{context}\" has duplicate close tags")).with_id(crate::FillErrorId::DuplicateCloseTag).at(unescape(&text[name..at]), at, paragraph));
             }
             at += length;
             Some(FoundTag { start: opened, name: name..at - length, end: at, changes_delimiters: false })
@@ -592,22 +600,33 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions) -> 
             at += rest.chars().next().map_or(1, char::len_utf8);
             None
         };
-
         let Some(mut tag) = closed else { continue };
         open = None;
-        // `{=[[ ]]=}` sets the delimiters for the rest of the part.
-        if let Some(next) = read_new_delimiters(&unescape(&text[tag.name.clone()]), options.change_delimiter_prefix.as_deref())? {
-            *delimiters = next;
-            start = DelimiterForms::new(&delimiters.start);
-            end = DelimiterForms::new(&delimiters.end);
-            tag.changes_delimiters = true;
+        let name = unescape(&text[tag.name.clone()]);
+        match read_new_delimiters(&name, options.change_delimiter_prefix.as_deref()) {
+            Ok(Some(next)) => {
+                *delimiters = next;
+                start = DelimiterForms::new(&delimiters.start);
+                end = DelimiterForms::new(&delimiters.end);
+                tag.changes_delimiters = true;
+            }
+            Err(error) => {
+                errors.push(error.with_id(crate::FillErrorId::InvalidDelimiter).at(name, tag.start, paragraph));
+                tag.changes_delimiters = true;
+            }
+            Ok(None) => {}
         }
         tags.push(tag);
     }
-    match open {
-        Some((opened, _)) if !options.allow_unclosed_tag => Err(unclosed_tag(&text[opened..])),
-        _ => Ok(tags),
+    if let Some((opened, name)) = open.filter(|_| !options.allow_unclosed_tag) {
+        errors.push(unclosed_tag(&text[opened..]).at(unescape(&text[name..]), opened, paragraph));
     }
+    tags
+}
+
+fn tag_context(text: &str, from: usize, end: &DelimiterForms) -> String {
+    let to = text[from..].char_indices().map(|(offset, _)| from + offset).find(|&at| end.find(&text[at..]).is_some()).unwrap_or(text.len());
+    unescape(&text[from..to])
 }
 
 /// The delimiters a `=[[ ]]=` tag sets, for `prefix` `=`. `None` for any other tag.
@@ -658,13 +677,13 @@ impl DelimiterForms {
 }
 
 fn unclosed_tag(context: &str) -> FillError {
-    FillError::new(format!("The tag beginning with \"{}\" is unclosed", unescape(context)))
+    FillError::new(format!("The tag beginning with \"{}\" is unclosed", unescape(context))).with_id(crate::FillErrorId::UnclosedTag)
 }
 
 /// `{{name}`: a second open delimiter straight after the first.
 fn duplicate_open_tag(text: &str, opened: usize, end: &DelimiterForms) -> FillError {
     let context_end = text[opened..].char_indices().map(|(offset, _)| opened + offset).find(|&at| end.find(&text[at..]).is_some()).unwrap_or(text.len());
-    FillError::new(format!("The tag beginning with \"{}\" has duplicate open tags", unescape(&text[opened..context_end])))
+    FillError::new(format!("The tag beginning with \"{}\" has duplicate open tags", unescape(&text[opened..context_end]))).with_id(crate::FillErrorId::DuplicateOpenTag)
 }
 
 /// A close delimiter with no tag open. `{name}}`, straight after a tag's close, is a duplicate.
@@ -672,11 +691,11 @@ fn unopened_tag(text: &str, tags: &[FoundTag], at: usize, length: usize) -> Fill
     match tags.last() {
         Some(tag) if tag.end == at => {
             let context = unescape(&text[tag.name.start..at + length]);
-            FillError::new(format!("The tag ending with \"{context}\" has duplicate close tags"))
+            FillError::new(format!("The tag ending with \"{context}\" has duplicate close tags")).with_id(crate::FillErrorId::DuplicateCloseTag)
         }
         last => {
             let context_start = last.map_or(0, |tag| tag.end);
-            FillError::new(format!("The tag beginning with \"{}\" is unopened", unescape(&text[context_start..at])))
+            FillError::new(format!("The tag beginning with \"{}\" is unopened", unescape(&text[context_start..at]))).with_id(crate::FillErrorId::UnopenedTag)
         }
     }
 }
@@ -863,31 +882,32 @@ fn read_run_props(parts: &[Part], at: usize) -> Option<String> {
 }
 
 /// Pairs each loop's tags and works out the parts every loop and raw tag replaces.
-fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: &FillOptions) -> Result<Vec<Block>, FillError> {
+fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: &FillOptions, errors: &mut Vec<FillError>) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut open: Vec<usize> = Vec::new();
     for (index, tag) in tags.iter().enumerate() {
+        let result = (|| -> Result<(), FillError> {
         match tag.kind {
             TagKind::Open { .. } | TagKind::GridOpen | TagKind::SegmentOpen { .. } => open.push(index),
             TagKind::Close => {
                 let Some(opening) = open.pop() else {
-                    return Err(FillError::new(format!("The tag \"{}\" has no opening loop tag", tag.text)));
+                    return Err(FillError::new(format!("The tag \"{}\" has no opening loop tag", tag.text)).with_id(crate::FillErrorId::UnopenedLoop));
                 };
                 if !tag.name.is_empty() && tag.name != tags[opening].name {
-                    return Err(FillError::new(format!("The tag \"{}\" is closed by the tag \"{}\"", tags[opening].name, tag.name)));
+                    return Err(FillError::new(format!("The tag \"{}\" is closed by the tag \"{}\"", tags[opening].name, tag.name)).with_id(crate::FillErrorId::ClosingTagMismatch));
                 }
                 if tags[opening].kind == TagKind::GridOpen {
                     blocks.push(expand_grid(tags, paragraphs, opening, index)?);
-                    continue;
+                    return Ok(());
                 }
                 if let TagKind::SegmentOpen { is_inline } = tags[opening].kind {
                     blocks.push(expand_segment(tags, paragraphs, opening, index, is_inline)?);
-                    continue;
+                    return Ok(());
                 }
                 check_cell_loops(parts, tags, opening, index, &options.delimiters)?;
                 if let Some(columns) = vertical_columns::column_blocks(parts, tags, opening, index)? {
                     blocks.extend(columns);
-                    continue;
+                    return Ok(());
                 }
                 blocks.push(expand_loop(parts, tags, paragraphs, opening, index, options)?);
             }
@@ -960,7 +980,7 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                 // One block per paragraph, naming each of its placeholders.
                 if let Some(Block { kind: BlockKind::Placeholder { names }, .. }) = blocks.iter_mut().find(|block| block.start == start && matches!(block.kind, BlockKind::Placeholder { .. })) {
                     names.push(tag.name.clone());
-                    continue;
+                    return Ok(());
                 }
                 blocks.push(Block {
                     kind: BlockKind::Placeholder { names: vec![tag.name.clone()] },
@@ -995,23 +1015,37 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
             | TagKind::TableMerge(_)
             | TagKind::Footnote => {}
         }
+        Ok(())
+        })();
+        if let Err(mut error) = result {
+            if error.id == crate::FillErrorId::TemplateError {
+                error.id = match tag.kind {
+                    TagKind::Raw => crate::FillErrorId::RawTagNotAlone,
+                    TagKind::RawRun => crate::FillErrorId::NoXmlTagFound,
+                    TagKind::Image { .. } => crate::FillErrorId::ImageTagNotAlone,
+                    TagKind::FullTable => crate::FillErrorId::TableTagNotAlone,
+                    TagKind::Include | TagKind::IncludeSegment { .. } | TagKind::SegmentOpen { .. } => crate::FillErrorId::SegmentTagNotAlone,
+                    _ => crate::FillErrorId::LoopPositionInvalid,
+                };
+            }
+            errors.push(error.at(tag.text.clone(), tag.offset, tag.paragraph));
+        }
     }
-    if let Some(&opening) = open.last() {
-        return Err(FillError::new(format!("The loop with tag \"{}\" is unclosed", tags[opening].name)));
+    for opening in open.into_iter().rev() {
+        let tag = &tags[opening];
+        errors.push(FillError::new(format!("The loop with tag \"{}\" is unclosed", tag.name)).with_id(crate::FillErrorId::UnclosedLoop).at(tag.text.clone(), tag.offset, tag.paragraph));
     }
     for tag in tags {
-        if !matches!(tag.kind, TagKind::IncludeSegment { is_dynamic: false, .. }) {
-            continue;
-        }
+        if !matches!(tag.kind, TagKind::IncludeSegment { is_dynamic: false, .. }) { continue; }
         if !blocks.iter().any(|block| matches!(&block.kind, BlockKind::Segment { name } if *name == tag.name)) {
-            return Err(FillError::new(format!("The subsegment for \"{}\" must be defined in order to include it", tag.name)));
+            errors.push(FillError::new(format!("The subsegment for \"{}\" must be defined in order to include it", tag.name)).with_id(crate::FillErrorId::UndefinedSegment).at(tag.text.clone(), tag.offset, tag.paragraph));
         }
     }
-    Ok(blocks)
+    blocks
 }
 
 fn segment_not_alone() -> FillError {
-    FillError::new("Segment tag should be the only text in a paragraph")
+    FillError::new("Segment tag should be the only text in a paragraph").with_id(crate::FillErrorId::SegmentTagNotAlone)
 }
 
 /// A segment's parts: a block segment's tag paragraphs, each holding only its tag, and the
@@ -1158,9 +1192,9 @@ fn check_cell_loops(parts: &[Part], tags: &[Tag], opening: usize, closing: usize
     let pair = |name: &str| format!("{start}#{name}{end}{start}/{name}{end}");
     let (loop_name, other_name) = (&tags[opening].name, &other.name);
     let written = if before.is_some() { pair(other_name) + &pair(loop_name) } else { pair(loop_name) + &pair(other_name) };
-    Err(FillError::new(format!("Unbalanced loop tags {written}: a loop across table cells cannot share its first or last cell with another loop")))
+    Err(FillError::new(format!("Unbalanced loop tags {written}: a loop across table cells cannot share its first or last cell with another loop")).with_id(crate::FillErrorId::UnbalancedLoopTags))
 }
 
 fn not_inside(tag: &Tag, element: &str) -> FillError {
-    FillError::new(format!("The tag \"{}\" is not inside a <{element}>", tag.text))
+    FillError::new(format!("The tag \"{}\" is not inside a <{element}>", tag.text)).with_id(crate::FillErrorId::NoXmlTagFound)
 }
