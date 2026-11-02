@@ -1488,7 +1488,8 @@ fn read_html_tag(text: &str, has_extras: bool) -> Option<(HtmlToken<'_>, usize)>
     }
     let mut at = name_start + name_length;
     let mut attributes = Vec::new();
-    if has_extras && !is_closing {
+    // The markers this module writes carry attributes even without extras.
+    if !is_closing && (has_extras || text[name_start..].starts_with("docx-fill-")) {
         at += read_attributes(&text[at..], &mut attributes)?;
     }
     at += text[at..].bytes().take_while(u8::is_ascii_whitespace).count();

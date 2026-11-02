@@ -116,3 +116,33 @@ fn gif_and_encoded_svg_sources() {
     assert!(xml.contains("cx=\"9525\" cy=\"9525\"") && xml.contains("cx=\"190500\" cy=\"95250\""));
     assert!(parts.keys().any(|name| name.ends_with(".gif")) && parts.keys().any(|name| name.ends_with(".svg")));
 }
+
+#[test]
+fn reads_sources_as_browsers_do() {
+    let unpadded = PNG.trim_end_matches('=').replacen("data:", "DATA:", 1);
+    let parts = render(&format!("<p><img src='{unpadded}'><svg width='8' height='4'><path d='M0 0h8v4z'/></svg></p>"), &FillOptions::default(), &mut NoHooks);
+    let svg = parts.iter().find(|(name, _)| name.ends_with(".svg")).unwrap().1;
+
+    assert_eq!(parts.keys().filter(|name| name.starts_with("word/media/")).count(), 2);
+    assert!(String::from_utf8_lossy(svg).starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+}
+
+#[test]
+fn fits_unsized_images_to_the_page() {
+    let parts = render("<svg viewBox='0 0 4000 2000'><path d='M0 0h8v4z'/></svg>", &FillOptions::default(), &mut NoHooks);
+    let xml = String::from_utf8_lossy(&parts["word/document.xml"]);
+    let width: i64 = xml.split("<wp:extent cx=\"").nth(1).unwrap().split('"').next().unwrap().parse().unwrap();
+
+    assert!(width < 4000 * 9525, "{width}");
+}
+
+#[test]
+fn embeds_images_without_extras() {
+    let mut options = FillOptions::default();
+    options.extensions.html_extras = false;
+    let parts = render(&format!("<p>A<img src='{PNG}'>B</p>"), &options, &mut NoHooks);
+    let xml = String::from_utf8_lossy(&parts["word/document.xml"]);
+
+    assert_eq!(text(&xml), "AB");
+    assert!(xml.contains("<w:drawing"));
+}

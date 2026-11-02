@@ -18,7 +18,7 @@ impl HtmlImage {
     pub fn embedded(&self) -> Result<Option<Image>, String> {
         let (extension, bytes) = if self.source.trim_start().get(..4).is_some_and(|start| start.eq_ignore_ascii_case("<svg")) {
             ("svg", self.source.as_bytes().to_vec())
-        } else if let Some(data) = self.source.strip_prefix("data:") {
+        } else if let Some(data) = self.source.get(..5).filter(|scheme| scheme.eq_ignore_ascii_case("data:")).map(|_| &self.source[5..]) {
             let (header, body) = data.split_once(',').ok_or("Invalid image data URL")?;
             let mime = header.split(';').next().unwrap_or_default();
             let extension = match mime.to_ascii_lowercase().as_str() {
@@ -28,10 +28,11 @@ impl HtmlImage {
             let bytes = if header.split(';').any(|part| part.eq_ignore_ascii_case("base64")) { decode_base64(body)? } else { decode_uri(body)? };
             (extension, bytes)
         } else { return Ok(None); };
-        if extension == "svg" {
+        let bytes = if extension == "svg" {
             let xml = std::str::from_utf8(&bytes).map_err(|_| "Invalid SVG encoding")?;
             crate::xml::tokenize(xml).and_then(|tokens| crate::xml::check_balanced(&tokens))?;
-        }
+            add_svg_namespaces(xml).into_bytes()
+        } else { bytes };
         let explicit = || Some((length(self.attribute("width")?, 0.0)?, length(self.attribute("height")?, 0.0)?));
         let (width, height) = source_size(extension, &bytes).or_else(|| (extension == "svg").then(explicit).flatten()).ok_or("Invalid or unsized image source")?;
         let hash = bytes.iter().fold(FNV_OFFSET, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME));
@@ -46,6 +47,8 @@ impl HtmlImage {
             (Some(width), Some(height)) => (width, height),
             (Some(width), None) => (width, width / ratio),
             (None, Some(height)) => (height * ratio, height),
+            // Like `{%image}`, an unsized image is no wider than its container.
+            (None, None) if container > 0.0 && image.width > container => (container, container / ratio),
             (None, None) => (image.width, image.height),
         };
         ImageSize::pixels(width, height)
@@ -119,22 +122,38 @@ fn svg_size(svg: &str) -> Option<(f64, f64)> {
     }
 }
 
+/// Decodes as browsers decode a data URL: missing padding and unused bits are allowed.
 fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
-    let bytes: Vec<_> = text.bytes().filter(|byte| !byte.is_ascii_whitespace()).collect();
-    if bytes.len() % 4 != 0 { return Err("Invalid base64 image".into()); }
-    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
-        let padding = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
-        if padding > 2 || (padding > 0 && index + 1 != bytes.len() / 4) { return Err("Invalid base64 image padding".into()); }
-        let mut value = 0u32;
-        for (index, byte) in chunk.iter().enumerate() {
-            let digit = if *byte == b'=' && index >= 4 - padding { 0 } else { BASE64.iter().position(|candidate| candidate == byte).ok_or("Invalid base64 image character")? as u32 };
-            value = value << 6 | digit;
+    let mut bytes: Vec<_> = decode_uri(text)?.into_iter().filter(|byte| !byte.is_ascii_whitespace()).collect();
+    if bytes.len() % 4 == 0 {
+        for _ in 0..2 { if bytes.last() == Some(&b'=') { bytes.pop(); } }
+    }
+    if bytes.len() % 4 == 1 { return Err("Invalid base64 image".into()); }
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3 + 2);
+    let (mut value, mut bits) = (0u32, 0);
+    for byte in bytes {
+        let digit = BASE64.iter().position(|candidate| *candidate == byte).ok_or("Invalid base64 image character")? as u32;
+        value = (value << 6 | digit) & 0xffffff;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((value >> bits) as u8);
         }
-        if (padding == 1 && value & 0xff != 0) || (padding == 2 && value & 0xffff != 0) { return Err("Invalid base64 image padding bits".into()); }
-        out.extend_from_slice(&value.to_be_bytes()[1..4 - padding]);
     }
     Ok(out)
+}
+
+/// An HTML page puts inline `<svg>` in the SVG namespace; a standalone file must say so.
+fn add_svg_namespaces(xml: &str) -> String {
+    let Some(start) = xml.find("<svg") else { return xml.to_string() };
+    let open_end = xml[start..].find('>').map_or(xml.len(), |at| start + at);
+    let open = &xml[start..open_end];
+    let mut added = String::new();
+    if !open.contains("xmlns=") { added.push_str(" xmlns=\"http://www.w3.org/2000/svg\""); }
+    if xml.contains("xlink:") && !open.contains("xmlns:xlink=") { added.push_str(" xmlns:xlink=\"http://www.w3.org/1999/xlink\""); }
+    let mut out = xml.to_string();
+    out.insert_str(start + "<svg".len(), &added);
+    out
 }
 
 fn decode_uri(text: &str) -> Result<Vec<u8>, String> {
@@ -163,6 +182,9 @@ mod tests {
     #[test]
     fn validates_base64_padding() {
         assert_eq!(decode_base64("Zm9v\nYg==").unwrap(), b"foob");
-        for value in ["A===", "AA=A", "AA==AA==", "AB==", "AAA"] { assert!(decode_base64(value).is_err(), "{value}"); }
+        assert_eq!(decode_base64("Zm9vYg").unwrap(), b"foob");
+        assert_eq!(decode_base64("Zm9vYh==").unwrap(), b"foob");
+        assert_eq!(decode_base64("Zm%39v").unwrap(), b"foo");
+        for value in ["A===", "AA=A", "AA==AA==", "AAAAA"] { assert!(decode_base64(value).is_err(), "{value}"); }
     }
 }
