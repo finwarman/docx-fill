@@ -153,3 +153,23 @@ fn keeps_stray_delimiters_errors_by_default() {
     assert!(fill_set(&paragraph(&["a} {name}"]), &FillOptions { allow_unclosed_tag: true, ..FillOptions::default() }).is_err());
     assert!(fill_set(&paragraph(&["x {a"]), &FillOptions { allow_unopened_tag: true, ..FillOptions::default() }).is_err());
 }
+
+#[test]
+fn refuses_a_delimiter_overlapping_another() {
+    let options = FillOptions { delimiters: Delimiters { start: "[[".into(), end: "]]".into() }, ..FillOptions::default() };
+    let error = |text: &str| fill_part(&document(&paragraph(&[text])), &json!({ "m": "M" }), &options).unwrap_err().message;
+
+    assert_eq!(error("x[[[m]]"), "The tag beginning with \"[[[m]]\" is unclosed");
+    assert_eq!(error("[[m]]]"), "The tag ending with \"m]]]\" has duplicate close tags");
+}
+
+#[test]
+fn reads_overlapping_delimiters_as_text_when_allowed() {
+    let options = FillOptions { delimiters: Delimiters { start: "[[".into(), end: "]]".into() }, allow_unclosed_tag: true, allow_unopened_tag: true, ..FillOptions::default() };
+
+    let fill = |template: &str| text(&fill_part(&document(&paragraph(&[template])), &json!({ "m": "M", "[m": "B" }), &options).unwrap());
+
+    assert_eq!(fill("[[[m]]]"), "[M]");
+    assert_eq!(fill("x[[[m]]"), "x[M");
+    assert_eq!(fill("[[m]]]"), "M]");
+}

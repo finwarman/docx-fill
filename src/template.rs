@@ -497,6 +497,14 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions) -> 
                 }
                 Some((opened, name)) if name == at => return Err(duplicate_open_tag(text, opened, &end)),
                 Some((opened, _)) => return Err(unclosed_tag(&text[opened..at])),
+                // `[[[name]]` holds two `[[`, as core reads it. Allowed, the first `[` is text.
+                None if start.overlap_end(text, at, length).is_some() => {
+                    if !options.allow_unclosed_tag {
+                        return Err(unclosed_tag(&text[at..]));
+                    }
+                    at += rest.chars().next().map_or(1, char::len_utf8);
+                    continue;
+                }
                 None => {
                     open = Some((at, at + length));
                     None
@@ -512,6 +520,11 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions) -> 
                 }
                 return Err(unopened_tag(text, &tags, at, length));
             };
+            // `[[name]]]` holds two `]]`, as core reads it.
+            if let Some(overlap_end) = end.overlap_end(text, at, length).filter(|_| !options.allow_unopened_tag) {
+                let context = unescape(&text[name..overlap_end]);
+                return Err(FillError::new(format!("The tag ending with \"{context}\" has duplicate close tags")));
+            }
             at += length;
             Some(FoundTag { start: opened, name: name..at - length, end: at, changes_delimiters: false })
         } else {
@@ -574,6 +587,12 @@ impl DelimiterForms {
     /// The byte length of the delimiter `text` starts with.
     fn find(&self, text: &str) -> Option<usize> {
         std::iter::once(&self.escaped).chain(&self.raw).find(|form| text.starts_with(form.as_str())).map(String::len)
+    }
+
+    /// Where another of this delimiter ends, when one starts inside the one `length` bytes long
+    /// at `at`.
+    fn overlap_end(&self, text: &str, at: usize, length: usize) -> Option<usize> {
+        (at + 1..at + length).filter(|&inner| text.is_char_boundary(inner)).find_map(|inner| self.find(&text[inner..]).map(|found| inner + found))
     }
 }
 
