@@ -4,6 +4,7 @@ use serde_json::json;
 #[test]
 fn reads_every_option() {
     let value = json!({
+        "chartData": "workbook",
         "paragraphLoop": false,
         "linebreaks": false,
         "tagPrefixes": { "loopStart": "if ", "loopEnd": "endif", "invertedLoop": "unless ", "raw": "raw ", "image": "img ", "centeredImage": "centerImg ", "html": "html ", "blockHtml": "blockHtml ", "wordRun": "wordRun " },
@@ -29,6 +30,7 @@ fn reads_every_option() {
     let base = FillOptions { extensions: Extensions { sections: false, ..Extensions::ALL }, ..FillOptions::default() };
     let options = base.read_json(&value).unwrap();
 
+    assert_eq!(options.chart_data, docx_fill::ChartDataMode::Workbook);
     assert!(!options.paragraph_loop && !options.linebreaks && !options.drop_empty_last_page && options.drop_style_paragraphs);
     assert_eq!(options.tag_prefixes.loop_start, "if ");
     assert_eq!(options.tag_prefixes.loop_end, "endif");

@@ -15,9 +15,13 @@ quircs = { version = "0.10", optional = true }
 imagesize = { version = "0.15", optional = true }
 resvg = { version = "0.49", default-features = false, features = ["text", "raster-images"], optional = true }
 
+zip = { version = "9", default-features = false, optional = true, features = ["deflate-flate2-zlib-rs"] }
+
 [features]
 # Reads image tags from raster QR codes. Off by default: it adds an image decoder.
 qr-codes = ["dep:image", "dep:quircs"]
+# Updates cloned embedded XLSX chart data without editing existing worksheet cells.
+chart-workbook = ["dep:zip"]
 # Generates PNG previews for SVG images without a caller-supplied fallback.
 svg-preview = ["dep:resvg", "dep:imagesize"]
 

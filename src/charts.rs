@@ -1,3 +1,6 @@
+#[cfg(feature = "chart-workbook")]
+mod workbook;
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -5,7 +8,7 @@ use serde_json::Value;
 
 use crate::properties::{find_element_end, find_starts, set_child};
 use crate::xml::{ElementKind, Token, escape, read_attribute, tokenize, unescape};
-use crate::{FillOptions, CONTENT_TYPES_PART, add_relationship, insert_before_last};
+use crate::{ChartDataMode, FillError, FillErrorId, FillOptions, CONTENT_TYPES_PART, add_relationship, insert_before_last};
 
 const CHART_RELATIONSHIP: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
 const CHART_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
@@ -175,56 +178,98 @@ pub(crate) fn prepare(parts: &mut [(String, Vec<u8>)], options: &FillOptions) ->
     titles
 }
 
-pub(crate) fn apply(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)], titles: &BTreeMap<String, String>) {
-    fill_charts(parts, uses, titles);
+pub(crate) fn apply(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)], titles: &BTreeMap<String, String>, mode: ChartDataMode) -> Vec<FillError> {
+    let errors = fill_charts(parts, uses, titles, mode);
+    if mode == ChartDataMode::Workbook { return errors; }
     // A chart left unfilled still shows its title, so its tag goes too.
     for (path, literal) in titles {
         let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == path) else { continue };
         let Ok(xml) = std::str::from_utf8(bytes) else { continue };
         *bytes = Cow::Owned(strip_title_tag(xml, literal).into_bytes());
     }
+    errors
 }
 
-fn fill_charts(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)], titles: &BTreeMap<String, String>) {
+struct ChartChange {
+    owner_xml: String,
+    path: String,
+    chart: Vec<u8>,
+    relations: Option<Vec<u8>>,
+    workbook: Option<(String, Vec<u8>)>,
+    types: Option<Vec<u8>>,
+    id: String,
+    target: String,
+}
+
+fn fill_charts(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(String, ChartUse)], titles: &BTreeMap<String, String>, mode: ChartDataMode) -> Vec<FillError> {
     let mut next = 1;
+    let mut errors = Vec::new();
     for (part, used) in uses {
-        let sources: BTreeMap<_, _> = parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())).collect();
-        let relations = relationships(part, &sources);
-        let Some(bytes) = sources.get(part.as_str()) else { continue };
-        let Ok(xml) = std::str::from_utf8(bytes) else { continue };
-        let Some(start) = find_starts(xml, "c:chart").get(used.occurrence).copied() else { continue };
-        let Some(end) = xml[start..].find('>').map(|at| start + at + 1) else { continue };
-        let Some(id) = read_attribute(&xml[start..end], "r:id") else { continue };
-        let Some(source_path) = relations.get(id) else { continue };
-        let Some(source) = sources.get(source_path.as_str()).and_then(|bytes| std::str::from_utf8(bytes).ok()) else { continue };
-        let Some(filled) = fill_chart(source, &used.data, titles.get(source_path).map(String::as_str)) else { continue };
-        let folder = source_path.rsplit_once('/').map_or("", |(folder, _)| folder);
-        let rels_path = relation_path(part);
-        let occupied: BTreeSet<_> = sources.get(rels_path.as_str()).and_then(|bytes| std::str::from_utf8(bytes).ok()).and_then(|xml| tokenize(xml).ok()).unwrap_or_default().into_iter().filter_map(|token| match token {
-            Token::Element { name: "Relationship", raw, .. } => read_attribute(raw, "Id"),
-            _ => None,
-        }).collect();
-        let (path, id) = loop {
-            let path = format!("{folder}/docxFillChart{next}.xml");
-            let id = format!("rIdDocxFillChart{next}");
-            next += 1;
-            if !sources.contains_key(path.as_str()) && !occupied.contains(id.as_str()) { break (path, id); }
+        let change = match chart_change(parts, part, used, titles, mode, &mut next) {
+            Ok(change) => change,
+            Err(error) => { if mode == ChartDataMode::Workbook { errors.push(error); } continue; }
         };
-        let source_rels = relation_path(source_path);
-        let copied_rels = sources.get(source_rels.as_str()).map(|bytes| bytes.to_vec());
-        let target = relative_target(part, &path);
-        let mut changed = xml.to_string();
-        changed.replace_range(start..end, &crate::properties::set_attribute(&xml[start..end], "r:id", &id));
-        if let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == part) { *bytes = Cow::Owned(changed.into_bytes()); }
-        parts.push((path.clone(), Cow::Owned(filled.into_bytes())));
-        if let Some(bytes) = copied_rels { parts.push((relation_path(&path), Cow::Owned(bytes))); }
-        let mut escaped = String::new(); escape(&target, &mut escaped);
-        add_relationship(parts, part, &id, &format!("<Relationship Id=\"{id}\" Type=\"{CHART_RELATIONSHIP}\" Target=\"{escaped}\"/>"));
-        if let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == CONTENT_TYPES_PART) {
-            let mut escaped = String::new(); escape(&path, &mut escaped);
-            *bytes = Cow::Owned(insert_before_last(&String::from_utf8_lossy(bytes), "</Types>", &format!("<Override PartName=\"/{escaped}\" ContentType=\"{CHART_CONTENT_TYPE}\"/>")).into_bytes());
-        }
+        if let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == part) { *bytes = Cow::Owned(change.owner_xml.into_bytes()); }
+        parts.push((change.path.clone(), Cow::Owned(change.chart)));
+        if let Some(bytes) = change.relations { parts.push((relation_path(&change.path), Cow::Owned(bytes))); }
+        if let Some(workbook) = change.workbook { parts.push((workbook.0, Cow::Owned(workbook.1))); }
+        add_relationship(parts, part, &change.id, &format!("<Relationship Id=\"{}\" Type=\"{CHART_RELATIONSHIP}\" Target=\"{}\"/>", change.id, change.target));
+        if let Some(types) = change.types
+            && let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == CONTENT_TYPES_PART) { *bytes = Cow::Owned(types); }
     }
+    errors
+}
+
+fn chart_change(parts: &[(String, Cow<[u8]>)], part: &str, used: &ChartUse, titles: &BTreeMap<String, String>, mode: ChartDataMode, next: &mut usize) -> Result<ChartChange, FillError> {
+    let invalid = |message: &str| FillError::new(message).with_id(FillErrorId::ChartWorkbook).in_part(part);
+    let sources: BTreeMap<_, _> = parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())).collect();
+    let relations = relationships(part, &sources);
+    let xml = sources.get(part).and_then(|bytes| std::str::from_utf8(bytes).ok()).ok_or_else(|| invalid("Missing chart owner XML"))?;
+    let start = find_starts(xml, "c:chart").get(used.occurrence).copied().ok_or_else(|| invalid("Missing chart drawing"))?;
+    let end = xml[start..].find('>').map(|at| start + at + 1).ok_or_else(|| invalid("Invalid chart drawing"))?;
+    let id = read_attribute(&xml[start..end], "r:id").ok_or_else(|| invalid("Missing chart relationship ID"))?;
+    let source_path = relations.get(id).ok_or_else(|| invalid("Missing internal chart relationship"))?;
+    let source = sources.get(source_path.as_str()).and_then(|bytes| std::str::from_utf8(bytes).ok()).ok_or_else(|| invalid("Missing chart XML"))?;
+    let filled = fill_chart(source, &used.data, titles.get(source_path).map(String::as_str)).ok_or_else(|| invalid("Unsupported chart type or data"))?;
+    let folder = source_path.rsplit_once('/').map_or("", |(folder, _)| folder);
+    let rels_path = relation_path(part);
+    let occupied: BTreeSet<_> = sources.get(rels_path.as_str()).and_then(|bytes| std::str::from_utf8(bytes).ok()).and_then(|xml| tokenize(xml).ok()).unwrap_or_default().into_iter().filter_map(|token| match token {
+        Token::Element { name: "Relationship", raw, .. } => read_attribute(raw, "Id"),
+        _ => None,
+    }).collect();
+    let (path, id) = loop {
+        let path = format!("{folder}/docxFillChart{next}.xml");
+        let id = format!("rIdDocxFillChart{next}");
+        *next += 1;
+        if !sources.contains_key(path.as_str()) && !occupied.contains(id.as_str()) { break (path, id); }
+    };
+    let mut change = ChartChange {
+        owner_xml: xml.to_string(), path: path.clone(), chart: filled.as_bytes().to_vec(),
+        relations: sources.get(relation_path(source_path).as_str()).map(|bytes| bytes.to_vec()),
+        workbook: None, types: None, id: id.clone(), target: String::new(),
+    };
+    let workbook_type = if mode == ChartDataMode::Workbook {
+        #[cfg(feature = "chart-workbook")]
+        {
+            let prepared = workbook::prepare(&sources, source_path, source, &filled, &path).map_err(|error| error.in_part(source_path))?;
+            change.chart = prepared.chart.into_bytes();
+            change.relations = Some(prepared.relations);
+            change.workbook = Some((prepared.path, prepared.bytes));
+            prepared.content_type
+        }
+        #[cfg(not(feature = "chart-workbook"))]
+        return Err(invalid("Workbook chart data needs the chart-workbook cargo feature"));
+    } else { String::new() };
+    change.owner_xml.replace_range(start..end, &crate::properties::set_attribute(&xml[start..end], "r:id", &id));
+    let mut escaped = String::new(); escape(&relative_target(part, &path), &mut escaped);
+    change.target = escaped;
+    if let Some(bytes) = sources.get(CONTENT_TYPES_PART) {
+        let types = std::str::from_utf8(bytes).map_err(|_| invalid("Invalid package content types"))?;
+        if mode == ChartDataMode::Workbook && !types.contains("<Types") { return Err(invalid("Missing package content types root")); }
+        let mut escaped = String::new(); escape(&path, &mut escaped);
+        change.types = Some(insert_before_last(types, "</Types>", &format!("<Override PartName=\"/{escaped}\" ContentType=\"{CHART_CONTENT_TYPE}\"/>{workbook_type}")).into_bytes());
+    } else if mode == ChartDataMode::Workbook { return Err(invalid("Missing package content types")); }
+    Ok(change)
 }
 
 fn fill_chart(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Option<String> {
