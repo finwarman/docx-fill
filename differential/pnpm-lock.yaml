@@ -1,0 +1,54 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      angular-expressions:
+        specifier: 1.7.1
+        version: 1.7.1
+      docxtemplater:
+        specifier: 3.71.1
+        version: 3.71.1
+      pizzip:
+        specifier: 3.3.0
+        version: 3.3.0
+
+packages:
+
+  '@xmldom/xmldom@0.9.12':
+    resolution: {integrity: sha512-5AXjrcMClTryPe9LgZrygpB1lj7s0S9E0+W+AHaVKAVyHanafK86iPSvG5xHVSp/jC+VH1UXu0TAEmY279xH7A==}
+    engines: {node: '>=14.6'}
+
+  angular-expressions@1.7.1:
+    resolution: {integrity: sha512-NyYbBwoWmocxLIF21GYaK+TeqSUvY1ucHe5kXtWexszPntgpZHLqiWnAJxPGr18o3OIX9+7IjupLJm1RtX6MgA==}
+
+  docxtemplater@3.71.1:
+    resolution: {integrity: sha512-lXX1FNYwwe/md6WYmNE/1MRjbGN3h0SFdVxKQ3fiIRFvKp0TqgJinylu144iWwPJeALa36jmgGKxk54bGx7bSA==}
+    engines: {node: '>=0.10'}
+
+  pako@2.2.0:
+    resolution: {integrity: sha512-zJq6RP/5q+TO2OpFV3FHzlPnFjmkb7Nc99a5SNjJE+uu/PkpChs+NIZSSzbBoD+6kjiISXjfYdwj1ZRQ81dz/w==}
+
+  pizzip@3.3.0:
+    resolution: {integrity: sha512-seR2ALUYS4Z0GCs0sVwXWImhBsoCImXpHr+ExNfIZ9G0czvHqpUxlJgwHCl1BBHFyU3nUFmZJPFEEWbpY8cKRg==}
+
+snapshots:
+
+  '@xmldom/xmldom@0.9.12': {}
+
+  angular-expressions@1.7.1: {}
+
+  docxtemplater@3.71.1:
+    dependencies:
+      '@xmldom/xmldom': 0.9.12
+
+  pako@2.2.0: {}
+
+  pizzip@3.3.0:
+    dependencies:
+      pako: 2.2.0
