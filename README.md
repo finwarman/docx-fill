@@ -58,6 +58,12 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 
 Package rendering writes HTML lists as native Word lists, with numbering definitions, nesting, ordered starts and item-value resets. Existing numbering IDs are preserved. Word supports nine nesting levels; deeper HTML lists use the ninth level. Standalone `Template` and `fill_part` rendering keep literal markers because they do not return package parts.
 
+HTML table cells support combined `rowspan` and `colspan`. Vertical spans keep later cells in their columns and stop at the table's final row.
+
+HTML CSS maps margins and padding to paragraph spacing/indents or table-cell margins. It also reads line height, text indentation, cell vertical alignment, page-break boundaries, `white-space: pre` and `direction`. Lengths accept `px`, `pt` and `em`; line height also accepts a multiplier or percentage. This is a Word layout mapping, not a full CSS box model.
+
+`FillOptions::html_style_sheet` (`htmlStyleSheet` in JSON) and HTML `<style>` elements provide style rules. Selectors support elements, `*`, classes, IDs, selector lists, descendants, children, adjacent siblings and attribute tests. Cascade order, specificity and `!important` apply; inline styles win at equal importance. Pseudo-selectors, namespace selectors and CSS escapes are not supported. Selector chains are limited to 64 steps.
+
 Inline HTML keeps spaces needed to separate surrounding text, including adjacent HTML values. Normal HTML whitespace collapses at line boundaries; the template's own spaces remain unchanged.
 
 A style value looks like this. `fontSize` is in half-points. It can also include `text`, which is printed at the styling tag and escaped as Word text.
@@ -84,13 +90,27 @@ The method updates standard slots in `word/theme/theme1.xml`; color values accep
 
 Paragraph placeholders inside text boxes expand to the whole shape by default. Set `paragraphPlaceholder: { expandToShape: false }` to target only the paragraph. `expandSoftBreaksInShapes: true` targets individual soft lines within shapes; `expandSoftBreaks: true` also enables this outside shapes. Surviving lines remain joined by soft breaks. In this opt-in mode, parser paragraph positions count logical soft lines.
 
+`FillOptions::footnotes` controls inserted footnotes. `FootnoteContent::Raw` accepts complete Word runs. `ref_properties`, `ref_run`, `paragraph_properties` and `run_properties` customize the note marker, separator and text. JSON uses `footnotes: { raw, refProperties, refRun, paragraphProperties, runProperties }`. XML fragments must be valid WordprocessingML.
+
+`FillOptions::table` accepts `TableValidation::Ignore` to drop other text around a full-table tag, and `TableResize::KeepColumns` to resize vertical tables while retaining column widths. JSON uses `table: { paragraphValidation: "ignore", autoResizeTable: true }`. Table data can supply `fixedColumns`, with non-null entries spanning the body rows of each table chunk. Headers remain separate; cell spans stop before a fixed column.
+
 `FilledDocument::bookmarks` lists named bookmarks across package parts. `get_xml` reads their raw content and `replace_xml` replaces it while retaining the boundary marks. Replacements must leave balanced XML and paired bookmarks. JSON edits use `getBookmarks`, `getXml` and `replaceXml`; the latter two take `bookmark` and an optional `part` to disambiguate names.
 
 `FilledDocument` also supports `set_hyperlink_base`, `page_breaks`, `drop_content_between`, `loop_tags`, `search_regex` and `replace_all_regex`. Page-range removal accepts `ContentBoundary::{Start, End, PageBreak(index)}` and removes the boundary breaks. Its endpoints must be in body paragraphs, not tables or text boxes. Automatic page layout is not counted. Loop tags are read before filling. Regex methods use Rust regex syntax and capture replacements; look-around and backreferences in patterns are not supported.
 
 JSON edit names are `setHyperlinkBase` (`url`), `getPageBreaks`, `dropContentBetween` (`start`/`end`, each `"start"`, `"end"` or a break index), `getLoopTags`, `searchRegex` (`pattern`) and `replaceAllRegex` (`pattern`, `text`).
 
+`FillOptions::tag_prefixes` configures loop, inverted-loop, raw XML, image, HTML and raw-run prefixes. JSON accepts the same fields under `tagPrefixes` with camelCase names. Core prefixes must be nonempty, and all prefixes must be distinct. An empty extension prefix handles otherwise unmatched tags; the longest enabled prefix wins. Existing prefixes remain the defaults.
+
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
+
+`FillHooks::svg_fallback` can return PNG bytes for an SVG image. The package then includes both media files and uses the PNG in readers without SVG support. The caller supplies the preview; the crate does not rasterize SVG.
+
+`FillHooks::image_properties` returns `ImageProperties` for alt text, names, paragraph alignment, solid borders, links and captions. Configure them with the `alt`, `name`, `align`, `border`, `link` and `caption` builders. `ImageBorder::new` takes a hex color and a width in points. Captions are paragraphs after the image paragraph; they do not use inline text boxes. `ImageCaption` supports prefix, sequence, style and alignment.
+
+`ImageProperties::floating` accepts an `ImageFloat` with offsets, reference frames, wrap mode, layer and margins. `rotate`, `flip_horizontal` and `flip_vertical` transform either inline or floating pictures. Offsets accept `ImageLength`; invalid coordinates and reference-frame combinations are rejected. Tight and through wrapping use the rectangular image outline.
+
+An image tag in an existing picture's alt text or name replaces that picture through `FillHooks::image`. Its size, position, crop and rotation stay unchanged unless `image_size` returns explicit dimensions. Tags use the configured delimiters and prefixes and resolve in the current loop scope. A missing value keeps the original picture.
 
 Automatic sizing insets the width and maximum page height by 5% while preserving the image's aspect ratio.
 
@@ -158,7 +178,7 @@ Run `cargo test` and `cargo clippy --all-targets -- -D warnings`. See [CONTRIBUT
 
 Behaviour comes from the WordprocessingML spec (ECMA-376), docxtemplater's public tag syntax and documentation, and black-box runs of the MIT-licensed docxtemplater core. Extension tags follow the paid modules' public documentation. No code is taken from docxtemplater, and nothing is tuned against the paid modules' output. Password hash test vectors come from black-box runs of Apache POI; for characters over 0x7F the crate follows the spec's unsigned bytes where POI sign-extends them.
 
-There is no link module, since docxtemplater's site has none. HTML `<a>` links cover it.
+HTML `<a>` elements create hyperlinks.
 
 Not affiliated with docxtemplater.
 

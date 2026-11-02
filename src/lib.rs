@@ -53,7 +53,9 @@ pub use protection::{HashAlgorithm, Protection, ProtectionKind};
 pub use empty_last_page::drop_empty_last_page;
 pub use comments::CommentDefaults;
 pub use placeholder_lines::{ParagraphPlaceholderOptions, SoftBreakScope};
-pub use images::{Image, ImageLength, ImageSize};
+pub use footnotes::{FootnoteContent, FootnoteOptions};
+pub use full_table::{TableOptions, TableResize, TableValidation};
+pub use images::{Image, ImageAlignment, ImageBorder, ImageCaption, ImageFloat, ImageLayer, ImageLength, ImageProperties, ImageRelative, ImageSize, ImageWrap};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
@@ -85,6 +87,39 @@ pub struct Delimiters {
 impl Default for Delimiters {
     fn default() -> Self {
         Delimiters { start: "{".to_string(), end: "}".to_string() }
+    }
+}
+
+/// Prefixes that classify standard and extension tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagPrefixes {
+    pub loop_start: String,
+    pub loop_end: String,
+    pub inverted_loop: String,
+    pub raw: String,
+    pub image: String,
+    pub centered_image: String,
+    pub html: String,
+    pub block_html: String,
+    pub word_run: String,
+}
+
+impl Default for TagPrefixes {
+    fn default() -> Self {
+        Self { loop_start: "#".into(), loop_end: "/".into(), inverted_loop: "^".into(), raw: "@".into(), image: "%".into(), centered_image: "%%".into(), html: "~".into(), block_html: "~~".into(), word_run: "r@".into() }
+    }
+}
+
+impl TagPrefixes {
+    pub(crate) fn validate(&self) -> Result<(), FillError> {
+        let values = [&self.loop_start, &self.loop_end, &self.inverted_loop, &self.raw, &self.image, &self.centered_image, &self.html, &self.block_html, &self.word_run];
+        let mut seen = BTreeSet::new();
+        for (index, value) in values.into_iter().enumerate() {
+            if (index < 4 && value.is_empty()) || !seen.insert(value) {
+                return Err(FillError::new("Core tag prefixes must be nonempty; all tag prefixes must be distinct"));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -187,6 +222,7 @@ pub struct FillOptions {
     /// A `\n` in a value prints as a line break.
     pub linebreaks: bool,
     pub delimiters: Delimiters,
+    pub tag_prefixes: TagPrefixes,
     /// What starts and ends a tag that sets new delimiters for the rest of the part, `=` for
     /// `{=[[ ]]=}`. `None` reads such tags as values.
     pub change_delimiter_prefix: Option<String>,
@@ -208,6 +244,9 @@ pub struct FillOptions {
     pub drop_style_paragraphs: bool,
     pub comments: CommentDefaults,
     pub paragraph_placeholder: ParagraphPlaceholderOptions,
+    /// Content mode and formatting of inserted footnotes.
+    pub footnotes: FootnoteOptions,
+    pub table: TableOptions,
     /// A bookmark prefix such as `tag_`. When rich text turns a tag's paragraph into several, and
     /// the tag's paragraph has a bookmark named this prefix and a number (`tag_3`), each later
     /// paragraph gets its own bookmark `tag_3_1`, `tag_3_2`, …, so a reader can find them all.
@@ -222,6 +261,8 @@ pub struct FillOptions {
     /// The filters expressions can use, which [`FillHooks::filter`] applies. Any other is an error
     /// when parsing.
     pub filters: Vec<String>,
+    /// CSS applied to HTML values before their inline styles.
+    pub html_style_sheet: String,
 }
 
 impl Default for FillOptions {
@@ -232,6 +273,7 @@ impl Default for FillOptions {
             paragraph_loop: true,
             linebreaks: true,
             delimiters: Delimiters::default(),
+            tag_prefixes: TagPrefixes::default(),
             change_delimiter_prefix: Some("=".to_string()),
             allow_unopened_tag: false,
             allow_unclosed_tag: false,
@@ -242,10 +284,13 @@ impl Default for FillOptions {
             drop_style_paragraphs: false,
             comments: CommentDefaults::default(),
             paragraph_placeholder: ParagraphPlaceholderOptions::default(),
+            footnotes: FootnoteOptions::default(),
+            table: TableOptions::default(),
             continued_bookmarks: None,
             fill_properties: true,
             expressions: false,
             filters: Vec::new(),
+            html_style_sheet: String::new(),
         }
     }
 }
@@ -416,6 +461,7 @@ impl PackageTemplate {
     pub fn render_with(&self, data: &Value, hooks: &mut dyn FillHooks) -> Vec<(String, Cow<'_, [u8]>)> {
         let mut state = FillState {
             next_drawing_id: self.max_drawing_id + 1,
+            next_caption: 1,
             body: self.body,
             container_fill: CONTAINER_FILL,
             next_footnote_id: self.max_footnote_id + 1,

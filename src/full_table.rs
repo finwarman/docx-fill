@@ -17,6 +17,19 @@ const PAGE_BREAK: &str = "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>";
 const SEPARATOR: &str = "<w:p/>";
 const SIDES: [(&str, &str); 6] = [("top", "top"), ("left", "left"), ("bottom", "bottom"), ("right", "right"), ("insideh", "insideH"), ("insidev", "insideV")];
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TableValidation { #[default] Error, Ignore }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TableResize { #[default] KeepWidth, KeepColumns }
+
+/// Parsing and sizing rules shared by table tags.
+#[derive(Debug, Clone, Default)]
+pub struct TableOptions {
+    pub paragraph_validation: TableValidation,
+    pub resize: TableResize,
+}
+
 /// How a table or grid is sized, bordered and split, from its value's options.
 pub(crate) struct Layout {
     /// Column widths in twips.
@@ -31,6 +44,7 @@ pub(crate) struct Layout {
     spacing_after: Option<u64>,
     page_break_between: bool,
     final_page_break: bool,
+    fixed_columns: Vec<Value>,
 }
 
 /// What a table or grid needs from the page: its body width and height in 96-per-inch pixels.
@@ -80,6 +94,7 @@ impl Layout {
             spacing_after: value.get("spacingAfter").and_then(Value::as_f64).map(|dxa| dxa.round() as u64),
             page_break_between: value.get("pageBreakBetween").and_then(Value::as_bool).unwrap_or(true),
             final_page_break: value.get("finalPageBreak").and_then(Value::as_bool).unwrap_or(false),
+            fixed_columns: value.get("fixedColumns").and_then(Value::as_array).cloned().unwrap_or_default(),
         }
     }
 
@@ -244,6 +259,37 @@ enum RowKind {
     Normal,
 }
 
+#[derive(Clone, Copy)]
+enum FixedMerge { None, Start, Continue }
+
+struct TableCell<'a> {
+    value: &'a Value,
+    span: usize,
+    merge: FixedMerge,
+}
+
+fn table_cells<'a>(cells: &'a [Value], fixed: &'a [Value], merge: FixedMerge) -> Vec<TableCell<'a>> {
+    let mut source = cells.iter();
+    let mut next = source.next();
+    let mut column = 0;
+    let mut out = Vec::new();
+    while next.is_some() || column < fixed.len() {
+        if let Some(value) = fixed.get(column).filter(|value| !value.is_null()) {
+            out.push(TableCell { value: if matches!(merge, FixedMerge::Continue) { &Value::Null } else { value }, span: 1, merge });
+            column += 1;
+            continue;
+        }
+        let value = next.unwrap_or(&Value::Null);
+        let requested = value.get("colspan").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+        let until_fixed = fixed.iter().skip(column + 1).position(|value| !value.is_null()).map(|at| at + 1);
+        let span = until_fixed.map_or(requested, |gap| requested.min(gap));
+        out.push(TableCell { value, span, merge: FixedMerge::None });
+        column += span;
+        next = source.next();
+    }
+    out
+}
+
 /// Writes a `{:table}` value: `{ data: [[cell]], header?, subheader?, widths?, totalWidth?,
 /// height?, heightRule?, chunkSize?, pageBreakBetween?, finalPageBreak?, style?: { header, normal },
 /// border?, indent?, cellMargin?, layout?, align?, spacingAfter? }`. A cell is text, a number, or
@@ -257,8 +303,8 @@ pub(crate) fn write_table(value: &Value, body: Body, in_cell: bool) -> String {
     let header = value.get("header").and_then(Value::as_array);
     let subheader = value.get("subheader").and_then(Value::as_array);
 
-    let span = |cell: &Value| cell.get("colspan").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-    let row_width = |row: &Value| row.as_array().map_or(0, |cells| cells.iter().map(span).sum());
+    let fixed = value.get("fixedColumns").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    let row_width = |row: &Value| row.as_array().map_or(0, |cells| table_cells(cells, fixed, FixedMerge::None).iter().map(|cell| cell.span).sum());
     let count = rows.iter().map(row_width).chain(header.map(Vec::len)).chain(subheader.map(Vec::len)).max().unwrap_or(1);
     let layout = Layout::read(value, count, body, true);
 
@@ -274,13 +320,14 @@ pub(crate) fn write_table(value: &Value, body: Body, in_cell: bool) -> String {
         }
         layout.write_start(&mut out);
         if let Some(header) = header {
-            write_row(&mut out, &layout, header, RowKind::Header, &header_style);
+            write_row(&mut out, &layout, header, RowKind::Header, &header_style, FixedMerge::None);
         }
         if let Some(subheader) = subheader {
-            write_row(&mut out, &layout, subheader, RowKind::Subheader, &header_style);
+            write_row(&mut out, &layout, subheader, RowKind::Subheader, &header_style, FixedMerge::None);
         }
-        for row in chunk {
-            write_row(&mut out, &layout, row.as_array().map_or(&[][..], Vec::as_slice), RowKind::Normal, &normal_style);
+        for (index, row) in chunk.iter().enumerate() {
+            let merge = if chunk.len() == 1 { FixedMerge::None } else if index == 0 { FixedMerge::Start } else { FixedMerge::Continue };
+            write_row(&mut out, &layout, row.as_array().map_or(&[][..], Vec::as_slice), RowKind::Normal, &normal_style, merge);
         }
         out.push_str("</w:tbl>");
     }
@@ -292,15 +339,21 @@ pub(crate) fn write_table(value: &Value, body: Body, in_cell: bool) -> String {
     out
 }
 
-fn write_row(out: &mut String, layout: &Layout, cells: &[Value], kind: RowKind, base: &CellStyle) {
+fn write_row(out: &mut String, layout: &Layout, cells: &[Value], kind: RowKind, base: &CellStyle, merge: FixedMerge) {
     layout.write_row_start(out, kind == RowKind::Header);
     let mut column = 0;
-    for cell in cells {
-        let span = cell.get("colspan").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+    let fixed = if kind == RowKind::Normal { layout.fixed_columns.as_slice() } else { &[] };
+    for placed in table_cells(cells, fixed, merge) {
+        let (cell, span) = (placed.value, placed.span);
         let style = base.and(&CellStyle::read(cell.get("style")));
         out.push_str(&format!("<w:tc><w:tcPr><w:tcW w:w=\"{}\" w:type=\"dxa\"/>", layout.width(column, span)));
         if span > 1 {
             out.push_str(&format!("<w:gridSpan w:val=\"{span}\"/>"));
+        }
+        match placed.merge {
+            FixedMerge::Start => out.push_str("<w:vMerge w:val=\"restart\"/>"),
+            FixedMerge::Continue => out.push_str("<w:vMerge/>"),
+            FixedMerge::None => {}
         }
         if let Some(borders) = read_borders(cell.get("border"), false) {
             out.push_str(&borders.replace("w:tblBorders", "w:tcBorders"));

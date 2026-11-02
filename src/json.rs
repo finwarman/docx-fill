@@ -38,6 +38,24 @@ impl FillOptions {
             match key.as_str() {
                 "paragraphLoop" => self.paragraph_loop = read_bool(value, key)?,
                 "linebreaks" => self.linebreaks = read_bool(value, key)?,
+                "tagPrefixes" => {
+                    for (name, value) in read_object(value, key)? {
+                        let field = match name.as_str() {
+                            "loopStart" => &mut self.tag_prefixes.loop_start,
+                            "loopEnd" => &mut self.tag_prefixes.loop_end,
+                            "invertedLoop" => &mut self.tag_prefixes.inverted_loop,
+                            "raw" => &mut self.tag_prefixes.raw,
+                            "image" => &mut self.tag_prefixes.image,
+                            "centeredImage" => &mut self.tag_prefixes.centered_image,
+                            "html" => &mut self.tag_prefixes.html,
+                            "blockHtml" => &mut self.tag_prefixes.block_html,
+                            "wordRun" => &mut self.tag_prefixes.word_run,
+                            _ => return Err(unknown(name)),
+                        };
+                        *field = read_string(value, name)?;
+                    }
+                    self.tag_prefixes.validate()?;
+                }
                 "delimiters" => {
                     let delimiters = read_object(value, key)?;
                     let read = |name: &str| delimiters.get(name).map(|each| read_string(each, name)).transpose();
@@ -66,11 +84,40 @@ impl FillOptions {
                         }
                     }
                 }
+                "table" => {
+                    for (name, value) in read_object(value, key)? {
+                        match name.as_str() {
+                            "paragraphValidation" => self.table.paragraph_validation = match read_string(value, name)?.as_str() {
+                                "error" => crate::TableValidation::Error,
+                                "ignore" => crate::TableValidation::Ignore,
+                                other => return Err(FillError::new(format!("Unknown table paragraph validation {other}"))),
+                            },
+                            "autoResizeTable" => self.table.resize = if read_bool(value, name)? { crate::TableResize::KeepColumns } else { crate::TableResize::KeepWidth },
+                            _ => return Err(unknown(name)),
+                        }
+                    }
+                }
+                "footnotes" => {
+                    for (name, value) in read_object(value, key)? {
+                        match name.as_str() {
+                            "raw" => self.footnotes.content = if read_bool(value, name)? { crate::FootnoteContent::Raw } else { crate::FootnoteContent::Text },
+                            "refProperties" => self.footnotes.ref_properties = Some(read_string(value, name)?),
+                            "refRun" => self.footnotes.ref_run = Some(read_string(value, name)?),
+                            "paragraphProperties" => self.footnotes.paragraph_properties = Some(read_string(value, name)?),
+                            "runProperties" => self.footnotes.run_properties = Some(read_string(value, name)?),
+                            _ => return Err(unknown(name)),
+                        }
+                    }
+                }
                 "document" => self.document = read_document_edits(value)?,
                 "fillProperties" => self.fill_properties = read_bool(value, key)?,
                 "continuedBookmarks" => self.continued_bookmarks = Some(read_string(value, key)?),
                 "expressions" => self.expressions = read_bool(value, key)?,
                 "filters" => self.filters = read_array(value, key)?.iter().map(|each| read_string(each, key)).collect::<Result<_, _>>()?,
+                "htmlStyleSheet" => {
+                    self.html_style_sheet = read_string(value, key)?;
+                    crate::rich_text::validate_style_sheet(&self.html_style_sheet).map_err(FillError::new)?;
+                }
                 _ => return Err(unknown(key)),
             }
         }
