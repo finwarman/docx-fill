@@ -179,3 +179,6 @@ pub(crate) fn read_body_size(xml: &str) -> Option<(f64, f64)> {
 pub(crate) fn body_or_default(body: Option<(f64, f64)>) -> (f64, f64) {
     body.unwrap_or(DEFAULT_BODY)
 }
+
+#[cfg(feature = "svg-preview")]
+pub(crate) mod svg;

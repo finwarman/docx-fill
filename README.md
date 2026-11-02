@@ -122,7 +122,9 @@ JSON edit names are `setHyperlinkBase` (`url`), `getPageBreaks`, `dropContentBet
 
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
 
-`FillHooks::svg_fallback` can return PNG bytes for an SVG image. The package then includes both media files and uses the PNG in readers without SVG support. The caller supplies the preview; the crate does not rasterize SVG.
+`FillHooks::svg_fallback` can return PNG bytes for an SVG image. The package then includes both media files and uses the PNG in readers without SVG support.
+
+The optional `svg-preview` Cargo feature generates these PNGs automatically, including for HTML images and replaced pictures. A hook override still takes precedence. Previews use bundled Noto Sans; `svg_fonts` can supply additional outline-only TrueType/OpenType fonts. Font collections and embedded SVG/bitmap/color glyph tables are not accepted. No fonts or referenced images are read from the filesystem or network. Invalid SVGs, external image references, foreignObject content, patterns, filters, masks, clip paths or missing glyphs keep native SVG only. Input is limited to 8 MiB, embedded resources to 16 MiB, supplied fonts to 32 MiB and preview dimensions to 4096 pixels per side. Rendering is limited to 32 million cumulative surface pixels and 64 nested groups. Unsupported or oversized previews retain native SVG; callers can provide their own PNG through `svg_fallback`.
 
 `FillHooks::image_properties` returns `ImageProperties` for alt text, names, paragraph alignment, solid borders, links and captions. Configure them with the `alt`, `name`, `align`, `border`, `link` and `caption` builders. `ImageBorder::new` takes a hex color and a width in points. Captions are paragraphs after the image paragraph; they do not use inline text boxes. `ImageCaption` supports prefix, sequence, style and alignment.
 
