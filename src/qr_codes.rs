@@ -1,50 +1,67 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 
-use crate::properties::{find_element_end, find_starts, set_attribute};
-use crate::template::read_image_tag;
-use crate::xml::{Token, escape, read_attribute, tokenize, unescape};
-use crate::FillOptions;
+use crate::properties::{find_element_end, find_starts};
+use crate::expressions::Expression;
+use crate::template::{PictureTag, read_image_tag};
+use crate::xml::{Token, read_attribute, tokenize, unescape};
+use crate::{FillError, FillErrorId, FillOptions};
 
 const IMAGE_RELATIONSHIP: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
 const MAX_IMAGE_SIDE: u32 = 8192;
 const MAX_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_QR_SIDE: u32 = 2048;
 
-/// Decode each referenced raster once, then let normal picture tags handle scope and layout.
-pub(crate) fn prepare(parts: &mut [(String, Vec<u8>)], options: &FillOptions) {
-    if options.delimiters.start.is_empty() || options.delimiters.end.is_empty() { return; }
+#[derive(Default)]
+pub(crate) struct QrTags {
+    pub(crate) tags: BTreeMap<(String, String), PictureTag>,
+    pub(crate) expressions: BTreeMap<String, Expression>,
+    pub(crate) errors: Vec<FillError>,
+}
+
+/// Decode referenced rasters without changing the source picture's XML.
+pub(crate) fn prepare(parts: &[(String, Vec<u8>)], options: &FillOptions) -> BTreeMap<String, QrTags> {
+    let mut prepared = BTreeMap::<String, QrTags>::new();
+    if options.delimiters.start.is_empty() || options.delimiters.end.is_empty() { return prepared; }
     let sources: BTreeMap<_, _> = parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())).collect();
     let mut decoded = BTreeMap::<String, Option<String>>::new();
-    let mut changes = Vec::new();
-    for (index, (name, bytes)) in parts.iter().enumerate() {
+    for (name, bytes) in parts {
         let Ok(xml) = std::str::from_utf8(bytes) else { continue };
         if !xml.contains("<w:drawing") { continue; }
         let relations = image_relations(name, &sources);
-        let mut edits = Vec::new();
         for start in find_starts(xml, "w:drawing") {
             let Some(end) = find_element_end(xml, start, "w:drawing") else { continue };
-            let drawing = &xml[start..end];
-            let Some(property_start) = find_starts(drawing, "wp:docPr").first().copied() else { continue };
-            let Some(property_end) = drawing[property_start..].find('>').map(|at| property_start + at + 1) else { continue };
-            let properties = &drawing[property_start..property_end];
+            let Some((properties, id)) = picture_key(&xml[start..end]) else { continue };
             if ["descr", "name"].iter().any(|name| read_attribute(properties, name).is_some_and(|text| read_image_tag(&unescape(text), options).is_some())) { continue; }
-            // A group or text box holds several pictures; the tag could belong to any of them.
-            let [blip_start] = find_starts(drawing, "a:blip")[..] else { continue };
-            let Some(blip_end) = drawing[blip_start..].find('>').map(|at| blip_start + at + 1) else { continue };
-            let Some(id) = read_attribute(&drawing[blip_start..blip_end], "r:embed") else { continue };
             let Some(path) = relations.get(id) else { continue };
             let payload = decoded.entry(path.clone()).or_insert_with(|| sources.get(path.as_str()).and_then(|bytes| decode(bytes, options)));
             let Some(payload) = payload else { continue };
-            let mut escaped = String::new(); escape(payload, &mut escaped);
-            edits.push((start + property_start, start + property_end, set_attribute(properties, "descr", &escaped)));
+            let Some(tag) = read_image_tag(payload, options) else { continue };
+            let part = prepared.entry(name.clone()).or_default();
+            if options.expressions {
+                match Expression::parse(&tag.name, &options.filters) {
+                    Ok(expression) => { part.expressions.insert(tag.name.clone(), expression); }
+                    Err(reason) => {
+                        let mut error = FillError::new(format!("The tag \"{}\" is not a valid expression: {reason}", tag.name)).with_id(FillErrorId::ScopeParserCompilation);
+                        error.tag = Some(tag.literal.clone().into_boxed_str());
+                        part.errors.push(error);
+                    }
+                }
+            }
+            part.tags.insert((properties.to_string(), id.to_string()), tag);
         }
-        if edits.is_empty() { continue; }
-        let mut changed = xml.to_string();
-        for (start, end, value) in edits.into_iter().rev() { changed.replace_range(start..end, &value); }
-        changes.push((index, changed.into_bytes()));
     }
-    for (index, bytes) in changes { parts[index].1 = bytes; }
+    prepared
+}
+
+/// A picture's properties and source relationship, excluding multiple-picture drawings.
+pub(crate) fn picture_key(drawing: &str) -> Option<(&str, &str)> {
+    let [blip_start] = find_starts(drawing, "a:blip")[..] else { return None };
+    let blip_end = drawing[blip_start..].find('>')? + blip_start + 1;
+    let id = read_attribute(&drawing[blip_start..blip_end], "r:embed")?;
+    let property_start = *find_starts(drawing, "wp:docPr").first()?;
+    let property_end = drawing[property_start..].find('>')? + property_start + 1;
+    Some((&drawing[property_start..property_end], id))
 }
 
 fn decode(bytes: &[u8], options: &FillOptions) -> Option<String> {

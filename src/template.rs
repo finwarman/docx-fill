@@ -190,6 +190,8 @@ pub struct Template {
     /// Page width and height in pixels, less margins, from the part's last section.
     pub(crate) body: Option<(f64, f64)>,
     pub(crate) picture_tags: BTreeMap<String, PictureTag>,
+    #[cfg(feature = "qr-codes")]
+    pub(crate) qr_tags: BTreeMap<(String, String), PictureTag>,
 }
 
 #[derive(Debug)]
@@ -404,6 +406,8 @@ impl Template {
         let mut template = Template {
             has_cell_loops,
             picture_tags,
+            #[cfg(feature = "qr-codes")]
+            qr_tags: BTreeMap::new(),
             expressions,
             max_drawing_id: crate::images::read_max_drawing_id(xml),
             max_bookmark_id: crate::footnotes::read_max_element_id(xml, "w:bookmarkStart"),

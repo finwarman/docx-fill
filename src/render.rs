@@ -11,7 +11,7 @@ use crate::full_table::{Grid, write_table};
 use crate::images::{Image, MediaUse, body_or_default, drawing_size, drawing_xml};
 use crate::images::replacement::{PictureFrame, PictureReplacement, replace_picture};
 use crate::rich_text::{self, RichValue};
-use crate::template::{Block, BlockKind, LoopPageBreaks, Part, StyleTarget, TagKind, Template};
+use crate::template::{Block, BlockKind, LoopPageBreaks, Part, PictureTag, StyleTarget, TagKind, Template};
 use crate::cell_styling;
 use crate::expressions::{Assignments, Computed, ComputedEnd, Evaluation};
 use crate::comments::{Comment, read_commented};
@@ -475,11 +475,15 @@ impl<'a> Render<'a, '_> {
             match part {
                 Part::Element { kind, name, raw } => {
                     if name == "w:drawing" && *kind == ElementKind::Open {
-                        self.pictures.push(PictureFrame { start: self.out.len(), replacement: None });
+                        self.pictures.push(PictureFrame {
+                            start: self.out.len(), replacement: None,
+                            #[cfg(feature = "qr-codes")]
+                            source_properties: None,
+                        });
                     }
                     if name == "wp:docPr" { self.prepare_picture(raw, scopes); }
                     self.print_element(*kind, name, raw);
-                    if name == "w:drawing" && *kind == ElementKind::Close { self.finish_picture(); }
+                    if name == "w:drawing" && *kind == ElementKind::Close { self.finish_picture(scopes); }
                 }
                 Part::Text(text) => self.out.push_str(text),
                 Part::Tag(index) => {
@@ -604,18 +608,36 @@ impl<'a> Render<'a, '_> {
 
     fn prepare_picture(&mut self, raw: &str, scopes: &[&'a Value]) {
         if self.pictures.is_empty() { return; }
+        #[cfg(feature = "qr-codes")]
+        { self.pictures.last_mut().expect("checked above").source_properties = Some(raw.to_string()); }
         let tag = ["descr", "name"].iter().filter_map(|name| read_attribute(raw, name)).map(crate::xml::unescape)
             .find_map(|text| self.template.picture_tags.get(&text));
         let Some(tag) = tag else { return };
-        let Some(value) = self.look_up(scopes, &tag.name).filter(|value| is_truthy(value)) else { return };
-        let Some(image) = self.hooks.image(self.part, value) else { return };
-        let size = self.hooks.image_size(self.part, value, &image);
-        let fallback = if image.extension.eq_ignore_ascii_case("svg") { self.hooks.svg_fallback(self.part, value, &image) } else { None };
-        self.pictures.last_mut().expect("checked above").replacement = Some(PictureReplacement { image, size, tag: tag.literal.clone(), fallback });
+        let Some(replacement) = self.read_picture(tag, scopes) else { return };
+        self.pictures.last_mut().expect("checked above").replacement = Some(replacement);
     }
 
-    fn finish_picture(&mut self) {
-        let Some(PictureFrame { start, replacement: Some(replacement) }) = self.pictures.pop() else { return };
+    fn read_picture(&mut self, tag: &PictureTag, scopes: &[&'a Value]) -> Option<PictureReplacement> {
+        let value = self.look_up(scopes, &tag.name).filter(|value| is_truthy(value))?;
+        let image = self.hooks.image(self.part, value)?;
+        let size = self.hooks.image_size(self.part, value, &image);
+        let fallback = if image.extension.eq_ignore_ascii_case("svg") { self.hooks.svg_fallback(self.part, value, &image) } else { None };
+        Some(PictureReplacement { image, size, tag: tag.literal.clone(), fallback })
+    }
+
+    #[cfg(feature = "qr-codes")]
+    fn read_qr_picture(&mut self, properties: &str, start: usize, scopes: &[&'a Value]) -> Option<PictureReplacement> {
+        let (_, id) = crate::qr_codes::picture_key(&self.out[start..])?;
+        let tag = self.template.qr_tags.get(&(properties.to_string(), id.to_string()))?;
+        self.read_picture(tag, scopes)
+    }
+
+    fn finish_picture(&mut self, _scopes: &[&'a Value]) {
+        let Some(frame) = self.pictures.pop() else { return };
+        let PictureFrame { start, replacement, .. } = frame;
+        #[cfg(feature = "qr-codes")]
+        let replacement = replacement.or_else(|| frame.source_properties.as_deref().and_then(|properties| self.read_qr_picture(properties, start, _scopes)));
+        let Some(replacement) = replacement else { return };
         let id = self.state.next_drawing_id;
         self.state.next_drawing_id += 1;
         let mut media = MediaUse::for_image(replacement.image);

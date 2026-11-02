@@ -12,6 +12,8 @@ pub(crate) struct PictureReplacement {
 pub(crate) struct PictureFrame {
     pub start: usize,
     pub replacement: Option<PictureReplacement>,
+    #[cfg(feature = "qr-codes")]
+    pub(crate) source_properties: Option<String>,
 }
 
 /// Change the picture source while preserving its existing anchor, crop and geometry.
