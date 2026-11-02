@@ -157,6 +157,21 @@ fn accepts_map_namespace_aliases() {
 }
 
 #[test]
+fn initializes_map_geography() {
+    let layout = format!("<cx:layoutPr>{BARBADOS}</cx:layoutPr>");
+    for replacement in ["", "<cx:layoutPr/>", "<cx:layoutPr><cx:regionLabelLayout val=\"showAll\"/><cx:extLst><cx:ext uri=\"keep\"/></cx:extLst></cx:layoutPr>"] {
+        let source = map_source().replace(&layout, replacement);
+        let parts = render(&(drawing().to_string() + &paragraph(&["{$sales}"])), &source, new_region(VATICAN));
+        let chart = output_chart(&parts);
+        assert!(chart.contains(VATICAN));
+        if replacement.contains("showAll") {
+            assert!(chart.find("<cx:regionLabelLayout").unwrap() < chart.find("<cx:geography").unwrap());
+            assert!(chart.find("</cx:geography>").unwrap() < chart.find("<cx:extLst>").unwrap());
+        }
+    }
+}
+
+#[test]
 fn keeps_invalid_map_payloads() {
     let mut inputs = vec![
         new_region(&VATICAN.replace("http://schemas.microsoft.com/office/drawing/2014/chartex", "urn:foreign")),

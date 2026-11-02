@@ -2,17 +2,36 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{dimension, replace_dimension, string_points};
 use super::super::{MapData, namespaces};
-use crate::properties::{find_element_end, find_starts};
+use crate::properties::{find_element_end, find_starts, set_child};
 use crate::xml::{ElementKind, Token, check_balanced, is_xml_char, read_attribute, tokenize, unescape};
 
 const NAMESPACE: &str = "http://schemas.microsoft.com/office/drawing/2014/chartex";
 const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
 const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
 const ENTITY_TYPES: &str = "Address AdminDistrict AdminDistrict2 AdminDistrict3 Continent CountryRegion Locality Ocean Planet PostalCode Region Unsupported";
+const LAYOUT_ORDER: &[&str] = &["cx:parentLabelLayout", "cx:regionLabelLayout", "cx:visibility", "cx:aggregation", "cx:binning", "cx:geography", "cx:statistics", "cx:subtotals", "cx:extLst"];
 
 pub(super) struct Prepared {
     pub data: String,
     pub geography: Option<String>,
+}
+
+pub(super) fn install(series: &str, geography: &str) -> Option<String> {
+    let start = series.find('>')? + 1;
+    let end = series.len().checked_sub("</cx:series>".len())?;
+    let inner = &series[start..end];
+    let source = match find_starts(inner, "cx:layoutPr").first() {
+        Some(start) => &inner[*start..find_element_end(inner, *start, "cx:layoutPr")?],
+        None => "<cx:layoutPr/>",
+    };
+    let open = source.find('>')? + 1;
+    let empty = source[..open].ends_with("/>");
+    let content = if empty { "" } else { &source[open..source.len().checked_sub("</cx:layoutPr>".len())?] };
+    let content = set_child(content, "cx:geography", geography, LAYOUT_ORDER);
+    let head = if empty { format!("{}>", &source[..open - 2]) } else { source[..open].to_string() };
+    let layout = format!("{head}{content}</cx:layoutPr>");
+    let inner = set_child(inner, "cx:layoutPr", &layout, super::SERIES_ORDER);
+    Some(format!("{}{inner}{}", &series[..start], &series[end..]))
 }
 
 pub(super) fn prepare(xml: &str, categories: &[String], supplied: Option<&MapData>) -> Option<Prepared> {

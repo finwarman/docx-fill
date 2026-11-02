@@ -55,10 +55,8 @@ pub(super) fn fill(xml: &str, data: &ChartData, title_tag: Option<&str>) -> Opti
     if let Some(geography) = map.and_then(|map| map.geography) {
         let start = *find_starts(&out, "cx:series").first()?;
         let end = find_element_end(&out, start, "cx:series")?;
-        let old = &out[start..end];
-        let geo_start = *find_starts(old, "cx:geography").first()?;
-        let geo_end = find_element_end(old, geo_start, "cx:geography")?;
-        out.replace_range(start + geo_start..start + geo_end, &geography);
+        let updated = geography::install(&out[start..end], &geography)?;
+        out.replace_range(start..end, &updated);
     }
     if let Some(title) = &series.title {
         let start = *find_starts(&out, "cx:series").first()?;
