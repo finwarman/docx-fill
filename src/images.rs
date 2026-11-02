@@ -117,10 +117,7 @@ pub(crate) fn drawing_size(image: &Image, width: f64, is_in_cell: bool, body_hei
 /// An inline drawing of relationship `relationship_id`, `width` by `height` pixels.
 pub(crate) fn drawing_xml(id: u32, relationship_id: &str, width: f64, height: f64, svg: Option<&str>) -> String {
     let extent = format!("cx=\"{}\" cy=\"{}\"", (width * EMU_PER_PX).round() as i64, (height * EMU_PER_PX).round() as i64);
-    let blip = match svg {
-        Some(svg) => format!("<a:blip r:embed=\"{relationship_id}\"><a:extLst><a:ext uri=\"{SVG_EXTENSION}\"><asvg:svgBlip xmlns:asvg=\"{SVG_NAMESPACE}\" r:embed=\"{svg}\"/></a:ext></a:extLst></a:blip>"),
-        None => format!("<a:blip r:embed=\"{relationship_id}\"/>"),
-    };
+    let blip = blip_xml(relationship_id, svg);
     format!(
         "<w:drawing><wp:inline distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\"><wp:extent {extent}/>\
 <wp:docPr id=\"{id}\" name=\"Photo {id}\"/>\
@@ -131,6 +128,13 @@ pub(crate) fn drawing_xml(id: u32, relationship_id: &str, width: f64, height: f6
 <pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext {extent}/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr>\
 </pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>"
     )
+}
+
+fn blip_xml(relationship_id: &str, svg: Option<&str>) -> String {
+    match svg {
+        Some(svg) => format!("<a:blip r:embed=\"{relationship_id}\"><a:extLst><a:ext uri=\"{SVG_EXTENSION}\"><asvg:svgBlip xmlns:asvg=\"{SVG_NAMESPACE}\" r:embed=\"{svg}\"/></a:ext></a:extLst></a:blip>"),
+        None => format!("<a:blip r:embed=\"{relationship_id}\"/>"),
+    }
 }
 
 /// The largest `<wp:docPr id>` in a part, or 0.

@@ -10,10 +10,14 @@ struct Pictures;
 impl FillHooks for Pictures {
     fn image(&mut self, _part: &str, value: &Value) -> Option<Image> {
         let key = value.as_str()?;
-        Some(Image { key:key.into(), extension:"png".into(), bytes:Arc::from(key.as_bytes()), width:4.0, height:1.0 })
+        let (extension, bytes) = if key == "vector" { ("svg", b"<svg/>".as_slice()) } else { ("png", key.as_bytes()) };
+        Some(Image { key:key.into(), extension:extension.into(), bytes:Arc::from(bytes), width:4.0, height:1.0 })
     }
     fn image_size(&mut self, _part: &str, value: &Value, _image: &Image) -> Option<ImageSize> {
         (value == "resize").then(|| ImageSize::pixels(15.0, 20.0).unwrap())
+    }
+    fn svg_fallback(&mut self, _part: &str, value: &Value, _image: &Image) -> Option<Arc<[u8]>> {
+        (value == "vector").then(|| Arc::from(b"preview".as_slice()))
     }
 }
 
@@ -85,4 +89,16 @@ fn resizes_the_transform_not_doc_properties() {
 
     assert!(xml.contains("<a:ext uri=\"{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}\"/>"));
     assert!(xml.contains("<a:ext cx=\"142875\" cy=\"190500\"/>"));
+}
+
+#[test]
+fn replaces_svg_with_png_preview() {
+    let parts = render(&picture("{%photo}"), json!({}), json!({"photo":"vector"}));
+    let xml = String::from_utf8_lossy(&parts["word/document.xml"]);
+
+    assert!(xml.contains("<a:blip r:embed=\"rIdDocxFillReplacementFallback_8\">"));
+    assert!(xml.contains("asvg:svgBlip") && xml.contains("r:embed=\"rIdDocxFillReplacement_8\""));
+    assert_eq!(parts["word/media/replacements/8.svg"], b"<svg/>");
+    assert_eq!(parts["word/media/replacements/8.png"], b"preview");
+    assert!(xml.contains("<wp:extent cx=\"19050\" cy=\"28575\"/>"));
 }

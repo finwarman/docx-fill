@@ -6,6 +6,7 @@ pub(crate) struct PictureReplacement {
     pub image: Image,
     pub size: Option<ImageSize>,
     pub tag: String,
+    pub fallback: Option<std::sync::Arc<[u8]>>,
 }
 
 pub(crate) struct PictureFrame {
@@ -14,10 +15,10 @@ pub(crate) struct PictureFrame {
 }
 
 /// Change the picture source while preserving its existing anchor, crop and geometry.
-pub(crate) fn replace_picture(xml: &str, relationship: &str, size: Option<ImageSize>, tag: &str) -> Option<String> {
+pub(crate) fn replace_picture(xml: &str, relationship: &str, size: Option<ImageSize>, tag: &str, svg: Option<&str>) -> Option<String> {
     let start = *find_starts(xml, "a:blip").first()?;
     let end = find_element_end(xml, start, "a:blip")?;
-    let mut out = format!("{}<a:blip r:embed=\"{relationship}\"/>{}", &xml[..start], &xml[end..]);
+    let mut out = format!("{}{}{}", &xml[..start], super::blip_xml(relationship, svg), &xml[end..]);
     if let Some(size) = size {
         let (width, height) = size.dimensions();
         // The picture's `a:ext` is the one in `a:xfrm`; `wp:docPr` can hold an `a:ext` of its own.
