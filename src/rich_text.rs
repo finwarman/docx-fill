@@ -88,6 +88,7 @@ struct Run {
     is_italic: bool,
     is_underlined: bool,
     format: Format,
+    preserve_spaces: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -480,9 +481,35 @@ impl Reader {
             self.start_block(Block::default());
         }
         let (bold, italic, underline) = self.counts;
-        let run = Run { text, is_break, is_bold: bold > 0, is_italic: italic > 0, is_underlined: underline > 0, format: self.format() };
+        let preserve_spaces = self.container().is_pre;
+        let run = Run { text, is_break, is_bold: bold > 0, is_italic: italic > 0, is_underlined: underline > 0, format: self.format(), preserve_spaces };
         let index = self.current.expect("started above");
+        if is_break && !preserve_spaces {
+            trim_spaces(&mut self.blocks()[index]);
+        }
         self.blocks()[index].runs.push(run);
+    }
+
+    /// Collapse HTML whitespace across inline boundaries, without collapsing NBSP.
+    fn add_text(&mut self, text: &str) {
+        let mut space = self.current.is_none_or(|index| {
+            self.blocks()[index].runs.last().is_none_or(|run| run.is_break || run.text.as_deref().is_none_or(|text| text.ends_with(' ')))
+        });
+        let mut collapsed = String::new();
+        for c in text.chars() {
+            if is_html_space(c) {
+                if !space {
+                    collapsed.push(' ');
+                }
+                space = true;
+            } else {
+                collapsed.push(c);
+                space = false;
+            }
+        }
+        if !collapsed.is_empty() {
+            self.add_run(Some(collapsed), false);
+        }
     }
 
     fn is_in_list(&mut self) -> bool {
@@ -537,8 +564,8 @@ fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
                             reader.add_run(Some(line.to_string()), false);
                         }
                     }
-                } else if reader.current.is_some() || !decoded.trim().is_empty() {
-                    reader.add_run(Some(decoded), false);
+                } else {
+                    reader.add_text(&decoded);
                 }
                 continue;
             }
@@ -603,7 +630,38 @@ fn read_html(html: &str, has_extras: bool) -> Vec<Block> {
     while !reader.tables.is_empty() {
         read_extra_tag(&mut reader, true, "table", &[]);
     }
-    reader.collections.swap_remove(0)
+    let mut blocks = reader.collections.swap_remove(0);
+    trim_blocks(&mut blocks);
+    blocks
+}
+
+fn is_html_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')
+}
+
+fn trim_spaces(block: &mut Block) {
+    for run in block.runs.iter_mut().rev() {
+        if run.is_break || run.preserve_spaces {
+            break;
+        }
+        let Some(text) = &mut run.text else { continue };
+        text.truncate(text.trim_end_matches(is_html_space).len());
+        if !text.is_empty() {
+            break;
+        }
+    }
+}
+
+fn trim_blocks(blocks: &mut [Block]) {
+    for block in blocks {
+        trim_spaces(block);
+        block.runs.retain(|run| run.is_break || run.text.as_deref().is_some_and(|text| !text.is_empty()));
+        if let Some(rows) = &mut block.table {
+            for cell in rows.iter_mut().flatten() {
+                trim_blocks(&mut cell.blocks);
+            }
+        }
+    }
 }
 
 /// Handles an element only extras read. Returns whether it was one.
