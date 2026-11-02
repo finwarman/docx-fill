@@ -33,7 +33,7 @@ cargo run --example fill_docx -- in.docx data.json out.docx
 | `{-w:tr rows}` … `{/rows}` | Repeats the enclosing element, here a table row. |
 | `{@xml}` | Replaces its paragraph with raw XML. |
 
-A loop whose tags sit alone in their paragraphs repeats whole paragraphs (`paragraph_loop`). Delimiters can be anything, such as `[[ ]]`, `{{ }}` or `<< >>`. Tags starting with a prefix in `module_prefixes` go to the caller's `FillHooks`. `FillHooks::missing_value` decides what a missing or null value prints, as docxtemplater's `nullGetter` does; by default it prints nothing.
+A loop whose tags sit alone in their paragraphs repeats whole paragraphs (`paragraph_loop`). Delimiters can be anything, such as `[[ ]]`, `{{ }}` or `<< >>`. Tags starting with a prefix in `module_prefixes` go to the caller's `FillHooks`. `FillHooks::missing_value` decides what a missing or null value prints, as docxtemplater's `nullGetter` does; by default it prints nothing. `FillHooks::tag_value` reads a tag's name in your own syntax, as docxtemplater's `parser` does; by default names are looked up whole.
 
 ## Extensions
 

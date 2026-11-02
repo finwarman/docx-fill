@@ -8,9 +8,10 @@
 //! - `{@name}` replaces its paragraph with the value as raw XML.
 //!
 //! Names are looked up whole (`table:abc.value` is one key), from the innermost loop item out to
-//! the root, or read as expressions with [`FillOptions::expressions`]. Tags are found in each
-//! paragraph's `<w:t>` text joined, since Word splits a tag across runs; a tag's value prints in the
-//! run its `{` is in, keeping that run's formatting.
+//! the root, read as expressions with [`FillOptions::expressions`], or read your own way with
+//! [`FillHooks::tag_value`]. Tags are found in each paragraph's `<w:t>` text joined, since Word
+//! splits a tag across runs; a tag's value prints in the run its `{` is in, keeping that run's
+//! formatting.
 //!
 //! Built from the WordprocessingML spec and docxtemplater's documented behaviour.
 
