@@ -18,6 +18,7 @@ use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
 
 pub(crate) mod numbering;
+mod css;
 use numbering::Numberings;
 
 // Stands in for a value in the filled XML until its paragraph closes.
@@ -55,6 +56,7 @@ pub(crate) struct RichValue {
     pub html: String,
     pub is_block: bool,
     pub has_extras: bool,
+    pub style_sheet: String,
 }
 
 /// How a run looks beyond the tag run's own properties.
@@ -276,7 +278,7 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
             let (before, after) = text.split_once(&mark).unwrap_or(("", ""));
             SpaceEdges::between(before.chars().next_back(), after.chars().next())
         };
-        let blocks = read_html(&value.html, value.has_extras, spaces);
+        let blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet);
 
         // Alone in its paragraph: the paragraph becomes the value's paragraphs.
         if is_block && !blocks.is_empty() {
@@ -303,7 +305,7 @@ fn without_empty_marks(paragraph: &str, values: &[RichValue]) -> String {
         let at = rest.find(&mark).unwrap_or(0);
         out.push_str(&rest[..at]);
         if let Some(value) = values.get(index)
-            && !read_html(&value.html, value.has_extras, SpaceEdges { start: true, end: true }).is_empty() {
+            && !read_html(&value.html, value.has_extras, SpaceEdges { start: true, end: true }, &value.style_sheet).is_empty() {
             out.push_str(&mark);
         }
         rest = &rest[at + mark.len()..];
@@ -346,7 +348,7 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
             previous = before.chars().next_back().or(previous);
             if let Some(value) = values.get(index) {
                 let spaces = SpaceEdges::between(previous, after.chars().next());
-                let inline = join_inline(&read_html(&value.html, value.has_extras, spaces), run_props, links);
+                let inline = join_inline(&read_html(&value.html, value.has_extras, spaces, &value.style_sheet), run_props, links);
                 previous = read_flow_text(&inline).chars().next_back().or(previous);
                 out.push_str(&inline);
             }
@@ -766,7 +768,7 @@ impl Reader {
 }
 
 /// The HTML's paragraphs, headings, list items and, with extras, tables, with their runs.
-fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
+fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges, style_sheet: &str) -> Vec<Block> {
     let mut reader = Reader {
         collections: vec![Vec::new()],
         current: None,
@@ -780,8 +782,11 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
         spaces,
     };
 
+    let embedded = embedded_sheets(html);
+    let sheets: Vec<&str> = std::iter::once(style_sheet).chain(embedded.iter().map(String::as_str)).collect();
+    let mut cascade = css::Cascade::new(&sheets);
     for token in read_html_tokens(html, has_extras) {
-        let (is_closing, tag, attributes) = match token {
+        let (is_closing, tag, mut attributes) = match token {
             HtmlToken::Text(text) => {
                 let decoded = decode_entities(text);
                 if reader.preformatted() {
@@ -800,6 +805,14 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
             }
             HtmlToken::Tag { is_closing, name, attributes } => (is_closing, name.to_ascii_lowercase(), attributes),
         };
+        if has_extras {
+            if is_closing { cascade.close(&tag); }
+            else {
+                let style = cascade.open(&tag, &attributes);
+                attributes.retain(|(name, _)| name != "style");
+                if !style.is_empty() { attributes.push(("style".to_string(), style)); }
+            }
+        }
         if has_extras && read_extra_tag(&mut reader, is_closing, &tag, &attributes) {
             continue;
         }
@@ -874,6 +887,31 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges) -> Vec<Block> {
 
 fn is_html_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')
+}
+
+pub(crate) fn validate_style_sheet(sheet: &str) -> Result<(), String> { css::validate_sheet(sheet) }
+
+fn embedded_sheets(html: &str) -> Vec<String> {
+    let mut sheets = Vec::new();
+    let mut rest = html;
+    while let Some(start) = rest.find('<') {
+        rest = &rest[start..];
+        if rest.starts_with("<!--") {
+            let Some(end) = rest.find("-->") else { break };
+            rest = &rest[end + 3..];
+            continue;
+        }
+        let Some((token, length)) = read_html_tag(rest, true) else { rest = &rest[1..]; continue };
+        let HtmlToken::Tag { is_closing: false, name, .. } = token else { rest = &rest[length..]; continue };
+        let name = name.to_ascii_lowercase();
+        if !is_hidden(&name) { rest = &rest[length..]; continue; }
+        let body = &rest[length..];
+        let closing = format!("</{name}");
+        let Some(end) = body.to_ascii_lowercase().find(&closing) else { break };
+        if name == "style" { sheets.push(body[..end].to_string()); }
+        rest = &body[end..];
+    }
+    sheets
 }
 
 fn trim_spaces(block: &mut Block) {
@@ -1234,7 +1272,9 @@ fn read_html_tokens(html: &str, has_extras: bool) -> Vec<HtmlToken<'_>> {
             continue;
         }
         match read_html_tag(rest, has_extras) {
-            Some((HtmlToken::Tag { is_closing: false, name, .. }, length)) if has_extras && is_hidden(name) => {
+            Some((token @ HtmlToken::Tag { is_closing: false, name, .. }, length)) if has_extras && is_hidden(name) => {
+                tokens.push(token);
+                tokens.push(HtmlToken::Tag { is_closing: true, name, attributes: Vec::new() });
                 at += length + find_closing_tag(&rest[length..], name).unwrap_or(rest.len() - length);
             }
             Some((token, length)) => {
@@ -1553,7 +1593,7 @@ mod tests {
 
     #[test]
     fn skips_a_tag_with_attributes_as_text() {
-        let blocks = read_html("<p class=\"x\">t</p>", false, SpaceEdges::default());
+        let blocks = read_html("<p class=\"x\">t</p>", false, SpaceEdges::default(), "");
         assert_eq!(blocks[0].runs[0].text.as_deref(), Some("p class=\"x\">t"));
     }
 

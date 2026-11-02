@@ -53,7 +53,7 @@ pub use empty_last_page::drop_empty_last_page;
 pub use comments::CommentDefaults;
 pub use footnotes::{FootnoteContent, FootnoteOptions};
 pub use full_table::{TableOptions, TableResize, TableValidation};
-pub use images::{Image, ImageAlignment, ImageBorder, ImageCaption, ImageLength, ImageProperties, ImageSize};
+pub use images::{Image, ImageAlignment, ImageBorder, ImageCaption, ImageFloat, ImageLayer, ImageLength, ImageProperties, ImageRelative, ImageSize, ImageWrap};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
@@ -258,6 +258,8 @@ pub struct FillOptions {
     /// The filters expressions can use, which [`FillHooks::filter`] applies. Any other is an error
     /// when parsing.
     pub filters: Vec<String>,
+    /// CSS applied to HTML values before their inline styles.
+    pub html_style_sheet: String,
 }
 
 impl Default for FillOptions {
@@ -284,6 +286,7 @@ impl Default for FillOptions {
             fill_properties: true,
             expressions: false,
             filters: Vec::new(),
+            html_style_sheet: String::new(),
         }
     }
 }
