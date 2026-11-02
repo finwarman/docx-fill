@@ -128,7 +128,7 @@ impl FillOptions {
                             "ignoreUnknownTags" => self.html.ignore_unknown_tags = read_bool(value, name)?,
                             "ignoreCssErrors" => self.html.ignore_css_errors = read_bool(value, name)?,
                             "onInvalidBlock" => self.html.on_invalid_block = match read_string(value, name)?.as_str() {
-                                "block" => crate::HtmlBlockMode::Block, "inline" => crate::HtmlBlockMode::Inline, "error" => crate::HtmlBlockMode::Error,
+                                "block" => crate::HtmlBlockMode::Block, "inline" => crate::HtmlBlockMode::Inline, "error" => crate::HtmlBlockMode::Error, "preserve" => crate::HtmlBlockMode::Preserve,
                                 other => return Err(FillError::new(format!("Unknown HTML block mode {other}"))),
                             },
                             "customTags" => {
