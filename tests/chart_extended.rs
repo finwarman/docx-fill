@@ -108,6 +108,144 @@ fn keeps_unknown_map_regions() {
 }
 
 #[test]
+fn reorders_cached_map_regions() {
+    for (categories, ids) in [(json!(["Spain","France"]), ["ES","FR"].as_slice()), (json!(["Spain"]), ["ES"].as_slice())] {
+        let parts = render(&(drawing().to_string() + &paragraph(&["{$sales}"])), &chart("regionMap", "colorVal"), json!({"sales":{"categories":categories,"data":vec![8; ids.len()]}}));
+        let chart = output_chart(&parts);
+        assert!(chart.contains(GEO));
+        let points = ids.iter().enumerate().map(|(index,id)| format!("<cx:pt idx=\"{index}\">{id}</cx:pt>")).collect::<String>();
+        assert!(chart.contains(&format!("<cx:strDim type=\"entityId\"><cx:lvl ptCount=\"{}\">{points}</cx:lvl></cx:strDim>", ids.len())));
+    }
+}
+
+const BARBADOS: &str = include_str!("fixtures/map-barbados.xml");
+const VATICAN: &str = include_str!("fixtures/map-vatican.xml");
+
+fn map_source() -> String {
+    chart("regionMap", "colorVal").replace(GEO, BARBADOS)
+        .replace(CAT, "<cx:strDim type=\"cat\"><cx:lvl ptCount=\"1\"><cx:pt idx=\"0\">Barbados</cx:pt></cx:lvl></cx:strDim>")
+        .replace("<cx:pt idx=\"0\">FR</cx:pt><cx:pt idx=\"1\">ES</cx:pt>", "<cx:pt idx=\"0\">18</cx:pt>")
+        .replace("<cx:strDim type=\"entityId\"><cx:lvl ptCount=\"2\">", "<cx:strDim type=\"entityId\"><cx:lvl ptCount=\"1\">")
+}
+
+fn new_region(geography: &str) -> Value {
+    json!({"sales":{"categories":["Vatican City"],"data":[8],"map":{"entityIds":["253"],"geography":geography}}})
+}
+
+#[test]
+fn fills_resolved_map_region() {
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    let source = map_source();
+    let parts = render(&body, &source, new_region(VATICAN));
+    let chart = output_chart(&parts);
+    assert!(chart.contains(VATICAN));
+    assert!(!chart.contains("Barbados") && !chart.contains(BARBADOS));
+    assert!(chart.contains("<cx:strDim type=\"cat\"><cx:lvl ptCount=\"1\"><cx:pt idx=\"0\">Vatican City</cx:pt>"));
+    assert!(chart.contains("<cx:strDim type=\"entityId\"><cx:lvl ptCount=\"1\"><cx:pt idx=\"0\">253</cx:pt>"));
+    assert!(chart.contains("006699") && chart.contains("<cx:pt idx=\"0\">8</cx:pt>"));
+    assert_eq!(parts["word/extendedCharts/chart1.xml"], source.as_bytes());
+    export_chart_fixture("map-new-region", &parts);
+}
+
+#[test]
+fn accepts_map_namespace_aliases() {
+    for geography in [VATICAN.replace("cx:", "geo:").replace("xmlns:cx=", "xmlns:geo="), VATICAN.replace("cx:", "").replace("xmlns:cx=", "xmlns=")] {
+        let parts = render(&(drawing().to_string() + &paragraph(&["{$sales}"])), &map_source(), new_region(&geography));
+        assert!(output_chart(&parts).contains("<cx:geoPolygon"));
+    }
+}
+
+#[test]
+fn keeps_invalid_map_payloads() {
+    let mut inputs = vec![
+        new_region(&VATICAN.replace("http://schemas.microsoft.com/office/drawing/2014/chartex", "urn:foreign")),
+        new_region(&VATICAN.replace("cx:geography", "cx:other")),
+        new_region(&VATICAN.replace("<cx:geoCache ", "<cx:geoCache href=\"https://example.com/data\" ")),
+        new_region(&VATICAN.replace("<cx:clear>", "<cx:clear><cx:unknown/>")),
+        new_region(&VATICAN.replace("<cx:geography ", "<cx:geography xmlns:xml=\"urn:foreign\" ")),
+        new_region(&VATICAN.replace("<cx:geography ", "<cx:geography xmlns:xmlns=\"urn:foreign\" ")),
+        new_region(&VATICAN.replace("entityId=\"253\"", "entityId=\"18\"")),
+        new_region(&VATICAN.replace("</cx:geoCache>", "")),
+        new_region(&VATICAN.replace("cultureLanguage=\"en-US\"", "")),
+        new_region(&VATICAN.replace(" cultureLanguage", "\u{a0}cultureLanguage")),
+        new_region(&VATICAN.replace("north=\"", "north=\"NaN")),
+        new_region(&VATICAN.replace("Powered by Bing", "&unknown;")),
+        new_region(&VATICAN.replace("<cx:clear>", "<cx:clear><!DOCTYPE geography>")),
+        new_region(&"x".repeat(8 * 1024 * 1024 + 1)),
+    ];
+    for ids in [json!([]),json!(["253","253"]),json!([" "]),json!([7]),json!(["missing"])] {
+        let mut value = new_region(VATICAN);
+        value["sales"]["map"]["entityIds"] = ids;
+        inputs.push(value);
+    }
+    let source = map_source();
+    let body = drawing().to_string() + &paragraph(&["{$sales}"]);
+    for value in inputs {
+        let parts = render(&body, &source, value);
+        assert!(!parts.keys().any(|name| name.contains("/docxFillChart")));
+        assert_eq!(parts["word/extendedCharts/chart1.xml"], source.as_bytes());
+    }
+}
+
+#[test]
+fn repeats_resolved_map_regions() {
+    let body = paragraph(&["{#rows}"]) + drawing() + &paragraph(&["{$sales}"]) + &paragraph(&["{/rows}"]);
+    let first = new_region(VATICAN)["sales"].clone();
+    let second = json!({"categories":["Barbados"],"data":[3],"map":{"entityIds":["18"],"geography":BARBADOS}});
+    let parts = render(&body, &map_source(), json!({"rows":[{"sales":first},{"sales":second}]}));
+    let charts = parts.iter().filter(|(name, _)| name.contains("/docxFillChart")).map(|(_, bytes)| String::from_utf8_lossy(bytes)).collect::<Vec<_>>();
+    assert_eq!(charts.len(), 2);
+    assert!(charts[0].contains(VATICAN) && charts[1].contains(BARBADOS));
+}
+
+#[test]
+fn rejects_ambiguous_map_cache() {
+    for source in [chart("regionMap", "colorVal").replace(">Spain</cx:pt>", ">France</cx:pt>"), chart("regionMap", "colorVal").replace(">ES</cx:pt>", ">FR</cx:pt>"), chart("regionMap", "colorVal").replace("<cx:pt idx=\"1\">ES</cx:pt>", "")] {
+        let parts = render(&(drawing().to_string() + &paragraph(&["{$sales}"])), &source, json!({"sales":{"categories":["France"],"data":[8]}}));
+        assert!(!parts.keys().any(|name| name.contains("/docxFillChart")));
+        assert_eq!(parts["word/extendedCharts/chart1.xml"], source.as_bytes());
+    }
+}
+
+#[cfg(feature = "chart-workbook")]
+#[test]
+fn writes_resolved_map_workbook() {
+    use std::io::{Cursor, Read, Write};
+    use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
+    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, xml) in [
+        ("_rels/.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="root" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#),
+        ("[Content_Types].xml", r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/></Types>"#),
+        ("xl/workbook.xml", r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Template" sheetId="1" r:id="sheet"/></sheets></workbook>"#),
+        ("xl/_rels/workbook.xml.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="sheet" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#),
+        ("xl/worksheets/sheet1.xml", r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>"#),
+    ] {
+        archive.start_file(name, SimpleFileOptions::default()).unwrap();
+        archive.write_all(xml.as_bytes()).unwrap();
+    }
+    let workbook = archive.finish().unwrap().into_inner();
+    let source = map_source().replace("<cx:chartData>", "<cx:chartData><cx:externalData r:id=\"book\"/>");
+    let mut parts = render(drawing(), &source, json!({}));
+    parts.insert("word/document.xml".into(), String::from_utf8(parts["word/document.xml"].clone()).unwrap().replace("<w:sectPr>", &format!("{}<w:sectPr>", paragraph(&["{$sales}"]))).into_bytes());
+    parts.insert("word/extendedCharts/_rels/chart1.xml.rels".into(), br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="book" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" Target="../embeddings/template.xlsx"/></Relationships>"#.to_vec());
+    parts.insert("word/embeddings/template.xlsx".into(), workbook.clone());
+    let options = FillOptions { chart_data: docx_fill::ChartDataMode::Workbook, ..FillOptions::default() };
+    let template = PackageTemplate::parse(parts, &options).unwrap();
+    let rendered: BTreeMap<_,_> = template.try_render(&new_region(VATICAN)).unwrap().into_iter().map(|(name, bytes)| (name,bytes.into_owned())).collect();
+    assert!(output_chart(&rendered).contains(VATICAN));
+    assert_eq!(rendered["word/embeddings/template.xlsx"], workbook);
+    let generated = rendered.iter().find(|(name,_)| name.contains("docxFillWorkbook")).unwrap().1;
+    let mut archive = ZipArchive::new(Cursor::new(generated)).unwrap();
+    let mut worksheet = String::new();
+    archive.by_name("xl/worksheets/docxFillData1.xml").unwrap().read_to_string(&mut worksheet).unwrap();
+    assert!(worksheet.contains("Vatican City") && worksheet.contains(">253</") && worksheet.contains(">8</v>"));
+    assert!(template.try_render(&new_region(BARBADOS)).is_err());
+    let unchanged: BTreeMap<_,_> = template.render(&new_region(BARBADOS)).into_iter().map(|(name, bytes)| (name,bytes.into_owned())).collect();
+    assert!(!unchanged.keys().any(|name| name.contains("docxFill")));
+    assert_eq!(unchanged["word/embeddings/template.xlsx"], workbook);
+}
+
+#[test]
 fn reads_extended_title_tags() {
     let source = chart("waterfall", "val").replace("Revenue", "Revenue {$sales}");
     let parts = render(drawing(), &source, json!({"sales":{"categories":["France","Spain"],"series":[{"title":"Changed","data":[7,null]}]}}));
