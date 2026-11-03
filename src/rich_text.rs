@@ -12,8 +12,8 @@
 //! `<ol start>`, `<li value>`, list-style-type, and inline `style` (color, background-color,
 //! font-size in px or pt, font-family, font-weight, font-style, text-decoration, text-align).
 
-use crate::cell_styling::{find_element_start, remove_first_element};
-use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_attribute, set_child};
+use crate::cell_styling::find_element_start;
+use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, read_child, set_attribute, set_child};
 use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -29,7 +29,8 @@ use numbering::Numberings;
 pub(crate) const MARK_START: char = '\u{E000}';
 pub(crate) const MARK_END: char = '\u{E001}';
 
-const LIST_INDENT_TWIPS: u32 = 360;
+const LIST_INDENT_TWIPS: u32 = 720;
+const LIST_HANGING_TWIPS: u32 = 360;
 // Word numbering levels are zero-based, with nine levels.
 const MAX_LIST_LEVEL: usize = 8;
 const QUOTE_INDENT_TWIPS: u32 = 720;
@@ -190,9 +191,20 @@ struct ListItem {
     value: i64,
 }
 
+#[derive(Clone, Copy)]
+enum MarkerFont { Inherited, Symbol }
+
+impl MarkerFont {
+    fn from_run(props: &str) -> Self {
+        let inner = read_child(props, "w:rPr").unwrap_or("");
+        if read_child(inner, "w:rFonts").is_some() { Self::Inherited } else { Self::Symbol }
+    }
+}
+
 struct ListWriter<'a> {
     numbering: Option<&'a mut Numberings>,
     ids: BTreeMap<usize, u32>,
+    marker_font: MarkerFont,
 }
 
 struct BlockWriter<'a, 'n> {
@@ -221,7 +233,7 @@ impl ListWriter<'_> {
         if let Some(id) = self.ids.get(&item.group) {
             return Some(*id);
         }
-        let id = self.numbering.as_mut()?.add(item.format, item.level, item.value)?;
+        let id = self.numbering.as_mut()?.add(item.format, item.level, item.value, self.marker_font)?;
         self.ids.insert(item.group, id);
         Some(id)
     }
@@ -403,7 +415,7 @@ fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut 
     let bookmarks = find_bookmarks(paragraph);
     let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
     let mut out = String::new();
-    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new() } };
+    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new(), marker_font: MarkerFont::from_run(run_props) } };
     // A section break belongs to the last paragraph only.
     let has_section = find_element_start(paragraph_props, "<w:sectPr").is_some();
     let body_props = if has_section { preserve::without(paragraph_props, "w:sectPr") } else { paragraph_props.to_string() };
@@ -1641,11 +1653,10 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     let mut props = match &block.list {
         Some(item) => {
             let level = if number.is_some() { item.level.min(MAX_LIST_LEVEL) } else { item.level };
-            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_INDENT_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
+            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_HANGING_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
             let inner = paragraph_props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("");
-            let inner = remove_first_element(inner, "<w:ind");
             let numbering = number.map(|id| format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{id}\"/></w:numPr>")).unwrap_or_default();
-            let mut inner = set_child(&set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
+            let mut inner = set_child(&set_child(inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
             // Native markers use the paragraph mark's formatting, separate from the text runs.
             if number.is_some() && !run_props.is_empty() {
                 inner = set_child(&inner, "w:rPr", run_props, PARAGRAPH_ORDER);
