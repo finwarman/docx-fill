@@ -27,6 +27,21 @@ fn protects_the_document_read_only_in_schema_order() {
 }
 
 #[test]
+fn protects_empty_settings_roots() {
+    let before = "<?xml version=\"1.0\"?>\n<!--before-->\n";
+    let root = "<w:settings xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:meta='urn:metadata' meta:note='a>b' xml:space='preserve' ";
+    let after = "\n<!--after-->\n";
+    let expected = format!("{before}{root}><w:documentProtection w:edit=\"readOnly\" w:enforcement=\"1\"/></w:settings>{after}");
+
+    for ending in ["/>", "></w:settings>"] {
+        let settings = format!("{before}{root}{ending}{after}");
+        let options = FillOptions::default().read_json(&json!({"document":{"readOnly":true}})).unwrap();
+        let parts = edit(options.document, &[("word/settings.xml", &settings)]);
+        assert_eq!(part(&parts, "word/settings.xml"), expected);
+    }
+}
+
+#[test]
 fn sets_every_sections_margins_in_twips() {
     let body = r#"<w:p><w:pPr><w:sectPr><w:pgMar w:top="1" w:right="1" w:bottom="1" w:left="1" w:header="708"/></w:sectPr></w:pPr></w:p><w:sectPr><w:pgMar w:top="1440"/></w:sectPr>"#;
     let margins = Margins { top: 0.5, right: 1.0, bottom: 0.75, left: 1.25 };
@@ -48,6 +63,21 @@ fn sets_the_default_language() {
         part(&edit(language(), &[("word/styles.xml", without)]), "word/styles.xml"),
         r#"<w:styles xmlns:w="x"><w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val="en-GB"/></w:rPr></w:rPrDefault></w:docDefaults><w:style/></w:styles>"#
     );
+}
+
+#[test]
+fn sets_empty_styles_language() {
+    let before = "<?xml version=\"1.0\"?>\n<!--before-->\n";
+    let root = "<w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xml:space='preserve' ";
+    let after = "\n<!--after-->\n";
+    let expected = format!("{before}{root}><w:docDefaults><w:rPrDefault><w:rPr><w:lang w:val=\"fr-FR\"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>{after}");
+
+    for ending in ["/>", "></w:styles>"] {
+        let styles = format!("{before}{root}{ending}{after}");
+        let options = FillOptions::default().read_json(&json!({"document":{"language":"fr-FR"}})).unwrap();
+        let parts = edit(options.document, &[("word/styles.xml", &styles)]);
+        assert_eq!(part(&parts, "word/styles.xml"), expected);
+    }
 }
 
 #[test]
