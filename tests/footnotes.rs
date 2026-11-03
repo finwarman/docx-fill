@@ -140,3 +140,18 @@ fn replaces_external_note_relationship() {
     assert!(!relations.contains("External") && !relations.contains("https://example.com"));
     assert_eq!(relations.matches("/relationships/footnotes").count(), 1);
 }
+
+#[test]
+fn preserves_existing_note_overrides() {
+    for attribute in ["PartName='/word/footnotes.xml'", "PartName = \"/word/footnotes.xml\""] {
+        let types = format!("<Types><Override {attribute} ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml\"/></Types>");
+        let parts = vec![
+            ("[Content_Types].xml".into(), types.into_bytes()),
+            ("word/document.xml".into(), document("<w:p><w:r><w:t>{:footnote note}</w:t></w:r></w:p>").into_bytes()),
+            ("word/footnotes.xml".into(), b"<w:footnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>".to_vec()),
+        ];
+        let template = PackageTemplate::parse(parts, &FillOptions::default()).unwrap();
+        let filled = template.render(&json!({"note":"Added"})).into_iter().map(|(name, bytes)| (name, String::from_utf8(bytes.into_owned()).unwrap())).collect::<Vec<_>>();
+        assert_eq!(part(&filled, "[Content_Types].xml").matches("/word/footnotes.xml").count(), 1);
+    }
+}

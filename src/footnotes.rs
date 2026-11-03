@@ -181,7 +181,10 @@ impl NotesPart {
             let xml = String::from_utf8_lossy(&types.1).into_owned();
             let mut path = String::new();
             escape(target, &mut path);
-            if !xml.contains(&format!("PartName=\"/{path}\"")) {
+            let exists = tokenize(&xml).unwrap_or_default().into_iter().any(|token| matches!(token,
+                Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "Override", raw }
+                    if read_attribute(raw, "PartName").is_some_and(|name| unescape(name) == format!("/{target}"))));
+            if !exists {
                 let override_ = format!("<Override PartName=\"/{path}\" ContentType=\"{}\"/>", self.content_type);
                 types.1 = Cow::Owned(insert_before_last(&xml, "</Types>", &override_).into_bytes());
             }
