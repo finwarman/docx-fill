@@ -38,6 +38,7 @@ mod protection;
 mod render;
 mod rich_text;
 mod structure;
+mod spreadsheet;
 mod styling;
 mod table_grid;
 mod table_merge;
@@ -70,6 +71,7 @@ pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
 pub use tag_list::{TagType, TemplateTag};
 pub use template::Template;
+pub use spreadsheet::{WorkbookSheet, WorkbookTemplate};
 pub use text::{Bookmark, CommentedText, ContentBoundary, FilledDocument, PageBreak, TextPosition, TextRange};
 
 use images::MediaUse;

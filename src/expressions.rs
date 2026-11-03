@@ -19,7 +19,7 @@ const MAX_ARRAY_INDEX: usize = 1_000_000;
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 /// A parsed expression.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Expression {
     Literal(Value),
     Undefined,
@@ -207,7 +207,7 @@ impl Expression {
         }
     }
 
-    fn has_assignment(&self) -> bool {
+    pub(crate) fn has_assignment(&self) -> bool {
         match self {
             Self::Assignment(..) => true,
             Self::Sequence(items) | Self::Array(items) => items.iter().any(Self::has_assignment),

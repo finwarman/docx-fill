@@ -220,12 +220,12 @@ pub(crate) fn read_image_tag(text: &str, options: &FillOptions) -> Option<Pictur
 
 /// A tag found in a paragraph's joined text: byte offsets of its opening delimiter, its name, and
 /// after its closing delimiter.
-struct FoundTag {
-    start: usize,
-    name: Range<usize>,
-    end: usize,
+pub(crate) struct FoundTag {
+    pub(crate) start: usize,
+    pub(crate) name: Range<usize>,
+    pub(crate) end: usize,
     /// A `{=[[ ]]=}` tag, which prints nothing.
-    changes_delimiters: bool,
+    pub(crate) changes_delimiters: bool,
 }
 
 struct Paragraph {
@@ -568,7 +568,7 @@ fn preserve_space(raw: &str) -> String {
 }
 
 /// The tags in a paragraph's joined text.
-fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions, paragraph: usize, errors: &mut Vec<FillError>) -> Vec<FoundTag> {
+pub(crate) fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions, paragraph: usize, errors: &mut Vec<FillError>) -> Vec<FoundTag> {
     let mut start = DelimiterForms::new(&delimiters.start);
     let mut end = DelimiterForms::new(&delimiters.end);
     let mut tags: Vec<FoundTag> = Vec::new();
@@ -756,7 +756,7 @@ pub(crate) fn validate_tag_prefixes(options: &FillOptions) -> Result<(), FillErr
 }
 
 /// A tag's kind and the name it looks up.
-fn read_tag(text: &str, options: &FillOptions) -> (TagKind, String) {
+pub(crate) fn read_tag(text: &str, options: &FillOptions) -> (TagKind, String) {
     if let Some((index, prefix)) = options.module_prefixes.iter().enumerate().find(|(_, prefix)| text.starts_with(prefix.as_str())) {
         return (TagKind::Module(index), text[prefix.len()..].to_string());
     }
