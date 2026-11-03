@@ -23,7 +23,7 @@ pub(crate) mod headings;
 mod css;
 mod preserve;
 mod table;
-use table::{CellLayout, TableLayout};
+use table::{CellLayout, MergeRow, TableLayout};
 pub(crate) mod images;
 use numbering::Numberings;
 
@@ -68,7 +68,8 @@ pub(crate) struct RichValue {
     pub block_mode: crate::HtmlBlockMode,
     pub raw: Vec<crate::HtmlFragment>,
     pub headings: Option<Arc<headings::Headings>>,
-    pub container_width: u32,
+    /// Content width in twips, `None` when the template does not give it.
+    pub container_width: Option<u32>,
 }
 
 pub(crate) enum ImageMode { Embed, Ignore }
@@ -202,7 +203,7 @@ struct BlockWriter<'a, 'n> {
     run_props: &'a str,
     links: &'a mut Vec<String>,
     lists: ListWriter<'n>,
-    width: u32,
+    width: Option<u32>,
 }
 
 #[derive(Default)]
@@ -250,7 +251,7 @@ struct PlacedCell<'a> {
 }
 
 fn place_cells(rows: &[Vec<Cell>]) -> Vec<Vec<PlacedCell<'_>>> {
-    let mut active = BTreeMap::<usize, (usize, usize)>::new();
+    let mut active = BTreeMap::<usize, (usize, usize, &CellLayout)>::new();
     let mut placed = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         let mut occupied = active.into_iter().peekable();
@@ -260,9 +261,10 @@ fn place_cells(rows: &[Vec<Cell>]) -> Vec<Vec<PlacedCell<'_>>> {
         let mut output = Vec::new();
         while cells.peek().is_some() || occupied.peek().is_some() {
             if occupied.peek().is_some_and(|(at, _)| *at == column) {
-                let (_, (span, left)) = occupied.next().expect("checked above");
-                output.push(PlacedCell { span, merge: CellMerge::Continue, blocks: &[], layout: CellLayout::default() });
-                if left > 1 { active.insert(column, (span, left - 1)); }
+                let (_, (span, left, origin)) = occupied.next().expect("checked above");
+                let row = if left > 1 { MergeRow::Middle } else { MergeRow::Last };
+                output.push(PlacedCell { span, merge: CellMerge::Continue, blocks: &[], layout: origin.in_merge(row) });
+                if left > 1 { active.insert(column, (span, left - 1, origin)); }
                 column += span;
                 continue;
             }
@@ -271,11 +273,11 @@ fn place_cells(rows: &[Vec<Cell>]) -> Vec<Vec<PlacedCell<'_>>> {
                 && next.is_none_or(|at| column + cell.span <= at) {
                 let cell = cells.next().expect("checked above");
                 let height = if cell.row_span == 0 { rows.len() - index } else { cell.row_span.min(rows.len() - index) };
-                let merge = if height > 1 {
-                    active.insert(column, (cell.span, height - 1));
-                    CellMerge::Start
-                } else { CellMerge::None };
-                output.push(PlacedCell { span: cell.span, merge, blocks: &cell.blocks, layout: cell.layout.clone() });
+                let (merge, layout) = if height > 1 {
+                    active.insert(column, (cell.span, height - 1, &cell.layout));
+                    (CellMerge::Start, cell.layout.in_merge(MergeRow::First))
+                } else { (CellMerge::None, cell.layout.clone()) };
+                output.push(PlacedCell { span: cell.span, merge, blocks: &cell.blocks, layout });
                 column += cell.span;
                 continue;
             }
@@ -401,7 +403,7 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
 }
 
 /// The paragraph as the value's paragraphs, in place of its own.
-fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>, width: u32) -> String {
+fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>, width: Option<u32>) -> String {
     let open = &paragraph[..paragraph.find('>').map_or(0, |at| at + 1)];
     let paragraph_props = find_element(paragraph, "w:pPr").unwrap_or("");
     let bookmarks = find_bookmarks(paragraph);
