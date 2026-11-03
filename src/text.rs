@@ -88,6 +88,14 @@ struct BodyText {
     marks: Vec<Mark>,
 }
 
+/// A part and the ranges its errors mark, with their messages.
+struct AnnotatedPart<'e> {
+    name: &'e str,
+    xml: String,
+    body: BodyText,
+    ranges: Vec<(TextRange, String)>,
+}
+
 /// A change to the body XML: replace bytes `start..end` with `text`.
 type XmlEdit = (usize, usize, String);
 
@@ -180,17 +188,38 @@ impl FilledDocument {
     /// Comments on located diagnostics in Word paragraphs. Returns the number annotated.
     /// Diagnostics without a usable paragraph/offset remain available on `error`.
     pub fn annotate_errors(&mut self, error: &FillError, by: &CommentDefaults) -> Result<usize, FillError> {
-        let mut count = 0;
+        // Each part is read and written once, however many errors it has.
+        let mut parts: Vec<AnnotatedPart> = Vec::new();
         for error in error.diagnostics() {
-            let part = error.part.as_deref().unwrap_or(DOCUMENT_PART);
-            let Some(xml) = self.read_part(part) else { continue };
-            let body = read_body_text(&xml);
-            let Some(range) = error_range(&xml, &body, error) else { continue };
-            let message = format!("{}: {}", error.id.as_str(), error.message);
-            self.add_part_comment(part, &range, &message, by)?;
-            count += 1;
+            let name = error.part.as_deref().unwrap_or(DOCUMENT_PART);
+            if !parts.iter().any(|part| part.name == name) {
+                let Some(xml) = self.read_part(name) else { continue };
+                let body = read_body_text(&xml);
+                parts.push(AnnotatedPart { name, xml, body, ranges: Vec::new() });
+            }
+            let part = parts.iter_mut().find(|part| part.name == name).expect("part read above");
+            let Some(range) = error_range(&part.xml, &part.body, error) else { continue };
+            part.ranges.push((range, format!("{}: {}", error.id.as_str(), error.message)));
         }
-        Ok(count)
+
+        let written = read_comments(&self.read_part(COMMENTS_PART).unwrap_or_default());
+        let marks = parts.iter().flat_map(|part| part.body.marks.iter().map(|mark| mark.id));
+        let mut id = written.iter().map(|comment| comment.0).chain(marks).max().map_or(0, |max| max + 1);
+        let mut comments = Vec::new();
+        for AnnotatedPart { name, xml, body, ranges } in &parts {
+            let mut opens = BTreeSet::new();
+            let mut edits = Vec::new();
+            for (range, message) in ranges {
+                edits.extend(comment_edits(xml, &body.paragraphs[range.start.paragraph], range, id, &mut opens));
+                comments.push(Comment { id, text: message.clone(), author: by.author.clone(), initials: by.initials.clone(), date: by.date.clone() });
+                id += 1;
+            }
+            if let Some((_, bytes)) = self.parts.iter_mut().find(|(each, _)| each == name) {
+                *bytes = Cow::Owned(apply(xml, edits).into_bytes());
+            }
+        }
+        add_comments(&mut self.parts, &comments);
+        Ok(comments.len())
     }
 
     fn add_part_comment(&mut self, part: &str, range: &TextRange, comment: &str, by: &CommentDefaults) -> Result<u32, FillError> {
@@ -203,12 +232,7 @@ impl FilledDocument {
         let written = read_comments(&self.read_part(COMMENTS_PART).unwrap_or_default());
         let id = written.iter().map(|comment| comment.0).chain(body.marks.iter().map(|mark| mark.id)).max().map_or(0, |max| max + 1);
 
-        let paragraph = &body.paragraphs[range.start.paragraph];
-        let start_mark = format!("<w:commentRangeStart w:id=\"{id}\"/>");
-        let end_mark = format!("<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:rPr><w:rStyle w:val=\"CommentReference\"/></w:rPr><w:commentReference w:id=\"{id}\"/></w:r>");
-        let mut opens = BTreeSet::new();
-        let mut edits = split_at(&xml, paragraph, range.start.offset, &start_mark, true, &mut opens);
-        edits.extend(split_at(&xml, paragraph, range.end.offset, &end_mark, false, &mut opens));
+        let edits = comment_edits(&xml, &body.paragraphs[range.start.paragraph], range, id, &mut BTreeSet::new());
         if let Some((_, bytes)) = self.parts.iter_mut().find(|(name, _)| name == part) {
             *bytes = Cow::Owned(apply(&xml, edits).into_bytes());
         }
@@ -256,6 +280,15 @@ impl FilledDocument {
     }
 }
 
+/// The edits that mark a checked, nonempty one-paragraph range as comment `id`'s.
+fn comment_edits(xml: &str, paragraph: &Paragraph, range: &TextRange, id: u32, opens: &mut BTreeSet<usize>) -> Vec<XmlEdit> {
+    let start_mark = format!("<w:commentRangeStart w:id=\"{id}\"/>");
+    let end_mark = format!("<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:rPr><w:rStyle w:val=\"CommentReference\"/></w:rPr><w:commentReference w:id=\"{id}\"/></w:r>");
+    let mut edits = split_at(xml, paragraph, range.start.offset, &start_mark, true, opens);
+    edits.extend(split_at(xml, paragraph, range.end.offset, &end_mark, false, opens));
+    edits
+}
+
 fn error_range(xml: &str, body: &BodyText, error: &FillError) -> Option<TextRange> {
     let index = error.paragraph?;
     let paragraph = body.paragraphs.get(index)?;
@@ -280,11 +313,9 @@ fn error_range(xml: &str, body: &BodyText, error: &FillError) -> Option<TextRang
         .filter(|(offset, _)| *offset >= start).collect();
     let tail: String = text.iter().map(|(_, ch)| ch).collect();
     let end = match error.tag.as_deref().filter(|tag| !tag.is_empty()) {
-        Some(tag) => match tail.find(tag) {
-            Some(at) => text.get(tail[..at + tag.len()].chars().count() - 1)?.0 + 1,
-            None if matches!(error.id, crate::FillErrorId::UnopenedTag | crate::FillErrorId::DuplicateCloseTag) => start + 1,
-            None => return None,
-        },
+        // These name the text before the stray delimiter, so they mark the delimiter alone.
+        _ if matches!(error.id, crate::FillErrorId::UnopenedTag | crate::FillErrorId::DuplicateCloseTag) => start + 1,
+        Some(tag) => text.get(tail[..tail.find(tag)? + tag.len()].chars().count() - 1)?.0 + 1,
         None => start + 1,
     };
     Some(TextRange { start: TextPosition { paragraph: index, offset: start }, end: TextPosition { paragraph: index, offset: end }, text: chars[start..end].iter().collect() })

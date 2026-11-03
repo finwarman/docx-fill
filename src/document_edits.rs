@@ -106,7 +106,6 @@ fn protect(xml: &str, protection: &str) -> String {
 /// Draws the watermark in every header, adding a header to the first section when the document
 /// has none.
 fn add_watermark(parts: &mut Vec<(String, Cow<[u8]>)>, watermark: &Watermark) {
-    let paragraph = watermark_paragraph(watermark);
     let mut headers: Vec<String> = parts.iter().map(|(name, _)| name.clone()).filter(|name| is_template_part(name) && name.starts_with("word/header")).collect();
     if headers.is_empty() {
         let has_section = parts.iter().any(|(name, xml)| name == DOCUMENT_PART && String::from_utf8_lossy(xml).contains("<w:sectPr"));
@@ -136,7 +135,7 @@ fn add_watermark(parts: &mut Vec<(String, Cow<[u8]>)>, watermark: &Watermark) {
         headers.push(WATERMARK_HEADER.to_string());
     }
     for (index, header) in headers.iter().enumerate() {
-        let paragraph = paragraph.replace("{index}", &(index + 1).to_string());
+        let paragraph = watermark_paragraph(watermark, index + 1);
         edit_part(parts, header, |xml| {
             let mut xml = xml.to_string();
             for (name, value) in WATERMARK_NAMESPACES {
@@ -158,9 +157,9 @@ fn add_namespace(xml: &str, name: &str, value: &str) -> String {
     format!("{}{}{}", &xml[..start], set_attribute(root, name, value), &xml[open_end..])
 }
 
-/// A paragraph holding the watermark as a VML text path, as Word draws one. `{index}` numbers its
+/// A paragraph holding the watermark as a VML text path, as Word draws one. `index` numbers its
 /// shape.
-fn watermark_paragraph(watermark: &Watermark) -> String {
+fn watermark_paragraph(watermark: &Watermark, index: usize) -> String {
     let mut text = String::new();
     escape(&watermark.text, &mut text);
     let characters = watermark.text.chars().count().max(1) as f64;
@@ -177,7 +176,7 @@ fn watermark_paragraph(watermark: &Watermark) -> String {
 <v:f eqn=\"mid @7 @8\"/><v:f eqn=\"mid @6 @7\"/><v:f eqn=\"sum @6 0 @5\"/></v:formulas>\
 <v:path textpathok=\"t\" o:connecttype=\"custom\" o:connectlocs=\"@9,0;@10,10800;@11,21600;@12,10800\" o:connectangles=\"270,180,90,0\"/>\
 <v:textpath on=\"t\" fitshape=\"t\"/><v:handles><v:h position=\"#0,bottomRight\" xrange=\"6629,14971\"/></v:handles><o:lock v:ext=\"edit\" text=\"t\" shapetype=\"t\"/></v:shapetype>\
-<v:shape id=\"PowerPlusWaterMarkObject{{index}}\" o:spid=\"_x0000_s{{index}}025\" type=\"#_x0000_t136\" \
+<v:shape id=\"PowerPlusWaterMarkObject{index}\" o:spid=\"_x0000_s{index}025\" type=\"#_x0000_t136\" \
 style=\"position:absolute;margin-left:0;margin-top:0;width:{WATERMARK_WIDTH}pt;height:{height:.1}pt;{rotation}z-index:-251657216;\
 mso-position-horizontal:center;mso-position-horizontal-relative:margin;mso-position-vertical:center;mso-position-vertical-relative:margin\" \
 o:allowincell=\"f\" fillcolor=\"silver\" stroked=\"f\"><v:fill opacity=\".5\"/><v:textpath style=\"font-family:&quot;Calibri&quot;;font-size:1pt\" string=\"{text}\"/>\
