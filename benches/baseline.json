@@ -1,6 +1,6 @@
 {
   "median_ms": {
-    "conditions/5k": 540.82,
+    "conditions/5k": 10.56,
     "errors/2k": 1.79,
     "expressions/loop-5k": 3.26,
     "html/blocks-300k": 17.73,
