@@ -117,9 +117,9 @@ pub(crate) fn edit_properties(element: &str, properties: &str, edit: impl FnOnce
     let (open, empty, close) = (format!("<{properties}>"), format!("<{properties}/>"), format!("</{properties}>"));
     let (inner, after) = if let Some(after) = rest.strip_prefix(&empty) {
         ("", after)
-    } else if let Some(body) = rest.strip_prefix(&open) {
-        match body.find(&close) {
-            Some(end) => (&body[..end], &body[end + close.len()..]),
+    } else if rest.starts_with(&open) {
+        match find_element_end(rest, 0, properties) {
+            Some(end) => (&rest[open.len()..end - close.len()], &rest[end..]),
             None => return element.to_string(),
         }
     } else {

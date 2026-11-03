@@ -59,3 +59,19 @@ fn keeps_a_tracked_grid_change_when_refitting_columns() {
     let grid = &xml[xml.find("<w:tblGrid>").unwrap()..xml.find("<w:tblGridChange").unwrap()];
     assert_eq!(grid.matches("<w:gridCol w:w=\"1000\"/>").count(), 2);
 }
+
+#[test]
+fn refits_live_widths_without_history() {
+    let table_history = "<w:tblPrChange w:id=\"3\" w:author=\"A\"><w:tblPr><w:tblW w:w=\"12000\" w:type=\"dxa\"/></w:tblPr></w:tblPrChange>";
+    let cell_history = "<w:tcPrChange w:id=\"4\" w:author=\"A\"><w:tcPr><w:tcW w:w=\"9000\" w:type=\"dxa\"/></w:tcPr></w:tcPrChange>";
+    let template = document(&format!("<w:tbl><w:tblPr><w:tblW w:w=\"2000\" w:type=\"dxa\"/>{table_history}</w:tblPr><w:tblGrid><w:gridCol w:w=\"2000\"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w=\"2000\" w:type=\"dxa\"/>{cell_history}</w:tcPr><w:p><w:r><w:t>{{:vt#items}}{{name}}{{:vt/items}}</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"));
+    for (resize, width) in [(false, 1000), (true, 2000)] {
+        let options = FillOptions::default().read_json(&json!({"table":{"autoResizeTable":resize}})).unwrap();
+        let xml = fill_part(&template, &json!({"items":[{"name":"A"},{"name":"B"}]}), &options).unwrap();
+        assert!(xml.contains(table_history));
+        assert_eq!(xml.matches(cell_history.split_once('>').unwrap().1).count(), 2);
+        assert_eq!(xml.matches(&format!("<w:tcPr><w:tcW w:w=\"{width}\" w:type=\"dxa\"/>")).count(), 2);
+        assert_eq!(xml.matches(&format!("<w:gridCol w:w=\"{width}\"/>")).count(), 2);
+        assert!(xml.contains(&format!("<w:tblPr><w:tblW w:w=\"{}\" w:type=\"dxa\"/>", width * 2)));
+    }
+}

@@ -899,12 +899,20 @@ fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, S
 /// one in twips.
 fn read_cell_width(parts: &[Part], at: usize) -> Option<f64> {
     let (start, _) = find_enclosing(parts, at, CELL)?;
+    let mut properties = 0usize;
     for part in &parts[start + 1..at] {
-        let Part::Element { name, raw, .. } = part else { continue };
+        let Part::Element { kind, name, raw } = part else { continue };
+        if name == "w:tcPr" {
+            match kind {
+                ElementKind::Open => properties += 1,
+                ElementKind::Close => properties = properties.saturating_sub(1),
+                _ => {}
+            }
+        }
         if name == PARAGRAPH {
             return None;
         }
-        if name == "w:tcW" {
+        if name == "w:tcW" && properties == 1 && matches!(kind, ElementKind::Open | ElementKind::SelfClosing) {
             if read_attribute(raw, "w:type") != Some("dxa") {
                 return None;
             }

@@ -86,3 +86,26 @@ fn reads_the_tag_only_with_its_extension() {
 
     assert!(!xml.contains("vMerge"));
 }
+
+#[test]
+fn ignores_old_cell_spans_and_widths() {
+    let history = "<w:tcPrChange w:id=\"5\" w:author=\"A\"><w:tcPr><w:tcW w:w=\"9000\" w:type=\"dxa\"/><w:gridSpan w:val=\"3\"/></w:tcPr></w:tcPrChange>";
+    let first = format!("<w:tc><w:tcPr>{history}</w:tcPr>{}</w:tc>", paragraph(&["{:merge-cells-row}A"]));
+    let second = format!("<w:tc><w:tcPr><w:tcW w:w=\"1000\" w:type=\"dxa\"/></w:tcPr>{}</w:tc>", paragraph(&["A"]));
+    let source = table(&[row(&[first, second])]);
+    let expected = fill(&source.replace(history, ""), json!({}));
+    let actual = fill(&source, json!({}));
+    assert!(actual.contains(history));
+    assert_eq!(actual.replace(history, ""), expected);
+}
+
+#[test]
+fn preserves_history_in_merged_cells() {
+    let history = "<w:tcPrChange w:id=\"5\" w:author=\"A\"><w:tcPr><w:tcW w:w=\"9000\" w:type=\"dxa\"/><w:gridSpan w:val=\"3\"/></w:tcPr></w:tcPrChange>";
+    let below = format!("<w:tc><w:tcPr>{history}</w:tcPr>{}</w:tc>", paragraph(&["A"]));
+    let source = table(&[row(&[cell(&["{:merge-cells-col 1}A"])]), row(&[below])]);
+    let expected = fill(&source.replace(history, ""), json!({}));
+    let actual = fill(&source, json!({}));
+    assert!(actual.contains(history));
+    assert_eq!(actual.replace(history, ""), expected);
+}

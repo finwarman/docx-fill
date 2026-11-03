@@ -82,6 +82,18 @@ fn draws_an_image_filling_its_cell_keeping_its_shape() {
 }
 
 #[test]
+fn ignores_historical_cell_widths() {
+    let history = "<w:tcPrChange w:id=\"5\" w:author=\"A\"><w:tcPr><w:tcW w:w=\"9000\" w:type=\"dxa\"/></w:tcPr></w:tcPrChange>";
+    let source = format!("<w:tbl><w:tr><w:tc><w:tcPr>{history}</w:tcPr>{}</w:tc></w:tr></w:tbl>", paragraph("{%image}"));
+    let tags = json!({"image":"photo:loaded"});
+    let expected = fill(document(&source.replace(history, "")), tags.clone());
+    let actual = fill(document(&source), tags);
+    let actual = part(&actual, "word/document.xml").unwrap();
+    assert!(actual.contains(history));
+    assert_eq!(extents(actual), extents(part(&expected, "word/document.xml").unwrap()));
+}
+
+#[test]
 fn prints_the_drawing_in_the_tags_run_and_nothing_for_an_empty_value() {
     let body = paragraph("Before {%photo:b.value.image} after") + &paragraph("{%%photo:empty.value.image}");
 
