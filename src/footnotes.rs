@@ -1,5 +1,4 @@
-//! The footnotes `{:footnote name}` tags add. Built from the WordprocessingML spec: footnotes live
-//! in `word/footnotes.xml`, which the body references by relationship.
+//! The footnotes `{:footnote name}` tags add to the part linked from the main document.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
