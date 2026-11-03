@@ -108,6 +108,7 @@ fn border_width(value: &str) -> Option<u32> {
 }
 
 fn read_border(value: &str, mut border: Border) -> Border {
+    if let Some(color) = read_color(value) { border.color = color; }
     for token in value.split_whitespace() {
         if let Some(style) = border_style(token) { border.style = style; }
         else if let Some(size) = border_width(token) { border.size = size; }

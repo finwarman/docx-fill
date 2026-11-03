@@ -925,23 +925,26 @@ fn read_html_widths(parts: &[Part], tags: &[Tag]) -> Vec<Option<f64>> {
         }
     }
     let mut section = 0;
-    let mut cells = Vec::new();
+    let mut cells: Vec<Option<f64>> = Vec::new();
     let mut tables = Vec::new();
     for (at, part) in parts.iter().enumerate() {
         while section < sections.len() && at > sections[section].0 { section += 1; }
         match part {
             Part::Element { kind: ElementKind::Open, name, .. } if name == "w:tbl" => {
                 let end = parts[at + 1..].iter().position(|part| matches!(part, Part::Element { kind, name, .. } if name == ROW || (name == "w:tbl" && *kind == ElementKind::Close))).map_or(parts.len(), |end| at + 1 + end);
-                tables.push(read_cell_margins(&parts[at..end], "w:tblCellMar"));
+                let properties = &parts[at..end];
+                let parent = cells.last().copied().flatten().or_else(|| sections.get(section).and_then(|(_, width)| *width));
+                let width = property_width(properties, "w:tblPr", "w:tblW", parent).or(parent);
+                tables.push((read_cell_margins(properties, "w:tblCellMar"), width));
             }
             Part::Element { kind: ElementKind::Close, name, .. } if name == "w:tbl" => { tables.pop(); }
             Part::Element { kind: ElementKind::Open, name, .. } if name == CELL => {
                 let end = parts[at + 1..].iter().position(|part| matches!(part, Part::Element { name, .. } if name == PARAGRAPH || name == "w:tbl" || name == CELL)).map_or(parts.len(), |end| at + 1 + end);
                 let properties = &parts[at + 1..end];
                 let local = read_cell_margins(properties, "w:tcMar");
-                let inherited = tables.last().copied().unwrap_or_default();
+                let (inherited, parent) = tables.last().copied().unwrap_or_default();
                 let padding = (0..2).map(|side| local[side].or(inherited[side]).unwrap_or(0.0)).sum::<f64>();
-                cells.push(cell_property_width(properties).map(|width| (width - padding * PX_PER_TWIP).max(PX_PER_TWIP)));
+                cells.push(property_width(properties, "w:tcPr", "w:tcW", parent).map(|width| (width - padding * PX_PER_TWIP).max(PX_PER_TWIP)));
             }
             Part::Element { kind: ElementKind::Close, name, .. } if name == CELL => { cells.pop(); }
             Part::Tag(index) if matches!(tags[*index].kind, TagKind::RichText { .. }) => {
@@ -1006,14 +1009,14 @@ fn read_cell_margins(parts: &[Part], element: &str) -> [Option<f64>; 2] {
 /// The innermost cell's preferred width in pixels, when supplied in twips.
 fn read_cell_width(parts: &[Part], at: usize) -> Option<f64> {
     let (start, _) = find_enclosing(parts, at, CELL)?;
-    cell_property_width(&parts[start + 1..at])
+    property_width(&parts[start + 1..at], "w:tcPr", "w:tcW", None)
 }
 
-fn cell_property_width(parts: &[Part]) -> Option<f64> {
+fn property_width(parts: &[Part], container: &str, width: &str, parent: Option<f64>) -> Option<f64> {
     let mut properties = 0usize;
     for part in parts {
         let Part::Element { kind, name, raw } = part else { continue };
-        if name == "w:tcPr" {
+        if name == container {
             match kind {
                 ElementKind::Open => properties += 1,
                 ElementKind::Close => properties = properties.saturating_sub(1),
@@ -1023,11 +1026,16 @@ fn cell_property_width(parts: &[Part]) -> Option<f64> {
         if name == PARAGRAPH {
             return None;
         }
-        if name == "w:tcW" && properties == 1 && matches!(kind, ElementKind::Open | ElementKind::SelfClosing) {
-            if read_attribute(raw, "w:type") != Some("dxa") {
-                return None;
-            }
-            return read_attribute(raw, "w:w")?.parse::<f64>().ok().filter(|twips| *twips > 0.0).map(|twips| twips * PX_PER_TWIP);
+        if name == width && properties == 1 && matches!(kind, ElementKind::Open | ElementKind::SelfClosing) {
+            let value = read_attribute(raw, "w:w")?.parse::<f64>().ok().filter(|value| value.is_finite() && *value > 0.0)?;
+            // Word stores percentage widths in fiftieths of one percent.
+            const FULL_WIDTH_PERCENT: f64 = 5000.0;
+            let value = match read_attribute(raw, "w:type") {
+                Some("dxa") => value * PX_PER_TWIP,
+                Some("pct") => parent? * (value / FULL_WIDTH_PERCENT),
+                _ => return None,
+            };
+            return (value.is_finite() && value > 0.0).then_some(value);
         }
     }
     None

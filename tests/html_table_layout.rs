@@ -186,6 +186,34 @@ fn keeps_important_table_styles() {
 }
 
 #[test]
+fn keeps_spaced_rgb_borders() {
+    let xml = render("<style>td {border-bottom:2px solid rgb(10, 20, 30)}</style><table style='border:1px solid rgb(255, 0, 0)'><tr><td>A</td></tr></table>");
+    let table = elements(&xml, "w:tblBorders");
+    let cell = elements(&xml, "w:tcBorders");
+
+    assert!(table[0].contains("w:color=\"FF0000\""), "{xml}");
+    assert!(cell[0].contains("<w:bottom w:val=\"single\" w:sz=\"12\" w:space=\"0\" w:color=\"0A141E\"/>"), "{xml}");
+}
+
+#[test]
+fn uses_percentage_cell_width() {
+    for (kind, width, expected) in [("dxa", 6000, 2760), ("pct", 2500, 2010)] {
+        let body = format!("<w:tbl><w:tblPr><w:tblW w:w=\"{width}\" w:type=\"{kind}\"/><w:tblPrChange w:id=\"1\"><w:tblPr><w:tblW w:w=\"1000\" w:type=\"dxa\"/></w:tblPr></w:tblPrChange></w:tblPr><w:tr><w:tc><w:tcPr><w:tcW w:w=\"2500\" w:type=\"pct\"/><w:tcMar><w:left w:w=\"90\" w:type=\"dxa\"/><w:right w:w=\"150\" w:type=\"dxa\"/></w:tcMar></w:tcPr>{TAG}</w:tc></w:tr></w:tbl>{SECTION}");
+        let xml = fill(&body, json!({"html": "<table><tr><td>A</td></tr></table>"}));
+
+        assert!(xml.contains(&format!("<w:tblW w:w=\"{expected}\" w:type=\"dxa\"/>")), "{kind}: {xml}");
+    }
+}
+
+#[test]
+fn resolves_nested_native_width() {
+    let body = format!("<w:tbl><w:tr><w:tc><w:tcPr><w:tcW w:w=\"8000\" w:type=\"dxa\"/><w:tcMar><w:left w:w=\"100\" w:type=\"dxa\"/><w:right w:w=\"100\" w:type=\"dxa\"/></w:tcMar></w:tcPr><w:tbl><w:tblPr><w:tblW w:w=\"2500\" w:type=\"pct\"/></w:tblPr><w:tr><w:tc><w:tcPr><w:tcW w:w=\"2500\" w:type=\"pct\"/><w:tcMar><w:left w:w=\"50\" w:type=\"dxa\"/><w:right w:w=\"50\" w:type=\"dxa\"/></w:tcMar></w:tcPr>{TAG}</w:tc></w:tr></w:tbl><w:p/></w:tc></w:tr></w:tbl>{SECTION}");
+    let xml = fill(&body, json!({"html": "<table><tr><td>A</td></tr></table>"}));
+
+    assert!(xml.contains("<w:tblW w:w=\"1850\" w:type=\"dxa\"/>"), "{xml}");
+}
+
+#[test]
 fn applies_table_margin_in_order() {
     for (style, indent) in [("margin-left:20px;margin:0", 45), ("margin:0;margin-left:20px", 345)] {
         let xml = render(&format!("<table style='{style}'><tr><td>A</td></tr></table>"));
