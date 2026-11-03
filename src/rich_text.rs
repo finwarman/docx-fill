@@ -608,7 +608,8 @@ fn read_flow_text(xml: &str) -> String {
 /// The first `open…close` element, whole.
 fn find_between<'a>(xml: &'a str, open: &str, close: &str) -> Option<&'a str> {
     let start = xml.find(open)?;
-    let end = start + xml[start..].find(close)? + close.len();
+    let name = close.strip_prefix("</")?.strip_suffix('>')?;
+    let end = crate::properties::find_element_end(xml, start, name)?;
     Some(&xml[start..end])
 }
 
@@ -1659,10 +1660,7 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     }
 
     let mut inner = props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("").to_string();
-    if block.heading_level.is_some() && block.paragraph_style.is_some()
-        && let Some(mark_props) = find_between(&inner, "<w:rPr>", "</w:rPr>") {
-        inner = inner.replacen(mark_props, &headings::inherited_props(mark_props), 1);
-    }
+    if block.heading_level.is_some() && block.paragraph_style.is_some() { inner = headings::paragraph_props(&inner); }
     if let Some(style) = &block.paragraph_style {
         let mut escaped = String::new(); escape(style, &mut escaped);
         inner = set_child(&inner, "w:pStyle", &format!("<w:pStyle w:val=\"{escaped}\"/>"), PARAGRAPH_ORDER);

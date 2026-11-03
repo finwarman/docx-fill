@@ -167,3 +167,28 @@ fn expands_roots_with_attributes() {
     assert!(part(&output, "[Content_Types].xml").contains("PartName=\"/word/styles.xml\""));
     assert!(part(&output, "word/styles.xml").contains("meta:note=\"a>b\""));
 }
+
+#[test]
+fn keeps_historical_run_styles() {
+    let props = "<w:rPr><w:sz w:val=\"18\"></w:sz><w:lang w:val=\"fr-FR\"/><w:rPrChange w:id=\"7\" w:author=\"Editor\"><w:rPr><w:sz w:val=\"12\"/></w:rPr></w:rPrChange></w:rPr>";
+    let tag = format!("<w:p><w:r>{props}<w:t>{{~~html}}</w:t></w:r></w:p>");
+    let template = PackageTemplate::parse([("word/document.xml".into(), document(&tag).into_bytes())], &FillOptions::default()).unwrap();
+    let output: Vec<_> = template.render(&json!({"html":"<h1>A</h1>"})).into_iter().map(|(name, bytes)| (name, bytes.into_owned())).collect();
+    let body = part(&output, "word/document.xml");
+    assert!(!body.contains("w:val=\"18\""));
+    assert!(body.contains("<w:rPrChange w:id=\"7\" w:author=\"Editor\"><w:rPr><w:sz w:val=\"12\"/></w:rPr></w:rPrChange>"));
+    assert!(body.contains("<w:lang w:val=\"fr-FR\"/>"));
+}
+
+#[test]
+fn keeps_paragraph_history() {
+    for live in ["", "<w:rPr><w:sz w:val=\"18\"/></w:rPr>"] {
+        let history = "<w:pPrChange w:id=\"7\" w:author=\"Editor\"><w:pPr><w:rPr><w:sz w:val=\"12\"/></w:rPr></w:pPr></w:pPrChange>";
+        let tag = format!("<w:p><w:pPr>{live}{history}</w:pPr><w:r><w:t>{{~~html}}</w:t></w:r></w:p>");
+        let template = PackageTemplate::parse([("word/document.xml".into(), document(&tag).into_bytes())], &FillOptions::default()).unwrap();
+        let output: Vec<_> = template.render(&json!({"html":"<h1>A</h1>"})).into_iter().map(|(name, bytes)| (name, bytes.into_owned())).collect();
+        let body = part(&output, "word/document.xml");
+        assert!(body.contains(history));
+        assert!(!body.contains("w:val=\"18\""));
+    }
+}

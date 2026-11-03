@@ -127,9 +127,50 @@ impl Headings {
 
 /// Keep language, proofing and other metadata while letting the paragraph style set appearance.
 pub(super) fn inherited_props(props: &str) -> String {
-    let mut props = props.to_string();
-    for name in APPEARANCE { props = crate::cell_styling::remove_first_element(&props, &format!("<{name}")); }
-    props
+    let Ok(tokens) = tokenize(props) else { return props.to_string() };
+    let mut out = String::with_capacity(props.len());
+    let mut depth = 0usize;
+    let mut skipped = 0usize;
+    for token in tokens {
+        if skipped > 0 {
+            match token {
+                Token::Element { kind: ElementKind::Open, .. } => skipped += 1,
+                Token::Element { kind: ElementKind::Close, .. } => skipped -= 1,
+                _ => {}
+            }
+            continue;
+        }
+        if let Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name, .. } = token
+            && depth == 1 && APPEARANCE.contains(&name) {
+            if matches!(token, Token::Element { kind: ElementKind::Open, .. }) { skipped = 1; }
+            continue;
+        }
+        match token {
+            Token::Element { kind: ElementKind::Open, .. } => depth += 1,
+            Token::Element { kind: ElementKind::Close, .. } => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        match token { Token::Element { raw, .. } | Token::Text(raw) => out.push_str(raw) }
+    }
+    out
+}
+
+pub(super) fn paragraph_props(inner: &str) -> String {
+    let mut depth = 0usize;
+    let mut at = 0;
+    for token in tokenize(inner).unwrap_or_default() {
+        if depth == 0 && matches!(token, Token::Element { name: "w:rPr", kind: ElementKind::Open | ElementKind::SelfClosing, .. })
+            && let Some(end) = crate::properties::find_element_end(inner, at, "w:rPr") {
+            return format!("{}{}{}", &inner[..at], inherited_props(&inner[at..end]), &inner[end..]);
+        }
+        match token {
+            Token::Element { kind: ElementKind::Open, .. } => depth += 1,
+            Token::Element { kind: ElementKind::Close, .. } => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        at += match token { Token::Element { raw, .. } | Token::Text(raw) => raw.len() };
+    }
+    inner.to_string()
 }
 
 fn append_root(xml: &str, root: &str, added: &str) -> String {
