@@ -18,6 +18,8 @@ pub(crate) const INCLUDE_END: char = '\u{E006}';
 const NUMBERING_PART: &str = "word/numbering.xml";
 const NUMBERING_RELATIONSHIP: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
 const NUMBERING_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
+const STYLES_RELATIONSHIP: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
+const STYLES_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml";
 const MAIN_NAMESPACE: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 // Body elements pointing into parts an include does not bring.
 const DROPPED: [&str; 5] = ["w:sectPr", "w:commentRangeStart", "w:commentRangeEnd", "w:commentReference", "w:endnoteReference"];
@@ -386,12 +388,12 @@ impl Import<'_, '_> {
         self.merge_namespaces(&target, &from);
     }
 
-    /// Copies the `used` styles the main document lacks, or with `KeepOwn` has otherwise. The new
-    /// id of each, which differs only for a renamed style.
+    /// Copies the `used` styles the main document lacks, or with `KeepOwn` has otherwise, adding a
+    /// styles part when it has none. The new id of each, which differs only for a renamed style.
     fn import_styles(&mut self, used: &BTreeSet<String>, definitions: &BTreeMap<String, String>, numbers: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let mut renamed = BTreeMap::new();
-        let Some(main) = self.read_main(STYLES_PART) else { return renamed };
-        let existing = read_styles(&main);
+        let main = self.read_main(STYLES_PART);
+        let existing = read_styles(main.as_deref().unwrap_or(""));
 
         let suffix: String = self.name.chars().filter(char::is_ascii_alphanumeric).collect();
         let mut copied = Vec::new();
@@ -420,11 +422,25 @@ impl Import<'_, '_> {
             });
             added.push_str(&definition);
         }
-        if !added.is_empty() {
-            self.write_main(STYLES_PART, insert_before_last(&main, "</w:styles>", &added));
-            let from = self.read_from(STYLES_PART);
-            self.merge_namespaces(STYLES_PART, &from);
+        if added.is_empty() {
+            return renamed;
         }
+
+        let from = self.read_from(STYLES_PART);
+        let Some(main) = main else {
+            let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<w:styles xmlns:w=\"{MAIN_NAMESPACE}\">{added}</w:styles>");
+            self.write_main(STYLES_PART, xml);
+            self.merge_namespaces(STYLES_PART, &from);
+            let relationship = format!("<Relationship Id=\"rIdDocxFillStyles\" Type=\"{STYLES_RELATIONSHIP}\" Target=\"styles.xml\"/>");
+            add_relationship(self.parts, DOCUMENT_PART, "rIdDocxFillStyles", &relationship);
+            if let Some(types) = self.read_main(CONTENT_TYPES_PART).filter(|types| !types.contains("PartName=\"/word/styles.xml\"")) {
+                let added = format!("<Override PartName=\"/word/styles.xml\" ContentType=\"{STYLES_CONTENT_TYPE}\"/>");
+                self.write_main(CONTENT_TYPES_PART, insert_before_last(&types, "</Types>", &added));
+            }
+            return renamed;
+        };
+        self.write_main(STYLES_PART, insert_before_last(&main, "</w:styles>", &added));
+        self.merge_namespaces(STYLES_PART, &from);
         renamed
     }
 
