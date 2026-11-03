@@ -9,6 +9,7 @@ const DRAWING: &str = "wp:docPr";
 const BOOKMARK_START: &str = "w:bookmarkStart";
 const BOOKMARK_END: &str = "w:bookmarkEnd";
 const PARAGRAPH_ID: &str = "w14:paraId";
+const COMMENT_MARKS: &[&str] = &["w:commentRangeStart", "w:commentRangeEnd", "w:commentReference"];
 const REVISIONS: &[&str] = &[
     "w:ins", "w:del", "w:moveFrom", "w:moveTo", "w:rPrChange", "w:pPrChange", "w:sectPrChange",
     "w:tblPrChange", "w:tblPrExChange", "w:tblGridChange", "w:trPrChange", "w:tcPrChange",
@@ -52,6 +53,7 @@ struct Ids {
     paragraphs: BTreeSet<u32>,
     next_paragraph: u32,
     revisions: BTreeSet<i64>,
+    /// Every revision, bookmark and comment id, which new revision ids avoid.
     all_revisions: BTreeSet<i64>,
     next_revision: i64,
 }
@@ -73,7 +75,8 @@ impl Ids {
             if let Some(id) = read_paragraph_id(raw) {
                 ids.next_paragraph = ids.next_paragraph.max(id + 1);
             }
-            if REVISIONS.contains(name) && let Some(id) = read_revision_id(raw) {
+            let is_annotation = REVISIONS.contains(name) || COMMENT_MARKS.contains(name) || *name == BOOKMARK_START;
+            if is_annotation && let Some(id) = read_revision_id(raw) {
                 ids.all_revisions.insert(id);
             }
         }
@@ -92,6 +95,7 @@ impl Ids {
                 let id = read_number(raw, "w:id");
                 if !self.bookmarks.insert(id) {
                     self.renamed_bookmarks.insert(id, self.next_bookmark);
+                    self.all_revisions.insert(self.next_bookmark as i64);
                     edited = Some(set_attribute(raw, "w:id", &self.next_bookmark.to_string()));
                     self.next_bookmark += 1;
                 } else {
