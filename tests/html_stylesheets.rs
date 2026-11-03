@@ -66,3 +66,36 @@ fn hidden_nodes_break_adjacency() {
 
     assert!(!xml.contains("w:color") && !xml.contains("ignored"));
 }
+
+#[test]
+fn matches_ancestors_in_deep_html() {
+    const DEPTH: usize = 20_000;
+    let html = format!("<div class='root'>{}deep{}</div><p>after</p>", "<span>".repeat(DEPTH), "</span>".repeat(DEPTH));
+    let xml = render(".missing span {color:red} .root span {font-style:italic}", &html);
+    let runs = elements(&xml, "w:r");
+
+    assert!(runs[0].contains("<w:i/>") && runs[0].contains("deep"));
+    assert!(!xml.contains("w:color"));
+    assert!(runs.last().unwrap().contains("after") && !runs.last().unwrap().contains("<w:i/>"));
+}
+
+#[test]
+fn keeps_combinator_matches_in_their_branch() {
+    let sheet = ".root > p + section span {color:red} .root > p + section > span {font-weight:bold}";
+    let html = "<div class='root'><p>A</p><section><span>B</span><div><span>C</span></div></section><section><span>D</span></section></div><span>E</span>";
+    let xml = render(sheet, html);
+    let runs = elements(&xml, "w:r");
+
+    assert!(runs[1].contains("w:color w:val=\"FF0000\"") && runs[1].contains("<w:b/>"));
+    assert!(runs[2].contains("w:color w:val=\"FF0000\"") && !runs[2].contains("<w:b/>"));
+    assert!(!runs[3].contains("w:color") && !runs[4].contains("w:color"));
+}
+
+#[test]
+fn matches_the_full_selector_depth() {
+    let sheet = format!("{} {{color:red}}", std::iter::repeat_n("span", 64).collect::<Vec<_>>().join(" > "));
+    let html = format!("{}leaf{}", "<span>".repeat(64), "</span>".repeat(64));
+    assert!(render(&sheet, &html).contains("w:color w:val=\"FF0000\""));
+    let shallower = format!("{}leaf{}", "<span>".repeat(63), "</span>".repeat(63));
+    assert!(!render(&sheet, &shallower).contains("w:color"));
+}

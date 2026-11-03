@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-const MAX_SELECTOR_STEPS: usize = 64;
+const MAX_SELECTOR_STEPS: usize = u64::BITS as usize;
+// At most one MiB of matching state across all rules.
+const MAX_CACHED_MATCHES: usize = 65_536;
 const VOID_TAGS: [&str; 14] = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"];
 
 #[derive(Clone, Copy)]
@@ -18,8 +20,13 @@ struct Declaration { name: String, value: String, important: bool }
 struct Rule { selector: Selector, declarations: Vec<Declaration> }
 struct Node { tag: String, attributes: Vec<(String, String)>, parent: Option<usize>, previous: Option<usize> }
 
+#[derive(Clone, Copy, Default)]
+struct MatchedSteps { here: u64, ancestors: u64 }
+
 pub(super) struct Cascade {
     rules: Vec<Rule>,
+    matches: Vec<Vec<MatchedSteps>>,
+    cache_node_limit: usize,
     nodes: Vec<Node>,
     stack: Vec<usize>,
     last_children: BTreeMap<Option<usize>, usize>,
@@ -27,13 +34,28 @@ pub(super) struct Cascade {
 
 impl Cascade {
     pub(super) fn new(sheets: &[&str]) -> Self {
-        Self { rules: sheets.iter().flat_map(|sheet| recover_rules(sheet)).collect(), nodes: Vec::new(), stack: Vec::new(), last_children: BTreeMap::new() }
+        let rules: Vec<_> = sheets.iter().flat_map(|sheet| recover_rules(sheet)).collect();
+        let matches = (0..rules.len()).map(|_| Vec::new()).collect();
+        let cache_node_limit = MAX_CACHED_MATCHES / rules.len().max(1);
+        Self { rules, matches, cache_node_limit, nodes: Vec::new(), stack: Vec::new(), last_children: BTreeMap::new() }
     }
 
     pub(super) fn open(&mut self, tag: &str, attributes: &[(String, String)]) -> String {
         let parent = self.stack.last().copied();
         let index = self.nodes.len();
         self.nodes.push(Node { tag: tag.to_string(), attributes: attributes.to_vec(), parent, previous: self.last_children.insert(parent, index) });
+        if index < self.cache_node_limit {
+            let node = &self.nodes[index];
+            for (rule, matches) in self.rules.iter().zip(&mut self.matches) {
+                if matches.len() == matches.capacity() {
+                    let capacity = (matches.capacity().max(1) * 2).min(self.cache_node_limit);
+                    matches.reserve_exact(capacity - matches.len());
+                }
+                let parent = node.parent.map(|index| matches[index]).unwrap_or_default();
+                let previous = node.previous.map(|index| matches[index]).unwrap_or_default();
+                matches.push(match_node(&rule.selector, node, parent, previous));
+            }
+        }
         if !VOID_TAGS.contains(&tag) { self.stack.push(index); }
         self.style_current(attributes)
     }
@@ -42,7 +64,10 @@ impl Cascade {
         let index = self.nodes.len() - 1;
         let mut values = BTreeMap::new();
         for (order, rule) in self.rules.iter().enumerate() {
-            if !matches_selector(&rule.selector, &self.nodes, index) { continue; }
+            let last_step = 1_u64 << (rule.selector.steps.len() - 1);
+            let matched = self.matches[order].get(index).map(|state| state.here & last_step != 0)
+                .unwrap_or_else(|| matches_selector(&rule.selector, &self.nodes, index));
+            if !matched { continue; }
             for (at, declaration) in rule.declarations.iter().enumerate() {
                 let rank = (declaration.important, rule.selector.specificity, order, at);
                 if values.get(&declaration.name).is_none_or(|(previous, _)| rank >= *previous) {
@@ -69,6 +94,21 @@ impl Cascade {
     pub(super) fn close(&mut self, tag: &str) {
         if let Some(at) = self.stack.iter().rposition(|index| self.nodes[*index].tag == tag) { self.stack.truncate(at); }
     }
+}
+
+/// Each bit records a matching selector prefix. Ancestor results include this node.
+fn match_node(selector: &Selector, node: &Node, parent: MatchedSteps, previous: MatchedSteps) -> MatchedSteps {
+    let mut here = 0;
+    for (index, step) in selector.steps.iter().enumerate() {
+        if !matches_simple(&step.simple, node) { continue; }
+        let linked = index == 0 || {
+            let prefix = 1_u64 << (index - 1);
+            let source = match step.relation { Relation::Child => parent.here, Relation::Adjacent => previous.here, Relation::Descendant => parent.ancestors };
+            source & prefix != 0
+        };
+        if linked { here |= 1_u64 << index; }
+    }
+    MatchedSteps { here, ancestors: parent.ancestors | here }
 }
 
 pub(super) fn validate_sheet(sheet: &str) -> Result<(), String> { read_rules(sheet).map(|_| ()) }
@@ -303,4 +343,21 @@ fn matches_simple(simple: &Simple, node: &Node) -> bool {
         AttrMatch::Suffix => !wanted.value.is_empty() && value.ends_with(&wanted.value),
         AttrMatch::Contains => !wanted.value.is_empty() && value.contains(&wanted.value),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cascade, MAX_CACHED_MATCHES};
+
+    #[test]
+    fn matches_after_the_cache_limit() {
+        let mut cascade = Cascade::new(&[".root span {color:red} .missing span {font-weight:bold}"]);
+        cascade.open("div", &[("class".into(), "root".into())]);
+        for _ in 0..MAX_CACHED_MATCHES / 2 {
+            assert_eq!(cascade.open("span", &[]), "color:red;");
+        }
+        assert!(cascade.matches.iter().map(Vec::capacity).sum::<usize>() <= MAX_CACHED_MATCHES);
+        cascade.close("div");
+        assert_eq!(cascade.open("span", &[]), "");
+    }
 }
