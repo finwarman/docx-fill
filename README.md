@@ -68,6 +68,8 @@ HTML `<img>` data URLs support PNG, JPEG, GIF and SVG. Inline `<svg>` also embed
 
 HTML table cells support combined `rowspan` and `colspan`. Vertical spans keep later cells in their columns and stop at the table's final row.
 
+HTML tables default to at most six inches within the section column or enclosing cell's inner width. Explicit table widths and fully specified cell widths can exceed that default. Nested tables subtract the parent cell's padding. Default cell padding is 55/45/55/55twips (top/left/bottom/right), with 0.25pt borders; these are renderer defaults. CSS and HTML widths, column widths, `cellpadding`, cell padding, table margins and borders override those defaults. `table-layout: fixed` fixes the grid; otherwise Word may adjust preferred widths for content. Tables in unequal page columns use the first column's width.
+
 HTML CSS maps margins and padding to paragraph spacing/indents or table-cell margins. It also reads line height, text indentation, cell vertical alignment, page-break boundaries, `white-space: pre` and `direction`. Lengths accept `px`, `pt` and `em`; line height also accepts a multiplier or percentage. This is a Word layout mapping, not a full CSS box model.
 
 `FillOptions::html_style_sheet` (`htmlStyleSheet` in JSON) and HTML `<style>` elements provide style rules. Selectors support elements, `*`, classes, IDs, selector lists, descendants, children, adjacent siblings and attribute tests. Cascade order, specificity and `!important` apply; inline styles win at equal importance. Pseudo-selectors, namespace selectors and CSS escapes are not supported. Selector chains are limited to 64 steps.

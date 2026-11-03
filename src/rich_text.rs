@@ -22,6 +22,8 @@ pub(crate) mod numbering;
 pub(crate) mod headings;
 mod css;
 mod preserve;
+mod table;
+use table::{CellLayout, TableLayout};
 pub(crate) mod images;
 use numbering::Numberings;
 
@@ -51,9 +53,6 @@ const RAW_INLINE: &str = "docx-fill-inline";
 const RAW_BLOCK: &str = "docx-fill-block";
 const RAW_TAG_ATTRIBUTE: &str = "data-docx-fill-tag";
 const STYLE_ATTRIBUTE: &str = "data-docx-fill-style";
-const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
-// Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
-const TABLE_COLUMN_TWIPS: u32 = 2000;
 // Writing and dropping a table recurses, and a value decides how deep it goes.
 const MAX_TABLE_DEPTH: usize = 32;
 /// Word's column limit, so a user's `colspan` cannot grow the output without bound.
@@ -69,6 +68,7 @@ pub(crate) struct RichValue {
     pub block_mode: crate::HtmlBlockMode,
     pub raw: Vec<crate::HtmlFragment>,
     pub headings: Option<Arc<headings::Headings>>,
+    pub container_width: u32,
 }
 
 pub(crate) enum ImageMode { Embed, Ignore }
@@ -144,6 +144,7 @@ struct Block {
     quote_level: u32,
     is_rule: bool,
     table: Option<Vec<Vec<Cell>>>,
+    table_layout: Option<TableLayout>,
     layout: ParagraphLayout,
     raw_xml: Option<String>,
     paragraph_style: Option<String>,
@@ -171,16 +172,6 @@ impl ParagraphLayout {
         let add = |outer: Option<i64>, inner: Option<i64>| if outer.is_none() && inner.is_none() { None } else { Some(outer.unwrap_or(0).saturating_add(inner.unwrap_or(0))) };
         Self { left: add(self.left, inner.left), right: add(self.right, inner.right), ..self.and(inner) }
     }
-}
-
-#[derive(Debug, Clone, Default)]
-struct CellLayout { margins: [Option<i64>; 4], vertical: Option<CellVertical> }
-
-#[derive(Debug, Clone, Copy)]
-enum CellVertical { Top, Center, Bottom }
-
-impl CellVertical {
-    fn as_str(self) -> &'static str { match self { Self::Top => "top", Self::Center => "center", Self::Bottom => "bottom" } }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -211,6 +202,7 @@ struct BlockWriter<'a, 'n> {
     run_props: &'a str,
     links: &'a mut Vec<String>,
     lists: ListWriter<'n>,
+    width: u32,
 }
 
 #[derive(Default)]
@@ -330,7 +322,7 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
 
         // Alone in its paragraph: the paragraph becomes the value's paragraphs.
         if is_block && !blocks.is_empty() {
-            return write_blocks(&paragraph, &blocks, run_props, links, continued, numbering);
+            return write_blocks(&paragraph, &blocks, run_props, links, continued, numbering, value.container_width);
         }
 
         // Beside other text: the runs go where the tag was, joined by breaks.
@@ -409,13 +401,13 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
 }
 
 /// The paragraph as the value's paragraphs, in place of its own.
-fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>) -> String {
+fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>, width: u32) -> String {
     let open = &paragraph[..paragraph.find('>').map_or(0, |at| at + 1)];
     let paragraph_props = find_element(paragraph, "w:pPr").unwrap_or("");
     let bookmarks = find_bookmarks(paragraph);
     let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
     let mut out = String::new();
-    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new(), marker_font: MarkerFont::from_run(run_props) } };
+    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new(), marker_font: MarkerFont::from_run(run_props) }, width };
     // A section break belongs to the last paragraph only.
     let has_section = find_element_start(paragraph_props, "<w:sectPr").is_some();
     let body_props = if has_section { preserve::without(paragraph_props, "w:sectPr") } else { paragraph_props.to_string() };
@@ -465,48 +457,7 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
         out.push_str(&format!("{open}{}{bookmarks}{}{after}</w:p>", write_paragraph_props(paragraph_props, block, number, writer.run_props), write_runs(block, writer.run_props, writer.links, number)));
         return;
     };
-    let rows = place_cells(rows);
-    let columns = rows.iter().map(|row| row.iter().map(|cell| cell.span).sum::<usize>()).max().unwrap_or(1).max(1);
-    out.push_str(&format!("<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/>{TABLE_BORDERS}</w:tblPr><w:tblGrid>"));
-    for _ in 0..columns {
-        out.push_str(&format!("<w:gridCol w:w=\"{TABLE_COLUMN_TWIPS}\"/>"));
-    }
-    out.push_str("</w:tblGrid>");
-    for row in rows {
-        out.push_str("<w:tr>");
-        let mut used = 0;
-        for cell in row {
-            out.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/>");
-            if cell.span > 1 {
-                out.push_str(&format!("<w:gridSpan w:val=\"{}\"/>", cell.span));
-            }
-            match cell.merge {
-                CellMerge::Start => out.push_str("<w:vMerge w:val=\"restart\"/>"),
-                CellMerge::Continue => out.push_str("<w:vMerge/>"),
-                CellMerge::None => {}
-            }
-            let margins: String = CELL_SIDES.into_iter().zip(cell.layout.margins).filter_map(|(side, value)| value.map(|value| format!("<w:{side} w:w=\"{}\" w:type=\"dxa\"/>", value.max(0)))).collect();
-            if !margins.is_empty() { out.push_str(&format!("<w:tcMar>{margins}</w:tcMar>")); }
-            if let Some(vertical) = cell.layout.vertical { out.push_str(&format!("<w:vAlign w:val=\"{}\"/>", vertical.as_str())); }
-            out.push_str("</w:tcPr>");
-            for (index, block) in cell.blocks.iter().enumerate() {
-                if follows_table(cell.blocks, index) {
-                    out.push_str("<w:p/>");
-                }
-                write_block(out, "<w:p>", "", "", block, writer);
-            }
-            if cell.blocks.last().is_none_or(|block| block.table.is_some()) {
-                out.push_str("<w:p/>");
-            }
-            out.push_str("</w:tc>");
-            used += cell.span;
-        }
-        for _ in used..columns {
-            out.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr><w:p/></w:tc>");
-        }
-        out.push_str("</w:tr>");
-    }
-    out.push_str("</w:tbl>");
+    table::write(out, rows, block.table_layout.as_ref().expect("table layout accompanies rows"), writer);
 }
 
 /// Whether a table follows another table, which Word would merge into it.
@@ -774,7 +725,7 @@ struct Reader {
     formats: StyleStack<Format>,
     containers: StyleStack<Container>,
     /// Open tables: how many collections were open before each, and its rows.
-    tables: Vec<(usize, Vec<Vec<Cell>>)>,
+    tables: Vec<(usize, Vec<Vec<Cell>>, TableLayout)>,
     /// Open tables past `MAX_TABLE_DEPTH`, printed as part of the table around them.
     ignored_tables: usize,
     spaces: SpaceEdges,
@@ -861,7 +812,7 @@ impl Reader {
 
     /// Ends the open cell, if any, giving it the blocks collected in it.
     fn close_cell(&mut self) {
-        let Some((depth, rows)) = self.tables.last_mut() else { return };
+        let Some((depth, rows, _)) = self.tables.last_mut() else { return };
         if self.collections.len() <= *depth + 1 {
             return;
         }
@@ -1290,7 +1241,7 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
                     return true;
                 }
                 let depth = reader.collections.len() - 1;
-                reader.tables.push((depth, Vec::new()));
+                reader.tables.push((depth, Vec::new(), table::read_table(attributes)));
                 return true;
             }
             if reader.ignored_tables > 0 {
@@ -1298,8 +1249,8 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
                 return true;
             }
             reader.close_cell();
-            if let Some((_, rows)) = reader.tables.pop() {
-                reader.blocks().push(Block { table: Some(rows), ..Block::default() });
+            if let Some((_, rows, table_layout)) = reader.tables.pop() {
+                reader.blocks().push(Block { table: Some(rows), table_layout: Some(table_layout), ..Block::default() });
             }
             reader.current = None;
             true
@@ -1308,7 +1259,7 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
         "tr" | "td" | "th" if reader.tables.is_empty() => true,
         "tr" => {
             reader.close_cell();
-            if let (false, Some((_, rows))) = (is_closing, reader.tables.last_mut()) {
+            if let (false, Some((_, rows, _))) = (is_closing, reader.tables.last_mut()) {
                 rows.push(Vec::new());
             }
             true
@@ -1318,13 +1269,11 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
             if !is_closing {
                 let span = read_attribute(attributes, "colspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, MAX_COLUMN_SPAN);
                 let row_span = read_attribute(attributes, "rowspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1);
-                if let Some((_, rows)) = reader.tables.last_mut() {
+                if let Some((_, rows, _)) = reader.tables.last_mut() {
                     if rows.is_empty() {
                         rows.push(Vec::new());
                     }
-                    let margins = CELL_SIDES.map(|side| read_style(attributes, &format!("padding-{side}")).and_then(|value| css_twips(value, DEFAULT_FONT_POINTS)));
-                    let vertical = read_style(attributes, "vertical-align").and_then(|value| match value { "top" => Some(CellVertical::Top), "middle" | "center" => Some(CellVertical::Center), "bottom" => Some(CellVertical::Bottom), _ => None });
-                    rows.last_mut().expect("pushed above").push(Cell { span, row_span, blocks: Vec::new(), layout: CellLayout { margins, vertical } });
+                    rows.last_mut().expect("pushed above").push(Cell { span, row_span, blocks: Vec::new(), layout: table::read_cell(attributes) });
                 }
                 reader.collections.push(Vec::new());
                 reader.current = None;
@@ -1338,7 +1287,11 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
             reader.formats.close(tag);
             true
         }
-        "thead" | "tbody" | "tfoot" | "col" | "colgroup" | "caption" | "img" | "svg" | "script" | "style" | "template" => true,
+        "col" => {
+            if !is_closing && let Some((_, _, layout)) = reader.tables.last_mut() { table::read_column(layout, attributes); }
+            true
+        }
+        "thead" | "tbody" | "tfoot" | "colgroup" | "caption" | "img" | "svg" | "script" | "style" | "template" => true,
         _ => false,
     }
 }

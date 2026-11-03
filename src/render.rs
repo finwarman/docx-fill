@@ -591,7 +591,7 @@ impl<'a> Render<'a, '_> {
                             }
                         }
                         TagKind::Footnote => self.print_footnote(value, tag.run_props.as_deref()),
-                        TagKind::RichText { is_block } => {
+                        TagKind::RichText { is_block, container_width } => {
                             let html = value.and_then(Value::as_str).unwrap_or_default().to_string();
                             let image_mode = if self.template.html_images { rich_text::ImageMode::Embed } else { rich_text::ImageMode::Ignore };
                             let mut prepared = rich_text::prepare_html(&html, &self.template.html_options, &self.template.html_style_sheet, image_mode, self.hooks);
@@ -617,7 +617,9 @@ impl<'a> Render<'a, '_> {
                             let is_block = is_block || (prepared.has_block && matches!(self.template.html_options.on_invalid_block, crate::HtmlBlockMode::Block | crate::HtmlBlockMode::Preserve));
                             self.state.has_headings |= is_block && prepared.has_headings;
                             self.out.push_str(&rich_text::mark(self.rich_values.len()));
-                            self.rich_values.push(RichValue { html: prepared.html, raw: prepared.raw, is_block, block_mode: self.template.html_options.on_invalid_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone(), headings: self.state.headings.clone() });
+                            let container_width = container_width.unwrap_or_else(|| body_or_default(self.template.body.or(self.state.body)).0);
+                            let container_width = (container_width / crate::template::PX_PER_TWIP).round().clamp(1.0, i32::MAX as f64) as u32;
+                            self.rich_values.push(RichValue { html: prepared.html, raw: prepared.raw, container_width, is_block, block_mode: self.template.html_options.on_invalid_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone(), headings: self.state.headings.clone() });
                             if let Some(paragraph) = self.paragraphs.last_mut() {
                                 paragraph.has_rich_text = true;
                             }
