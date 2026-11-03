@@ -148,3 +148,15 @@ fn numbers_the_tag_bookmark_on_later_paragraphs() {
     let xml = fill_html("<p>a</p><p>b</p>", "");
     assert!(!xml.contains("scope_tag_0_1"));
 }
+
+#[test]
+fn keeps_run_properties_in_schema_order() {
+    let tag = r#"<w:p><w:r><w:rPr><w:lang w:val="en-GB"/></w:rPr><w:t>{~~html}</w:t></w:r></w:p>"#;
+    let heading = fill(tag, json!({ "html": "<h1>T</h1>" }));
+    let mut options = docx_fill::FillOptions::default();
+    options.extensions.html_extras = false;
+    let underline = common::fill_with(tag, json!({ "html": "<p><u>U</u></p>" }), &options);
+
+    assert!(heading.contains(r#"<w:sz w:val="32"/><w:szCs w:val="32"/><w:lang w:val="en-GB"/>"#), "{heading}");
+    assert!(underline.contains(r#"<w:u w:val="single"/><w:lang w:val="en-GB"/>"#), "{underline}");
+}

@@ -99,3 +99,13 @@ fn ignores_empty_inline_neighbors() {
 
     assert_eq!(paragraph_texts(&xml), ["A"]);
 }
+
+#[test]
+fn keeps_tabs_beside_inline_values() {
+    for body in ["<w:p><w:r><w:t>A</w:t><w:tab/><w:t>{~html}</w:t></w:r></w:p>", "<w:p><w:r><w:t>A</w:t><w:tab/><w:t>{~html}{~html}</w:t><w:tab/><w:t>B</w:t></w:r></w:p>"] {
+        let xml = fill(body, json!({ "html": "<b>x</b>" }));
+
+        assert_eq!(xml.matches("<w:tab/>").count(), body.matches("<w:tab/>").count(), "{xml}");
+        assert!(xml.contains("<w:t xml:space=\"preserve\">A</w:t><w:tab/>") || xml.contains("<w:t>A</w:t><w:tab/>"), "{xml}");
+    }
+}

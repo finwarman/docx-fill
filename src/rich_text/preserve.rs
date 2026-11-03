@@ -119,7 +119,7 @@ fn paragraph_layout(props: &str, is_numbered: bool) -> String {
     if is_numbered { without(props, "w:numPr") } else { props.to_string() }
 }
 
-fn without(props: &str, name: &str) -> String {
+pub(super) fn without(props: &str, name: &str) -> String {
     let Some(start) = find_element_start(props, &format!("<{name}")) else { return props.to_string() };
     let Some(end) = crate::properties::find_element_end(props, start, name) else { return props.to_string() };
     format!("{}{}", &props[..start], &props[end..])
