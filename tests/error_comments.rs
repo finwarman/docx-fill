@@ -120,6 +120,52 @@ fn annotates_many_errors_in_linear_time() {
 }
 
 #[test]
+fn annotates_many_errors_in_one_paragraph() {
+    let piece = format!("{} }}", "x".repeat(64));
+    for body in [paragraph(&[&piece.repeat(5_000)]), paragraph(&vec![piece.as_str(); 5_000])] {
+        let parts = parts(&body, "");
+        let error = PackageTemplate::parse(parts.clone(), &FillOptions::default()).unwrap_err();
+        let mut document = FilledDocument::new(parts);
+        let started = std::time::Instant::now();
+
+        assert_eq!(document.annotate_errors(&error, &CommentDefaults::default()).unwrap(), 5_000);
+        assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+        let output: BTreeMap<_, _> = document.into_parts().into_iter().collect();
+        let body = String::from_utf8_lossy(&output["word/document.xml"]);
+        assert_eq!(body.matches("<w:commentRangeStart ").count(), 5_000);
+        assert_eq!(body.matches("<w:commentRangeEnd ").count(), 5_000);
+        assert_eq!(body.matches("<w:commentReference ").count(), 5_000);
+    }
+}
+
+#[test]
+fn locates_entities_across_controls() {
+    let body = "<w:p><w:r><w:t>é &amp; {b</w:t><w:tab/><w:t>&#x61;d</w:t></w:r></w:p>";
+    let parts = parts(body, "");
+    let error = PackageTemplate::parse(parts.clone(), &FillOptions::default()).unwrap_err();
+    let mut document = FilledDocument::new(parts);
+
+    assert_eq!(document.annotate_errors(&error, &CommentDefaults::default()).unwrap(), 1);
+    assert_eq!(document.comments()[0].range.text, "{b\tad");
+}
+
+#[test]
+fn keeps_overlapping_error_ranges() {
+    let parts = parts(&paragraph(&["{bad"]), "");
+    let outer = PackageTemplate::parse(parts.clone(), &FillOptions::default()).unwrap_err();
+    let mut inner = outer.clone();
+    inner.offset = Some(1);
+    inner.tag = Some("bad".into());
+    let mut errors = outer.clone();
+    errors.errors = vec![outer, inner.clone(), inner].into_boxed_slice();
+    let mut document = FilledDocument::new(parts);
+
+    assert_eq!(document.annotate_errors(&errors, &CommentDefaults::default()).unwrap(), 3);
+    let comments = document.comments();
+    assert_eq!(comments.iter().map(|comment| comment.range.text.as_str()).collect::<Vec<_>>(), ["{bad", "bad", "bad"]);
+}
+
+#[test]
 fn marks_only_a_duplicate_close() {
     let parts = parts(&paragraph(&["{a}} then a"]), "");
     let error = PackageTemplate::parse(parts.clone(), &FillOptions::default()).unwrap_err();

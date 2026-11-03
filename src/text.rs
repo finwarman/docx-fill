@@ -4,7 +4,7 @@
 //! tab and `<w:br/>` or `<w:cr/>` as a line break.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::comments::{COMMENTS_PART, Comment, CommentDefaults, add_comments};
 use crate::properties::set_attribute;
@@ -68,6 +68,7 @@ struct Piece {
 #[derive(Default)]
 struct Paragraph {
     text: String,
+    length: usize,
     pieces: Vec<Piece>,
     insertion: Option<Insertion>,
 }
@@ -93,7 +94,64 @@ struct AnnotatedPart<'e> {
     name: &'e str,
     xml: String,
     body: BodyText,
-    ranges: Vec<(TextRange, String)>,
+    locations: BTreeMap<usize, ErrorText>,
+    ranges: Vec<Annotation>,
+}
+
+struct Annotation {
+    paragraph: usize,
+    first: ErrorCharacter,
+    last: ErrorCharacter,
+    message: String,
+}
+
+/// Text-only coordinates used by parser diagnostics, indexed once per paragraph.
+struct ErrorText {
+    text: String,
+    characters: Vec<ErrorCharacter>,
+}
+
+#[derive(Clone, Copy)]
+struct ErrorCharacter {
+    source: usize,
+    text: usize,
+    piece: usize,
+    raw: (usize, usize),
+}
+
+impl ErrorText {
+    fn read(xml: &str, paragraph: &Paragraph) -> Self {
+        let mut result = Self { text: String::new(), characters: Vec::new() };
+        let mut source = 0;
+        for (piece_index, piece) in paragraph.pieces.iter().enumerate() {
+            if piece.text_open.is_none() { continue; }
+            let raw = &xml[piece.raw.0..piece.raw.1];
+            let mut at = 0;
+            for ch in piece.text.chars() {
+                let start = at;
+                let entity = raw[at..].strip_prefix('&').and_then(|rest| rest.find(';').map(|end| end + 2))
+                    .filter(|length| unescape(&raw[at..at + length]).chars().eq([ch]));
+                at += entity.unwrap_or(ch.len_utf8());
+                result.characters.push(ErrorCharacter { source: source + start, text: result.text.len(), piece: piece_index, raw: (piece.raw.0 + start, piece.raw.0 + at) });
+                result.text.push(ch);
+            }
+            source += raw.len();
+        }
+        result
+    }
+
+    fn range(&self, error: &FillError) -> Option<(ErrorCharacter, ErrorCharacter)> {
+        let first = self.characters.binary_search_by_key(&error.offset?, |ch| ch.source).ok()?;
+        let start = self.characters[first];
+        if matches!(error.id, crate::FillErrorId::UnopenedTag | crate::FillErrorId::DuplicateCloseTag) {
+            return Some((start, start));
+        }
+        let Some(tag) = error.tag.as_deref().filter(|tag| !tag.is_empty()) else { return Some((start, start)) };
+        let tail = &self.text[start.text..];
+        let end = start.text + tail.find(tag)? + tag.len();
+        let last = self.characters.partition_point(|ch| ch.text < end).checked_sub(1)?;
+        Some((start, self.characters[last]))
+    }
 }
 
 /// A change to the body XML: replace bytes `start..end` with `text`.
@@ -195,23 +253,28 @@ impl FilledDocument {
             if !parts.iter().any(|part| part.name == name) {
                 let Some(xml) = self.read_part(name) else { continue };
                 let body = read_body_text(&xml);
-                parts.push(AnnotatedPart { name, xml, body, ranges: Vec::new() });
+                parts.push(AnnotatedPart { name, xml, body, locations: BTreeMap::new(), ranges: Vec::new() });
             }
             let part = parts.iter_mut().find(|part| part.name == name).expect("part read above");
-            let Some(range) = error_range(&part.xml, &part.body, error) else { continue };
-            part.ranges.push((range, format!("{}: {}", error.id.as_str(), error.message)));
+            let Some(paragraph) = error.paragraph.filter(|index| *index < part.body.paragraphs.len()) else { continue };
+            let locations = part.locations.entry(paragraph).or_insert_with(|| ErrorText::read(&part.xml, &part.body.paragraphs[paragraph]));
+            let Some((first, last)) = locations.range(error) else { continue };
+            part.ranges.push(Annotation { paragraph, first, last, message: format!("{}: {}", error.id.as_str(), error.message) });
         }
 
         let written = read_comments(&self.read_part(COMMENTS_PART).unwrap_or_default());
         let marks = parts.iter().flat_map(|part| part.body.marks.iter().map(|mark| mark.id));
         let mut id = written.iter().map(|comment| comment.0).chain(marks).max().map_or(0, |max| max + 1);
         let mut comments = Vec::new();
-        for AnnotatedPart { name, xml, body, ranges } in &parts {
+        for AnnotatedPart { name, xml, body, ranges, .. } in &parts {
             let mut opens = BTreeSet::new();
             let mut edits = Vec::new();
-            for (range, message) in ranges {
-                edits.extend(comment_edits(xml, &body.paragraphs[range.start.paragraph], range, id, &mut opens));
-                comments.push(Comment { id, text: message.clone(), author: by.author.clone(), initials: by.initials.clone(), date: by.date.clone() });
+            for range in ranges {
+                let paragraph = &body.paragraphs[range.paragraph];
+                let (start, end) = comment_marks(id);
+                edits.extend(split_piece(xml, &paragraph.pieces[range.first.piece], range.first.raw.0, &start, &mut opens));
+                edits.extend(split_piece(xml, &paragraph.pieces[range.last.piece], range.last.raw.1, &end, &mut opens));
+                comments.push(Comment { id, text: range.message.clone(), author: by.author.clone(), initials: by.initials.clone(), date: by.date.clone() });
                 id += 1;
             }
             if let Some((_, bytes)) = self.parts.iter_mut().find(|(each, _)| each == name) {
@@ -282,43 +345,14 @@ impl FilledDocument {
 
 /// The edits that mark a checked, nonempty one-paragraph range as comment `id`'s.
 fn comment_edits(xml: &str, paragraph: &Paragraph, range: &TextRange, id: u32, opens: &mut BTreeSet<usize>) -> Vec<XmlEdit> {
-    let start_mark = format!("<w:commentRangeStart w:id=\"{id}\"/>");
-    let end_mark = format!("<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:rPr><w:rStyle w:val=\"CommentReference\"/></w:rPr><w:commentReference w:id=\"{id}\"/></w:r>");
+    let (start_mark, end_mark) = comment_marks(id);
     let mut edits = split_at(xml, paragraph, range.start.offset, &start_mark, true, opens);
     edits.extend(split_at(xml, paragraph, range.end.offset, &end_mark, false, opens));
     edits
 }
 
-fn error_range(xml: &str, body: &BodyText, error: &FillError) -> Option<TextRange> {
-    let index = error.paragraph?;
-    let paragraph = body.paragraphs.get(index)?;
-    let mut remaining = error.offset?;
-    let mut start = None;
-    for piece in &paragraph.pieces {
-        if piece.text_open.is_none() { continue; }
-        let raw = &xml[piece.raw.0..piece.raw.1];
-        if remaining < raw.len() {
-            let prefix = raw.get(..remaining)?;
-            start = Some(piece.offset + unescape(prefix).chars().count());
-            break;
-        }
-        remaining -= raw.len();
-    }
-    let start = start?;
-    let chars: Vec<_> = paragraph.text.chars().collect();
-    if start >= chars.len() { return None; }
-    // Parser tags join text runs without Word tabs or breaks. Keep their paragraph positions.
-    let text: Vec<_> = paragraph.pieces.iter().filter(|piece| piece.text_open.is_some())
-        .flat_map(|piece| piece.text.chars().enumerate().map(move |(index, ch)| (piece.offset + index, ch)))
-        .filter(|(offset, _)| *offset >= start).collect();
-    let tail: String = text.iter().map(|(_, ch)| ch).collect();
-    let end = match error.tag.as_deref().filter(|tag| !tag.is_empty()) {
-        // These name the text before the stray delimiter, so they mark the delimiter alone.
-        _ if matches!(error.id, crate::FillErrorId::UnopenedTag | crate::FillErrorId::DuplicateCloseTag) => start + 1,
-        Some(tag) => text.get(tail[..tail.find(tag)? + tag.len()].chars().count() - 1)?.0 + 1,
-        None => start + 1,
-    };
-    Some(TextRange { start: TextPosition { paragraph: index, offset: start }, end: TextPosition { paragraph: index, offset: end }, text: chars[start..end].iter().collect() })
+fn comment_marks(id: u32) -> (String, String) {
+    (format!("<w:commentRangeStart w:id=\"{id}\"/>"), format!("<w:commentRangeEnd w:id=\"{id}\"/><w:r><w:rPr><w:rStyle w:val=\"CommentReference\"/></w:rPr><w:commentReference w:id=\"{id}\"/></w:r>"))
 }
 
 fn read_body_text(xml: &str) -> BodyText {
@@ -368,12 +402,12 @@ fn read_body_text(xml: &str) -> BodyText {
                 };
                 let is_start = name == "w:commentRangeStart";
                 let position = match open.last() {
-                    Some(&(index, _)) => TextPosition { paragraph: index, offset: body.paragraphs[index].text.chars().count() },
+                    Some(&(index, _)) => TextPosition { paragraph: index, offset: body.paragraphs[index].length },
                     // Between paragraphs, a start marks the next one and an end the last.
                     None if is_start => TextPosition { paragraph: body.paragraphs.len(), offset: 0 },
                     None => {
                         let paragraph = body.paragraphs.len().saturating_sub(1);
-                        TextPosition { paragraph, offset: body.paragraphs.get(paragraph).map_or(0, |each| each.text.chars().count()) }
+                        TextPosition { paragraph, offset: body.paragraphs.get(paragraph).map_or(0, |each| each.length) }
                     }
                 };
                 body.marks.push(Mark { id, is_start, xml: (at, at + length), position });
@@ -388,7 +422,8 @@ fn read_body_text(xml: &str) -> BodyText {
 fn push_piece(body: &mut BodyText, open: &[(usize, usize)], runs: &[Option<(usize, usize)>], raw: (usize, usize), text_open: Option<(usize, usize)>, text: String) {
     let Some(&(index, _)) = open.last() else { return };
     let paragraph = &mut body.paragraphs[index];
-    let offset = paragraph.text.chars().count();
+    let offset = paragraph.length;
+    paragraph.length += text.chars().count();
     paragraph.text.push_str(&text);
     paragraph.pieces.push(Piece { offset, raw, text_open, run_props: runs.last().copied().flatten(), text });
 }
@@ -502,12 +537,14 @@ fn split_at(xml: &str, paragraph: &Paragraph, offset: usize, mark: &str, is_star
         paragraph.pieces.iter().find(|piece| piece.offset < offset && offset <= piece.offset + piece.text.chars().count())
     }
     .expect("checked range has a piece at each end");
+    let at = if piece.text_open.is_some() { piece.raw.0 + byte_at_char(&xml[piece.raw.0..piece.raw.1], offset - piece.offset) }
+        else if is_start { piece.raw.0 } else { piece.raw.1 };
+    split_piece(xml, piece, at, mark, opens)
+}
+
+fn split_piece(xml: &str, piece: &Piece, at: usize, mark: &str, opens: &mut BTreeSet<usize>) -> Vec<XmlEdit> {
     let props = piece.run_props.map_or("", |(start, end)| &xml[start..end]);
-    let Some(open) = piece.text_open else {
-        let at = if is_start { piece.raw.0 } else { piece.raw.1 };
-        return vec![(at, at, format!("</w:r>{mark}<w:r>{props}"))];
-    };
-    let at = piece.raw.0 + byte_at_char(&xml[piece.raw.0..piece.raw.1], offset - piece.offset);
+    let Some(open) = piece.text_open else { return vec![(at, at, format!("</w:r>{mark}<w:r>{props}"))] };
     let mut edits = vec![(at, at, format!("</w:t></w:r>{mark}<w:r>{props}<w:t xml:space=\"preserve\">"))];
     edits.extend(preserve_spaces(xml, open, opens));
     edits
