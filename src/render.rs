@@ -227,7 +227,7 @@ impl Template {
     }
 
     fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (String, Vec<crate::FillError>) {
-        let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id + 1, next_caption: 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
+        let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id.wrapping_add(1), next_caption: 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
         let filled = self.fill(data, "", hooks, &mut state);
         let errors = filled.html_errors;
         // Only a package prints subtemplates.
@@ -381,7 +381,7 @@ impl<'a> Render<'a, '_> {
                     let body = body_or_default(self.template.body.or(self.state.body));
                     let Some(grid) = self.look_up(scopes, name).and_then(|value| Grid::read(value, body)) else { continue };
                     let columns = grid.columns();
-                    for (index, items) in grid.items.chunks(grid.rows * columns).enumerate() {
+                    for (index, items) in grid.items.chunks(grid.rows.saturating_mul(columns)).enumerate() {
                         grid.write_table_start(&mut self.out, index);
                         for row in items.chunks(columns) {
                             grid.write_row_start(&mut self.out);
@@ -647,7 +647,7 @@ impl<'a> Render<'a, '_> {
         let replacement = replacement.or_else(|| frame.source_properties.as_deref().and_then(|properties| self.read_qr_picture(properties, start, _scopes)));
         let Some(replacement) = replacement else { return };
         let id = self.state.next_drawing_id;
-        self.state.next_drawing_id += 1;
+        self.state.next_drawing_id = id.wrapping_add(1);
         let mut media = MediaUse::for_image(replacement.image);
         media.relationship_id = format!("rIdDocxFillReplacement_{id}");
         media.target = format!("media/replacements/{id}.{}", media.image.extension);
@@ -843,7 +843,7 @@ impl<'a> Render<'a, '_> {
         } else { None };
         let media = MediaUse::for_image(image);
         let id = self.state.next_drawing_id;
-        self.state.next_drawing_id += 1;
+        self.state.next_drawing_id = id.wrapping_add(1);
 
         let displayed = fallback.as_ref().unwrap_or(&media);
         let svg = fallback.as_ref().map(|_| media.relationship_id.as_str());

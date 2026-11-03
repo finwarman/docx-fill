@@ -15,6 +15,8 @@ const TWIPS_PER_PAGE_PX: f64 = 1440.0 / 96.0;
 const PAGE_BREAK: &str = "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>";
 // Word merges two tables with nothing between them, so chunks keep an empty paragraph apart.
 const SEPARATOR: &str = "<w:p/>";
+// Word's column limit.
+const MAX_COLUMNS: usize = 63;
 const SIDES: [(&str, &str); 6] = [("top", "top"), ("left", "left"), ("bottom", "bottom"), ("right", "right"), ("insideh", "insideH"), ("insidev", "insideV")];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -99,7 +101,7 @@ impl Layout {
     }
 
     fn write_start(&self, out: &mut String) {
-        let total: u64 = self.columns.iter().sum();
+        let total = self.columns.iter().fold(0, |sum: u64, width| sum.saturating_add(*width));
         out.push_str(&format!("<w:tbl><w:tblPr><w:tblW w:w=\"{total}\" w:type=\"dxa\"/>"));
         if let Some(align) = self.align {
             out.push_str(&format!("<w:jc w:val=\"{align}\"/>"));
@@ -141,7 +143,7 @@ impl Layout {
 
     /// The width in twips of `span` columns from `column`.
     fn width(&self, column: usize, span: usize) -> u64 {
-        self.columns.iter().skip(column).take(span).sum()
+        self.columns.iter().skip(column).take(span).fold(0, |sum, width| sum.saturating_add(*width))
     }
 
     /// Between two tables of one tag: a page break, or an empty paragraph.
@@ -280,7 +282,7 @@ fn table_cells<'a>(cells: &'a [Value], fixed: &'a [Value], merge: FixedMerge) ->
             continue;
         }
         let value = next.unwrap_or(&Value::Null);
-        let requested = value.get("colspan").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+        let requested = value.get("colspan").and_then(Value::as_u64).unwrap_or(1).clamp(1, MAX_COLUMNS as u64) as usize;
         let until_fixed = fixed.iter().skip(column + 1).position(|value| !value.is_null()).map(|at| at + 1);
         let span = until_fixed.map_or(requested, |gap| requested.min(gap));
         out.push(TableCell { value, span, merge: FixedMerge::None });
@@ -444,7 +446,7 @@ impl<'a> Grid<'a> {
     pub(crate) fn read(value: &'a Value, body: Body) -> Option<Grid<'a>> {
         let size = value.get("size")?.as_array().filter(|size| size.len() == 2)?;
         let rows = size[0].as_u64().filter(|rows| *rows > 0)? as usize;
-        let columns = size[1].as_u64().filter(|columns| *columns > 0)? as usize;
+        let columns = size[1].as_u64().filter(|columns| *columns > 0)?.min(MAX_COLUMNS as u64) as usize;
         let items = value.get("data")?.as_array()?;
         Some(Grid { layout: Layout::read(value, columns, body, false), rows, items })
     }

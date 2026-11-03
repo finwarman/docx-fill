@@ -84,7 +84,7 @@ pub(crate) fn print_includes(parts: &mut Vec<(String, Cow<[u8]>)>, uses: &[(Stri
     let mut count = 0;
     for (part, used) in uses {
         let Some(index) = parts.iter().position(|(name, _)| name == part) else { continue };
-        let mut next_drawing_id = crate::images::read_max_drawing_id(&String::from_utf8_lossy(&parts[index].1)) + 1;
+        let mut next_drawing_id = crate::images::read_max_drawing_id(&String::from_utf8_lossy(&parts[index].1)).wrapping_add(1);
         let mut bodies = Vec::with_capacity(used.len());
         for (name, scope) in used {
             let Some(include) = includes.get(name) else {
@@ -204,8 +204,9 @@ impl Import<'_, '_> {
         self.add_notes(&notes);
         edit_attributes(&body, |element, attribute, value| {
             if element == "wp:docPr" && attribute == "id" {
-                *next_drawing_id += 1;
-                return Edit::Set((*next_drawing_id - 1).to_string());
+                let id = *next_drawing_id;
+                *next_drawing_id = id.wrapping_add(1);
+                return Edit::Set(id.to_string());
             }
             if element == "w:footnoteReference" && attribute == "w:id" {
                 return note_ids.get(value).map_or(Edit::Keep, |id| Edit::Set(id.clone()));

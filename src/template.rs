@@ -870,7 +870,7 @@ fn read_cell_width(parts: &[Part], at: usize) -> Option<f64> {
             if read_attribute(raw, "w:type") != Some("dxa") {
                 return None;
             }
-            return read_attribute(raw, "w:w")?.parse::<f64>().ok().map(|twips| twips * PX_PER_TWIP);
+            return read_attribute(raw, "w:w")?.parse::<f64>().ok().filter(|twips| *twips > 0.0).map(|twips| twips * PX_PER_TWIP);
         }
     }
     None

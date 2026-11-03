@@ -62,8 +62,10 @@ type Edits = BTreeMap<usize, Edit>;
 
 #[derive(Default)]
 struct Table {
-    /// The `<w:tblGrid>` start tag and its end tag's index.
+    /// The `<w:tblGrid>` start tag, its index, and the index of the first token after its columns.
     grid: Option<(String, usize, Option<usize>)>,
+    /// Inside `<w:tblGridChange>`, whose old grid is kept as written.
+    is_in_change: bool,
     widths: Vec<Option<u64>>,
     rows: Vec<Vec<Cell>>,
     table_width: Option<(usize, String)>,
@@ -78,12 +80,17 @@ struct Cell {
 impl Table {
     /// Reads one token of this table, outside any table nested in it.
     fn read(&mut self, index: usize, name: &str, raw: &str, is_start: bool) {
+        if self.is_in_change {
+            self.is_in_change = name != "w:tblGridChange" || is_start;
+            return;
+        }
         match (name, is_start) {
             ("w:tblW", true) => self.table_width = Some((index, raw.to_string())),
             ("w:tblGrid", true) if !raw.ends_with("/>") => self.grid = Some((raw.to_string(), index, None)),
-            ("w:tblGrid", false) => {
+            ("w:tblGridChange", true) | ("w:tblGrid", false) => {
+                self.is_in_change = name == "w:tblGridChange" && !raw.ends_with("/>");
                 if let Some(grid) = &mut self.grid {
-                    grid.2 = Some(index);
+                    grid.2.get_or_insert(index);
                 }
             }
             ("w:gridCol", true) => self.widths.push(read_attribute(raw, "w:w").and_then(|width| width.parse().ok())),
@@ -145,8 +152,7 @@ impl Table {
                 None => grid.push_str("<w:gridCol/>"),
             }
         }
-        grid.push_str("</w:tblGrid>");
-        edits.insert(start, Edit::ReplaceThrough(end, grid));
+        edits.insert(start, Edit::ReplaceThrough(end - 1, grid));
         for (width, index, raw) in self.rows.iter().flatten().filter_map(|cell| cell.width.as_ref()) {
             edits.insert(*index, Edit::Replace(set_attribute(raw, "w:w", &scale(*width).to_string())));
         }

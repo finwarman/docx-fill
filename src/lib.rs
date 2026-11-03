@@ -511,7 +511,7 @@ impl PackageTemplate {
     fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (PackageParts<'_>, Vec<FillError>) {
         let mut state = FillState {
             assignments: expressions::Assignments::default(),
-            next_drawing_id: self.max_drawing_id + 1,
+            next_drawing_id: self.max_drawing_id.wrapping_add(1),
             next_caption: 1,
             body: self.body,
             container_fill: CONTAINER_FILL,

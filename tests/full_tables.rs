@@ -169,3 +169,25 @@ fn prints_nothing_for_a_grid_without_size_or_data() {
 fn rejects_grid_tags_sharing_a_paragraph() {
     assert_eq!(error(&paragraph(&["{:#grid g}x{:/grid}"])), r#"The grid tags "g" should each be alone in their own paragraph"#);
 }
+
+#[test]
+fn survives_a_grid_size_whose_cell_count_overflows() {
+    let template = [paragraph(&["{:#grid g}"]), paragraph(&["{.}"]), paragraph(&["{:/grid}"])].concat();
+    let _ = fill(&template, json!({ "g": { "size": [9223372036854775808_u64, 2], "data": ["1"] } }));
+}
+
+#[test]
+fn bounds_the_columns_a_huge_grid_or_colspan_asks_for() {
+    let template = [paragraph(&["{:#grid g}"]), paragraph(&["{.}"]), paragraph(&["{:/grid}"])].concat();
+    let grid = fill(&template, json!({ "g": { "size": [1, 1_000_000_000_000_u64], "data": ["1"] } }));
+    let table = fill(&paragraph(&["{:table t}"]), json!({ "t": { "data": [[{ "text": "a", "colspan": 1_000_000_000_000_u64 }]] } }));
+
+    assert!(grid.len() < 100_000 && table.len() < 100_000);
+}
+
+#[test]
+fn survives_column_widths_whose_sum_overflows() {
+    let body = fill(&paragraph(&["{:table t}"]), json!({ "t": { "data": [[{ "text": "a", "colspan": 2 }]], "widths": [1e300, 1e300] } }));
+
+    assert!(body.contains("<w:tblGrid>"));
+}

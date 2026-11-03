@@ -165,3 +165,59 @@ fn rejects_a_centred_image_beside_other_text() {
 
     assert_eq!(error.message, r#"Centered Images should be placed in empty paragraphs, but the tag "%%logo" is not"#);
 }
+
+#[test]
+fn keeps_images_apart_when_their_keys_differ_only_in_symbols() {
+    let filled = fill(document(&(paragraph("{%a}") + &paragraph("{%b}"))), json!({ "a": "photo:a-1", "b": "photo:a1" }));
+
+    assert_eq!(filled.iter().filter(|(name, _)| name.starts_with("word/media/")).count(), 2);
+    assert_eq!(part(&filled, "word/_rels/document.xml.rels").unwrap().matches("<Relationship ").count(), 2);
+}
+
+#[test]
+fn keeps_a_very_tall_image_in_a_cell_within_word_limits() {
+    struct Tall;
+    impl FillHooks for Tall {
+        fn image(&mut self, _part: &str, _value: &Value) -> Option<Image> {
+            Some(Image { key: "tall".into(), bytes: Arc::from(&[0_u8][..]), extension: "png".into(), width: 1.0, height: 2_147_483_647.0 })
+        }
+    }
+    let parts = document(&cell("{%photo}")).into_iter().map(|(name, xml)| (name.to_string(), xml.into_bytes()));
+    let template = PackageTemplate::parse(parts, &FillOptions::default()).unwrap();
+    let filled = template.render_with(&json!({ "photo": "x" }), &mut Tall);
+    let xml = String::from_utf8_lossy(&filled.iter().find(|(name, _)| name == "word/document.xml").unwrap().1).into_owned();
+
+    for (cx, cy) in extents(&xml) {
+        assert!(cx >= 0 && cy >= 0 && cy <= (i32::MAX as f64 / EMU_PER_PX).round() as i64, "{cx}x{cy}");
+    }
+}
+
+#[test]
+fn numbers_drawings_after_the_largest_drawing_id() {
+    let body = r#"<w:p><w:r><w:drawing><wp:inline><wp:docPr id="4294967295" name="logo"/></wp:inline></w:drawing></w:r></w:p>"#.to_string() + &paragraph("{%a}");
+
+    let filled = fill(document(&body), json!({ "a": "photo:a" }));
+
+    let xml = part(&filled, "word/document.xml").unwrap();
+    assert_eq!(xml.matches("<wp:docPr id=\"4294967295\"").count(), 1);
+}
+
+#[test]
+fn draws_a_positive_size_when_margins_exceed_the_page() {
+    let body = paragraph("{%a}");
+    let mut parts = document(&body);
+    parts[1].1 = parts[1].1.replace(r#"w:right="1440""#, r#"w:right="20000""#);
+
+    let filled = fill(parts, json!({ "a": "photo:a" }));
+
+    assert!(extents(part(&filled, "word/document.xml").unwrap()).iter().all(|(cx, cy)| *cx > 0 && *cy > 0));
+}
+
+#[test]
+fn draws_a_visible_image_in_a_cell_of_zero_width() {
+    let body = cell("{%a}").replace(&format!(r#"w:w="{CELL_TWIPS}""#), r#"w:w="0""#);
+
+    let filled = fill(document(&body), json!({ "a": "photo:a" }));
+
+    assert_eq!(extents(part(&filled, "word/document.xml").unwrap()), [(572, 286)]);
+}
