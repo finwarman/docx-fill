@@ -353,8 +353,10 @@ impl Import<'_, '_> {
         if used.is_empty() {
             return (String::new(), ids);
         }
-        let from = self.read_from(footnotes::FOOTNOTES_PART);
-        let mut next = self.read_main(footnotes::FOOTNOTES_PART).map_or(0, |xml| footnotes::read_max_id(&xml)) + 1;
+        let source = footnotes::target(self.from.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())));
+        let target = footnotes::target(self.parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())));
+        let from = self.read_from(&source);
+        let mut next = self.read_main(&target).map_or(0, |xml| footnotes::read_max_id(&xml)) + 1;
         let mut notes = String::new();
         for start in find_starts(&from, "w:footnote") {
             let Some(end) = find_element_end(&from, start, "w:footnote") else { continue };
@@ -377,9 +379,11 @@ impl Import<'_, '_> {
         if notes.is_empty() {
             return;
         }
-        let from = self.read_from(footnotes::FOOTNOTES_PART);
+        let source = footnotes::target(self.from.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())));
+        let target = footnotes::target(self.parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())));
+        let from = self.read_from(&source);
         footnotes::append_notes(self.parts, notes);
-        self.merge_namespaces(footnotes::FOOTNOTES_PART, &from);
+        self.merge_namespaces(&target, &from);
     }
 
     /// Copies the `used` styles the main document lacks, or with `KeepOwn` has otherwise. The new

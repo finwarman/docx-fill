@@ -2,12 +2,13 @@
 //! in `word/footnotes.xml`, which the body references by relationship.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 
-use crate::xml::{escape, read_attribute};
+use crate::part_kinds::{PartKind, PartKinds};
+use crate::xml::{ElementKind, Token, escape, read_attribute, tokenize, unescape};
 use crate::{CONTENT_TYPES_PART, insert_before_last};
 
 pub(crate) const FOOTNOTES_PART: &str = "word/footnotes.xml";
-const DOCUMENT_RELATIONSHIPS: &str = "word/_rels/document.xml.rels";
 const FOOTNOTES_RELATIONSHIP: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes";
 const FOOTNOTES_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml";
 pub(crate) const MAIN_NAMESPACE: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -88,7 +89,28 @@ pub(crate) fn add_footnotes(parts: &mut Vec<(String, Cow<[u8]>)>, notes: &[(u32,
 /// Adds `written`, whole `<w:footnote>` elements, to the footnotes part, creating the part, its
 /// relationship and content type when the package has none.
 pub(crate) fn append_notes(parts: &mut Vec<(String, Cow<[u8]>)>, written: &str) {
-    FOOTNOTES.append(parts, written);
+    let (main, target) = location(parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())));
+    FOOTNOTES.append_at(parts, written, &main, &target);
+}
+
+pub(crate) fn target<'a>(parts: impl Iterator<Item = (&'a str, &'a [u8])>) -> String {
+    location(parts).1
+}
+
+fn location<'a>(parts: impl Iterator<Item = (&'a str, &'a [u8])>) -> (String, String) {
+    let parts = parts.collect::<Vec<_>>();
+    let types = parts.iter().find(|(name, _)| *name == CONTENT_TYPES_PART).and_then(|(_, bytes)| std::str::from_utf8(bytes).ok());
+    let kinds = PartKinds::read(types);
+    let main = parts.iter().find(|(name, _)| kinds.kind(name) == PartKind::Main).map_or(crate::DOCUMENT_PART, |(name, _)| *name);
+    let rels_path = crate::includes::relationships_of(main);
+    let rels = parts.iter().find(|(name, _)| *name == rels_path).and_then(|(_, bytes)| std::str::from_utf8(bytes).ok());
+    let target = rels.and_then(|xml| tokenize(xml).ok()).unwrap_or_default().into_iter().find_map(|token| {
+        let Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "Relationship", raw } = token else { return None };
+        if read_attribute(raw, "Type") != Some(FOOTNOTES_RELATIONSHIP) || read_attribute(raw, "TargetMode") == Some("External") { return None; }
+        let target = unescape(read_attribute(raw, "Target")?);
+        (!target.is_empty()).then(|| crate::includes::resolve(main, &target))
+    }).unwrap_or_else(|| crate::includes::resolve(main, "footnotes.xml"));
+    (main.to_string(), target)
 }
 
 /// A part of the body's notes, such as footnotes or comments.
@@ -115,28 +137,40 @@ impl NotesPart {
     /// Adds `written`, whole note elements, creating the part, its relationship and content type
     /// when the package has none.
     pub(crate) fn append(&self, parts: &mut Vec<(String, Cow<[u8]>)>, written: &str) {
+        self.append_at(parts, written, crate::DOCUMENT_PART, self.name);
+    }
+
+    fn append_at(&self, parts: &mut Vec<(String, Cow<[u8]>)>, written: &str, main: &str, target: &str) {
         let close = format!("</{}>", self.root);
-        if let Some(part) = parts.iter_mut().find(|(name, _)| name == self.name) {
+        if let Some(part) = parts.iter_mut().find(|(name, _)| name == target) {
             let xml = String::from_utf8_lossy(&part.1).into_owned();
             part.1 = Cow::Owned(insert_before_last(&xml, &close, written).into_bytes());
             return;
         }
 
         let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<{} xmlns:w=\"{MAIN_NAMESPACE}\">{}{written}{close}", self.root, self.start);
-        parts.push((self.name.to_string(), Cow::Owned(xml.into_bytes())));
+        parts.push((target.to_string(), Cow::Owned(xml.into_bytes())));
 
-        let target = self.name.strip_prefix("word/").unwrap_or(self.name);
-        if let Some(rels) = parts.iter_mut().find(|(name, _)| name == DOCUMENT_RELATIONSHIPS) {
-            let xml = String::from_utf8_lossy(&rels.1).into_owned();
-            if !xml.contains(self.relationship) {
-                let relationship = format!("<Relationship Id=\"{}\" Type=\"{}\" Target=\"{target}\"/>", self.relationship_id, self.relationship);
-                rels.1 = Cow::Owned(insert_before_last(&xml, "</Relationships>", &relationship).into_bytes());
-            }
+        let rels_path = crate::includes::relationships_of(main);
+        let mut relative = String::new();
+        escape(&crate::includes::relative_to(main, target), &mut relative);
+        let xml = parts.iter().find(|(name, _)| *name == rels_path).map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned()).unwrap_or_default();
+        let relationships = tokenize(&xml).unwrap_or_default().into_iter().filter_map(|token| match token {
+            Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "Relationship", raw } => Some(raw),
+            _ => None,
+        }).collect::<Vec<_>>();
+        if !relationships.iter().any(|raw| read_attribute(raw, "Type") == Some(self.relationship)) {
+            let ids = relationships.iter().filter_map(|raw| read_attribute(raw, "Id")).collect::<BTreeSet<_>>();
+            let id = (0..).map(|suffix| if suffix == 0 { self.relationship_id.to_string() } else { format!("{}{suffix}", self.relationship_id) }).find(|id| !ids.contains(id.as_str())).expect("finite relationships");
+            let relationship = format!("<Relationship Id=\"{id}\" Type=\"{}\" Target=\"{relative}\"/>", self.relationship);
+            crate::add_relationship(parts, main, &id, &relationship);
         }
         if let Some(types) = parts.iter_mut().find(|(name, _)| name == CONTENT_TYPES_PART) {
             let xml = String::from_utf8_lossy(&types.1).into_owned();
-            if !xml.contains(&format!("PartName=\"/{}\"", self.name)) {
-                let override_ = format!("<Override PartName=\"/{}\" ContentType=\"{}\"/>", self.name, self.content_type);
+            let mut path = String::new();
+            escape(target, &mut path);
+            if !xml.contains(&format!("PartName=\"/{path}\"")) {
+                let override_ = format!("<Override PartName=\"/{path}\" ContentType=\"{}\"/>", self.content_type);
                 types.1 = Cow::Owned(insert_before_last(&xml, "</Types>", &override_).into_bytes());
             }
         }
