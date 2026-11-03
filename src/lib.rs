@@ -71,7 +71,10 @@ pub use json::read_include_options;
 pub use render::{FillHooks, MissingKind, MissingValue, ModuleTag, NoHooks};
 pub use tag_list::{TagType, TemplateTag};
 pub use template::Template;
-pub use spreadsheet::{WorkbookSheet, WorkbookTemplate};
+pub use spreadsheet::{
+    RowHeightMode, SheetInstance, SpreadsheetSheetTags, SpreadsheetTag, SpreadsheetTagKind,
+    WorkbookLimits, WorkbookSheet, WorkbookTemplate,
+};
 pub use text::{Bookmark, CommentedText, ContentBoundary, FilledDocument, PageBreak, TextPosition, TextRange};
 
 use images::MediaUse;

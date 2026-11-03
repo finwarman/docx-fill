@@ -58,6 +58,7 @@ The library works with DOCX templates and JSON data. Extension flags in `FillOpt
 | [Paragraphs and XML](docs/reference.md#extension-tags) | Conditional or repeated paragraphs, raw paragraphs and raw runs. |
 | [Expressions](docs/reference.md#expressions) | Property access, arithmetic, conditions and filters. |
 | [Text edits](docs/reference.md#text-edits) | Search, replacement, bookmarks and comments. |
+| [Excel workbooks](docs/excel.md) | Typed cells, row and cell loops, sheet copies, styles, images and charts. |
 
 The [full extension table](docs/reference.md#extension-tags) lists flags and tag syntax. The reference also covers [options and limits](docs/reference.md).
 
@@ -77,7 +78,7 @@ Parsing and `try_render` return `FillError`. Use `diagnostics()` to inspect erro
 
 ## Other formats
 
-`WorkbookTemplate` fills `.xlsx` and `.xltx` workbooks with the same tags, through the same parts API. See [Excel templates](docs/excel.md).
+`WorkbookTemplate` fills Excel workbooks with native cell values, repeated rows and cells, worksheet copies, styles, links, notes, images and chart data. See [Excel templates](docs/excel.md) for supported formats, syntax and limits.
 
 ## Contributing
 

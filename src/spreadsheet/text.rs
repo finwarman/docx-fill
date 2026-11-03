@@ -9,9 +9,12 @@ use crate::{Delimiters, FillError, FillOptions};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Value,
-    Open { inverted: bool },
-    Close,
+    Open { inverted: bool, horizontal: bool },
+    Close { horizontal: bool },
     Change,
+    Image,
+    Chart,
+    RichText { block: bool },
 }
 
 #[derive(Debug)]
@@ -28,14 +31,22 @@ pub(crate) struct Context<'a> {
     pub hooks: &'a mut dyn FillHooks,
     pub assignments: Assignments,
     pub part: &'a str,
+    pub cell: String,
+    pub date_1904: bool,
+    pub max_loop_depth: usize,
+    pub effects: Vec<super::effects::CellEffect>,
 }
 
 impl<'a> Context<'a> {
-    pub(crate) fn new(part: &'a str, hooks: &'a mut dyn FillHooks) -> Self {
+    pub(crate) fn new(part: &'a str, hooks: &'a mut dyn FillHooks, date_1904: bool) -> Self {
         Self {
             hooks,
             assignments: Assignments::default(),
             part,
+            cell: String::new(),
+            date_1904,
+            max_loop_depth: 64,
+            effects: Vec::new(),
         }
     }
 
@@ -52,6 +63,9 @@ impl<'a> Context<'a> {
         {
             return Some(value);
         }
+        if tag.name == "." {
+            return scopes.last().copied().cloned();
+        }
         if let Some(expression) = &tag.expression {
             let mut evaluation = Evaluation {
                 scopes,
@@ -63,9 +77,6 @@ impl<'a> Context<'a> {
                 .evaluate(expression)
                 .map(|value| value.into_owned())
                 .filter(|value| !value.is_null());
-        }
-        if tag.name == "." {
-            return scopes.last().copied().cloned();
         }
         for scope in scopes.iter().rev() {
             if let Some(value) = scope.get(&tag.name).filter(|value| !value.is_null()) {
@@ -101,30 +112,49 @@ pub(crate) fn parse(
     let mut tags = Vec::with_capacity(found.len());
     for found in found {
         let written = crate::xml::unescape(&text[found.name.clone()]);
-        let (parsed, name) =
-            if options.expressions && written.starts_with('$') && !written.starts_with("${") {
-                (crate::template::TagKind::Value, written.clone())
-            } else {
-                crate::template::read_tag(&written, options)
-            };
-        let kind = if found.changes_delimiters {
-            Kind::Change
-        } else {
-            match parsed {
-                crate::template::TagKind::Value => Kind::Value,
-                crate::template::TagKind::Open {
-                    is_inverted,
-                    element: None,
-                } => Kind::Open {
-                    inverted: is_inverted,
+        let (name, kind) = if let Some(name) = written.strip_prefix("/>") {
+            (name.to_string(), Kind::Close { horizontal: true })
+        } else if let Some(name) = written.strip_prefix('>') {
+            (
+                name.to_string(),
+                Kind::Open {
+                    inverted: false,
+                    horizontal: true,
                 },
-                crate::template::TagKind::Close => Kind::Close,
-                _ => {
-                    return Err(FillError::new(format!(
-                        "Unsupported tag in spreadsheet cell: {written}"
-                    )));
+            )
+        } else {
+            let (parsed, name) =
+                if options.expressions && written.starts_with('$') && !written.starts_with("${") {
+                    (crate::template::TagKind::Value, written.clone())
+                } else {
+                    crate::template::read_tag(&written, options)
+                };
+            let kind = if found.changes_delimiters {
+                Kind::Change
+            } else {
+                match parsed {
+                    crate::template::TagKind::Value => Kind::Value,
+                    crate::template::TagKind::Open {
+                        is_inverted,
+                        element: None,
+                    } => Kind::Open {
+                        inverted: is_inverted,
+                        horizontal: written.starts_with('>'),
+                    },
+                    crate::template::TagKind::Close => Kind::Close { horizontal: false },
+                    crate::template::TagKind::Image { .. } => Kind::Image,
+                    crate::template::TagKind::Chart => Kind::Chart,
+                    crate::template::TagKind::RichText { is_block, .. } => {
+                        Kind::RichText { block: is_block }
+                    }
+                    _ => {
+                        return Err(FillError::new(format!(
+                            "Unsupported tag in spreadsheet cell: {written}"
+                        )));
+                    }
                 }
-            }
+            };
+            (name, kind)
         };
         let expression = if matches!(kind, Kind::Value | Kind::Open { .. }) && options.expressions {
             if let Some(expression) = cache.get(&name) {
