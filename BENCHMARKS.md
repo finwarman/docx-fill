@@ -30,21 +30,21 @@ The container uses a pinned `rust:1.95-bookworm` image and is limited to 2 cores
 
 ## Baseline
 
-`benches/baseline.json` was recorded at `560a3cd` on an Apple Silicon Mac with Docker Desktop (arm64):
+`benches/baseline.json` was recorded at `873f26a` on an Apple Silicon Mac with Docker Desktop (arm64). `conditions/5k` was re-measured at `560a3cd`, the only case that commit changes:
 
 | Case | Median ms |
 | --- | ---: |
-| `tags/split-1k` | 3.09 |
-| `loop/table-rows-20k` | 56.79 |
-| `loop/nested-200x100` | 8.20 |
-| `conditions/5k` | 10.72 |
-| `expressions/loop-5k` | 3.38 |
-| `html/blocks-300k` | 20.40 |
-| `html/style-sheet-3k` | 22.74 |
-| `errors/2k` | 1.83 |
-| `package/report-2k` | 1.28 |
+| `tags/split-1k` | 2.55 |
+| `loop/table-rows-20k` | 53.16 |
+| `loop/nested-200x100` | 7.21 |
+| `conditions/5k` | 10.56 |
+| `expressions/loop-5k` | 3.26 |
+| `html/blocks-300k` | 17.73 |
+| `html/style-sheet-3k` | 20.73 |
+| `errors/2k` | 1.79 |
+| `package/report-2k` | 1.26 |
 
-Two runs on the same machine differed by less than 3% per case. The exception is `expressions/loop-5k`, which differed by 8% because its time is short. Timings depend on the host, so compare only against a baseline taken on the same machine. Record a new baseline before comparing on a different machine.
+Two runs on the same machine differed by less than 3% per case. The exception is `expressions/loop-5k`, which differed by 8% because its time is short. Timings depend on the host, so compare only against a baseline taken on the same machine. Record a new baseline before comparing on a different machine. Record on a quiet host: under heavy load, medians rose by up to 30%.
 
 `conditions/5k` grows linearly: 1,250, 2,500 and 5,000 sections take 3.4, 6.2 and 11 ms. Before `560a3cd` each loop scanned back to the document start for an enclosing cell, and the same sections took 41, 181 and 668 ms.
 

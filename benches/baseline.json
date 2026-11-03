@@ -1,13 +1,13 @@
 {
   "median_ms": {
-    "conditions/5k": 10.72,
-    "errors/2k": 1.83,
-    "expressions/loop-5k": 3.38,
-    "html/blocks-300k": 20.4,
-    "html/style-sheet-3k": 22.74,
-    "loop/nested-200x100": 8.2,
-    "loop/table-rows-20k": 56.79,
-    "package/report-2k": 1.28,
-    "tags/split-1k": 3.09
+    "conditions/5k": 10.56,
+    "errors/2k": 1.79,
+    "expressions/loop-5k": 3.26,
+    "html/blocks-300k": 17.73,
+    "html/style-sheet-3k": 20.73,
+    "loop/nested-200x100": 7.21,
+    "loop/table-rows-20k": 53.16,
+    "package/report-2k": 1.26,
+    "tags/split-1k": 2.55
   }
 }
