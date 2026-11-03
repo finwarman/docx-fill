@@ -71,7 +71,7 @@ pub(super) fn write(paragraph: &str, values: &[RichValue], links: &mut Vec<Strin
                     let opening = stack.first().map_or("<w:p>", |open| open.raw);
                     let shell = format!("{opening}{layout}</w:p>");
                     let run_props = stack.iter().rev().find(|open| open.name == "w:r").map(|open| open.props.concat()).unwrap_or_default();
-                    let inserted = write_blocks(&shell, &blocks, &run_props, links, None, numbering.as_deref_mut());
+                    let inserted = write_blocks(&shell, &blocks, &run_props, links, None, numbering.as_deref_mut(), value.container_width);
                     if out.ends_with("</w:tbl>") && inserted.starts_with("<w:tbl>") { out.push_str("<w:p/>"); }
                     out.push_str(&inserted);
                     is_numbered = true;
