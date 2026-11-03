@@ -3,7 +3,7 @@
 //! on each cell of a column run, a horizontal one a `<w:gridSpan>` on its first cell.
 
 use crate::cell_styling::find_element_start;
-use crate::properties::{CELL_ORDER, edit_properties, set_child};
+use crate::properties::{CELL_ORDER, edit_properties, find_element_end, read_child, set_child};
 use crate::xml::{ElementKind, Token, read_attribute, tokenize, unescape};
 
 const TABLE: &str = "w:tbl";
@@ -63,6 +63,7 @@ fn read_rows(table: &str) -> Vec<Vec<Cell>> {
     let Ok(tokens) = tokenize(table) else { return Vec::new() };
     let mut rows: Vec<Vec<Cell>> = Vec::new();
     let mut tables = 0usize;
+    let mut properties = 0usize;
     let mut at = 0;
     let mut cell: Option<(usize, String, usize)> = None;
     let mut is_in_text = false;
@@ -71,6 +72,13 @@ fn read_rows(table: &str) -> Vec<Vec<Cell>> {
             Token::Element { raw, .. } => raw.len(),
             Token::Text(text) => text.len(),
         };
+        if tables == 1 && let Token::Element { kind, name: "w:tcPr", .. } = token {
+            match kind {
+                ElementKind::Open => properties += 1,
+                ElementKind::Close => properties = properties.saturating_sub(1),
+                _ => {}
+            }
+        }
         match token {
             Token::Element { kind: ElementKind::Open, name: TABLE, .. } => tables += 1,
             Token::Element { kind: ElementKind::Close, name: TABLE, .. } => tables -= 1,
@@ -82,7 +90,7 @@ fn read_rows(table: &str) -> Vec<Vec<Cell>> {
                     row.push(Cell { start, end: at + length, column, span, text });
                 }
             }
-            Token::Element { name: "w:gridSpan", raw, .. } if tables == 1 => {
+            Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "w:gridSpan", raw } if tables == 1 && properties == 1 => {
                 if let Some(cell) = &mut cell {
                     cell.2 = read_attribute(raw, "w:val").and_then(|span| span.parse().ok()).unwrap_or(1).max(1);
                 }
@@ -187,19 +195,26 @@ fn set_span(cell: &str, span: usize, width: Option<u64>) -> String {
 /// The cell's `<w:tcW>` in twips, when it gives one.
 fn read_dxa_width(cell: &str) -> Option<u64> {
     let open_end = cell.find('>')? + 1;
-    let properties = cell[open_end..].strip_prefix("<w:tcPr>")?;
-    let properties = &properties[..properties.find("</w:tcPr>")?];
-    let start = find_element_start(properties, "<w:tcW")?;
-    let raw = &properties[start..start + properties[start..].find('>')? + 1];
-    if read_attribute(raw, "w:type") != Some("dxa") {
-        return None;
+    let properties = read_child(&cell[open_end..], "w:tcPr")?;
+    let mut depth = 0usize;
+    for token in tokenize(properties).ok()? {
+        let Token::Element { kind, name, raw } = token else { continue };
+        if depth == 0 && name == "w:tcW" && matches!(kind, ElementKind::Open | ElementKind::SelfClosing) {
+            return (read_attribute(raw, "w:type") == Some("dxa")).then(|| read_attribute(raw, "w:w")?.parse().ok()).flatten();
+        }
+        match kind {
+            ElementKind::Open => depth += 1,
+            ElementKind::Close => depth = depth.saturating_sub(1),
+            _ => {}
+        }
     }
-    read_attribute(raw, "w:w")?.parse().ok()
+    None
 }
 
 /// A merged-away cell: its properties and one empty paragraph, which a cell must hold.
 fn empty_cell(cell: &str) -> String {
-    let Some(end) = cell.find("</w:tcPr>").map(|at| at + "</w:tcPr>".len()) else { return cell.to_string() };
+    let Some(start) = find_element_start(cell, "<w:tcPr") else { return cell.to_string() };
+    let Some(end) = find_element_end(cell, start, "w:tcPr") else { return cell.to_string() };
     format!("{}<w:p/></w:tc>", &cell[..end])
 }
 

@@ -69,6 +69,8 @@ struct Table {
     widths: Vec<Option<u64>>,
     rows: Vec<Vec<Cell>>,
     table_width: Option<(usize, String)>,
+    table_properties: usize,
+    cell_properties: usize,
 }
 
 struct Cell {
@@ -85,7 +87,11 @@ impl Table {
             return;
         }
         match (name, is_start) {
-            ("w:tblW", true) => self.table_width = Some((index, raw.to_string())),
+            ("w:tblPr", true) if !raw.ends_with("/>") => self.table_properties += 1,
+            ("w:tblPr", false) => self.table_properties = self.table_properties.saturating_sub(1),
+            ("w:tcPr", true) if !raw.ends_with("/>") => self.cell_properties += 1,
+            ("w:tcPr", false) => self.cell_properties = self.cell_properties.saturating_sub(1),
+            ("w:tblW", true) if self.table_properties == 1 => self.table_width = Some((index, raw.to_string())),
             ("w:tblGrid", true) if !raw.ends_with("/>") => self.grid = Some((raw.to_string(), index, None)),
             ("w:tblGridChange", true) | ("w:tblGrid", false) => {
                 self.is_in_change = name == "w:tblGridChange" && !raw.ends_with("/>");
@@ -100,12 +106,12 @@ impl Table {
                     row.push(Cell { span: 1, width: None });
                 }
             }
-            ("w:gridSpan", true) => {
+            ("w:gridSpan", true) if self.cell_properties == 1 => {
                 if let Some(cell) = self.last_cell() {
                     cell.span = read_attribute(raw, "w:val").and_then(|span| span.parse().ok()).unwrap_or(1).max(1);
                 }
             }
-            ("w:tcW", true) if read_attribute(raw, "w:type").is_none_or(|kind| kind == "dxa") => {
+            ("w:tcW", true) if self.cell_properties == 1 && read_attribute(raw, "w:type").is_none_or(|kind| kind == "dxa") => {
                 let width = read_attribute(raw, "w:w").and_then(|width| width.parse().ok());
                 if let (Some(cell), Some(width)) = (self.last_cell(), width) {
                     cell.width = Some((width, index, raw.to_string()));
