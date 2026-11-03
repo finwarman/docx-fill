@@ -221,6 +221,8 @@ For callers that pass settings as JSON, such as a wasm build, `FillOptions::read
 
 Run `cargo test` and `cargo clippy --all-targets -- -D warnings`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+To check a change for slowdowns, run `benches/run.sh --compare benches/baseline.json`. See [BENCHMARKS.md](BENCHMARKS.md).
+
 ## Sources
 
 Behaviour comes from the WordprocessingML spec (ECMA-376), docxtemplater's public tag syntax and documentation, and black-box runs of the MIT-licensed docxtemplater core. Extension tags follow the paid modules' public documentation. No code is taken from docxtemplater, and nothing is tuned against the paid modules' output. Password hash test vectors come from black-box runs of Apache POI; for characters over 0x7F the crate follows the spec's unsigned bytes where POI sign-extends them.
