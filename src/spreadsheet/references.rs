@@ -310,7 +310,8 @@ fn escape_formula(formula: &str) -> String {
     out
 }
 
-/// Sets `count` on collections whose items a loop copied or removed.
+/// Sets `count` on collections whose items a loop copied or removed. The schema requires
+/// at least one item in each, so a collection left empty is removed.
 fn update_counts(xml: &str) -> Result<String, FillError> {
     let mut xml = xml.to_string();
     for (container, item) in [("mergeCells", "mergeCell"), ("dataValidations", "dataValidation")] {
@@ -323,20 +324,31 @@ fn update_count(xml: &str, container_name: &str, item: &str) -> Result<String, F
     let tokens = tokenize(xml).map_err(reference_error)?;
     let mut count = 0usize;
     let mut container = None;
+    let mut container_end = None;
     let mut offset = 0usize;
     for token in &tokens {
+        let length = match token { Token::Element { raw, .. } => raw.len(), Token::Text(text) => text.len() };
         if let Token::Element { kind, name, raw } = token {
             match kind {
                 ElementKind::SelfClosing | ElementKind::Open if local(name) == item => count += 1,
-                ElementKind::SelfClosing | ElementKind::Open if local(name) == container_name => container = Some((offset, offset + raw.len(), *raw)),
+                ElementKind::SelfClosing if local(name) == container_name => {
+                    container = Some((offset, offset + length, *raw));
+                    container_end = Some(offset + length);
+                }
+                ElementKind::Open if local(name) == container_name => container = Some((offset, offset + length, *raw)),
+                ElementKind::Close if local(name) == container_name => container_end = Some(offset + length),
                 _ => {}
             }
         }
-        offset += match token { Token::Element { raw, .. } => raw.len(), Token::Text(text) => text.len() };
+        offset += length;
     }
-    let Some((start, end, raw)) = container else { return Ok(xml.to_string()) };
+    let Some((start, open_end, raw)) = container else { return Ok(xml.to_string()) };
+    if count == 0 {
+        let end = container_end.ok_or_else(|| reference_error("Unclosed spreadsheet collection"))?;
+        return Ok(format!("{}{}", &xml[..start], &xml[end..]));
+    }
     let updated = set_attribute(raw, "count", &count.to_string());
-    Ok(format!("{}{}{}", &xml[..start], updated, &xml[end..]))
+    Ok(format!("{}{}{}", &xml[..start], updated, &xml[open_end..]))
 }
 
 enum Geometry {
@@ -610,8 +622,7 @@ mod tests {
         let xml = r#"<worksheet><dimension ref="A1:B3"/><sheetData><row r="1"/><row r="2"/></sheetData><mergeCells count="0"><mergeCell ref="A2:B2"/></mergeCells></worksheet>"#;
         let result = update_sheet_with_rows(xml, &map, &[1, 2, 3]).unwrap();
         assert!(result.contains(r#"<dimension ref="A1:B2"/>"#));
-        assert!(!result.contains("mergeCell ref="));
-        assert!(result.contains(r#"<mergeCells count="0">"#));
+        assert!(!result.contains("mergeCell"), "{result}");
     }
 
     #[test]

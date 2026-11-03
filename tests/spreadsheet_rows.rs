@@ -184,5 +184,12 @@ fn merged_range_reduced_to_one_cell_is_dropped() {
     let rows=format!(r#"{LOOP_ROW_2}<row r="3">{}</row>"#,inline("A3","Footer"));
     let parts=with_sheet(&rows,"",r#"<mergeCells count="1"><mergeCell ref="A2:A3"/></mergeCells>"#);
     let sheet=fill_parts(parts,json!({"items":[]})).unwrap();
-    assert!(!sheet.contains("<mergeCell "),"{sheet}");
+    assert!(!sheet.contains("mergeCell"),"{sheet}");
+}
+
+#[test]
+fn empty_loop_removes_a_validation_collection_left_empty() {
+    let parts=with_sheet(LOOP_ROW_2,"",r#"<dataValidations count="1"><dataValidation type="none" allowBlank="1" sqref="B2"/></dataValidations>"#);
+    let sheet=fill_parts(parts,json!({"items":[]})).unwrap();
+    assert!(!sheet.contains("dataValidation"),"{sheet}");
 }
