@@ -53,7 +53,7 @@ pub(crate) enum TagKind {
     /// `{:stylecell name}`: a background for the table cell the tag is in.
     CellStyle,
     /// `{~~name}` (block) or `{~name}` (inline): HTML printed as Word runs and paragraphs.
-    RichText { is_block: bool, container_width: Option<f64> },
+    RichText { is_block: bool, container_width: HtmlWidth },
     /// `{%name}` or `{%%name}`: an image filling its table cell, else the page's width. With
     /// centred images on, `{%%name}` centres its paragraph.
     Image { cell_width: Option<f64>, is_centered: bool },
@@ -288,10 +288,10 @@ impl Template {
     /// @returns An error for an unclosed or unopened tag or loop, a loop closed by another loop's
     ///   tag, or a dash loop outside the element it names.
     pub fn parse(xml: &str, options: &FillOptions) -> Result<Template, FillError> {
-        Template::parse_text(xml, options, TextLayout::Paragraphs, None)
+        Template::parse_text(xml, options, TextLayout::Paragraphs, None, [WORD_CELL_MARGIN_TWIPS; 2])
     }
 
-    pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout, fallback_width: Option<f64>) -> Result<Template, FillError> {
+    pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout, fallback_width: Option<f64>, cell_margins: [f64; 2]) -> Result<Template, FillError> {
         validate_tag_prefixes(options)?;
         let expanded = (options.extensions.paragraph_placeholder && options.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::None)
             .then(|| crate::placeholder_lines::expand(xml, options.paragraph_placeholder.soft_breaks));
@@ -371,7 +371,7 @@ impl Template {
             tag.is_alone = paragraph.len() == 1 && paragraph[0].end - paragraph[0].start == joined_texts[tag.paragraph].len();
         }
 
-        let html_widths = read_html_widths(&parts, &tags, fallback_width);
+        let html_widths = read_html_widths(&parts, &tags, fallback_width, cell_margins);
         for (index, tag) in tags.iter_mut().enumerate() {
             match &mut tag.kind {
                 TagKind::Image { cell_width, .. } => *cell_width = read_cell_width(&parts, tag.part),
@@ -770,8 +770,8 @@ pub(crate) fn read_tag(text: &str, options: &FillOptions) -> (TagKind, String) {
         (&prefixes.loop_end, true, TagKind::Close),
         (&prefixes.raw, true, TagKind::Raw),
         (&prefixes.word_run, options.extensions.word_run, TagKind::RawRun),
-        (&prefixes.html, options.extensions.rich_text, TagKind::RichText { is_block: false, container_width: None }),
-        (&prefixes.block_html, options.extensions.rich_text, TagKind::RichText { is_block: true, container_width: None }),
+        (&prefixes.html, options.extensions.rich_text, TagKind::RichText { is_block: false, container_width: HtmlWidth::Page }),
+        (&prefixes.block_html, options.extensions.rich_text, TagKind::RichText { is_block: true, container_width: HtmlWidth::Page }),
         (&prefixes.image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: false }),
         (&prefixes.centered_image, options.extensions.images, TagKind::Image { cell_width: None, is_centered: options.extensions.centered_images }),
     ];
@@ -897,9 +897,24 @@ fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, S
     None
 }
 
+/// The width an HTML value fills.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum HtmlWidth {
+    /// No section or cell gives one: the page body's width.
+    Page,
+    /// Content width in pixels.
+    Known(f64),
+    /// A cell or text box whose width the template does not give.
+    Unknown,
+}
+
+/// The enclosing table's cell margins, widths and grid.
+#[derive(Default)]
+struct HtmlTable { margins: [f64; 2], width: Option<f64>, explicit: Option<f64>, grid: Vec<f64>, column: usize }
+
 /// Each HTML tag's section-column or innermost cell content width.
-fn read_html_widths(parts: &[Part], tags: &[Tag], fallback_width: Option<f64>) -> Vec<Option<f64>> {
-    let mut widths = vec![None; tags.len()];
+fn read_html_widths(parts: &[Part], tags: &[Tag], fallback_width: Option<f64>, cell_margins: [f64; 2]) -> Vec<HtmlWidth> {
+    let mut widths = vec![HtmlWidth::Page; tags.len()];
     if !tags.iter().any(|tag| matches!(tag.kind, TagKind::RichText { .. })) { return widths; }
     // A paragraph's section properties can precede its text; the section ends at that paragraph.
     let mut paragraphs: Vec<Vec<usize>> = Vec::new();
@@ -925,30 +940,51 @@ fn read_html_widths(parts: &[Part], tags: &[Tag], fallback_width: Option<f64>) -
         }
     }
     let mut section = 0;
+    // Innermost cell or text box content width, `None` when the template does not give it.
     let mut cells: Vec<Option<f64>> = Vec::new();
-    let mut tables = Vec::new();
+    let mut tables: Vec<HtmlTable> = Vec::new();
     for (at, part) in parts.iter().enumerate() {
         while section < sections.len() && at > sections[section].0 { section += 1; }
+        let container = match cells.last() {
+            Some(width) => *width,
+            None => sections.get(section).and_then(|(_, width)| *width).or(fallback_width),
+        };
         match part {
             Part::Element { kind: ElementKind::Open, name, .. } if name == "w:tbl" => {
                 let end = parts[at + 1..].iter().position(|part| matches!(part, Part::Element { kind, name, .. } if name == ROW || (name == "w:tbl" && *kind == ElementKind::Close))).map_or(parts.len(), |end| at + 1 + end);
                 let properties = &parts[at..end];
-                let parent = cells.last().copied().flatten().or_else(|| sections.get(section).and_then(|(_, width)| *width)).or(fallback_width);
-                let width = property_width(properties, "w:tblPr", "w:tblW", parent).or(parent);
-                tables.push((read_cell_margins(properties, "w:tblCellMar"), width));
+                let explicit = property_width(properties, "w:tblPr", "w:tblW", container);
+                let margins = read_cell_margins(properties, "w:tblCellMar");
+                let margins = [margins[0].unwrap_or(cell_margins[0]), margins[1].unwrap_or(cell_margins[1])];
+                tables.push(HtmlTable { margins, width: explicit.or(container), explicit, grid: read_grid(properties), column: 0 });
             }
             Part::Element { kind: ElementKind::Close, name, .. } if name == "w:tbl" => { tables.pop(); }
+            Part::Element { kind: ElementKind::Open, name, .. } if name == ROW => {
+                let end = parts[at + 1..].iter().position(|part| matches!(part, Part::Element { name, .. } if name == CELL || name == ROW)).map_or(parts.len(), |end| at + 1 + end);
+                if let Some(table) = tables.last_mut() { table.column = read_count(&parts[at + 1..end], "w:gridBefore").unwrap_or(0); }
+            }
             Part::Element { kind: ElementKind::Open, name, .. } if name == CELL => {
                 let end = parts[at + 1..].iter().position(|part| matches!(part, Part::Element { name, .. } if name == PARAGRAPH || name == "w:tbl" || name == CELL)).map_or(parts.len(), |end| at + 1 + end);
                 let properties = &parts[at + 1..end];
+                let Some(table) = tables.last_mut() else { cells.push(None); continue };
+                let span = read_count(properties, "w:gridSpan").unwrap_or(1).max(1);
+                // Word writes `auto` or `pct` cell widths for autofit tables; the grid still gives the column widths.
+                let grid = table.grid.get(table.column..table.column + span).map(|columns| columns.iter().sum::<f64>() * PX_PER_TWIP);
+                table.column += span;
                 let local = read_cell_margins(properties, "w:tcMar");
-                let (inherited, parent) = tables.last().copied().unwrap_or_default();
-                let padding = (0..2).map(|side| local[side].or(inherited[side]).unwrap_or(0.0)).sum::<f64>();
-                cells.push(property_width(properties, "w:tcPr", "w:tcW", parent).map(|width| (width - padding * PX_PER_TWIP).max(PX_PER_TWIP)));
+                let padding = (0..2).map(|side| local[side].unwrap_or(table.margins[side])).sum::<f64>();
+                let width = property_width(properties, "w:tcPr", "w:tcW", table.width).or(grid).or(table.explicit);
+                cells.push(width.map(|width| (width - padding * PX_PER_TWIP).max(PX_PER_TWIP)));
             }
             Part::Element { kind: ElementKind::Close, name, .. } if name == CELL => { cells.pop(); }
+            Part::Element { kind: ElementKind::Open, name, .. } if name == "w:txbxContent" => cells.push(None),
+            Part::Element { kind: ElementKind::Close, name, .. } if name == "w:txbxContent" => { cells.pop(); }
             Part::Tag(index) if matches!(tags[*index].kind, TagKind::RichText { .. }) => {
-                widths[*index] = cells.last().copied().flatten().or_else(|| sections.get(section).and_then(|(_, width)| *width)).or(fallback_width);
+                widths[*index] = match (cells.is_empty(), container) {
+                    (_, Some(width)) => HtmlWidth::Known(width),
+                    (true, None) => HtmlWidth::Page,
+                    (false, None) => HtmlWidth::Unknown,
+                };
             }
             _ => {}
         }
@@ -986,6 +1022,57 @@ fn html_section_width(parts: &[Part]) -> Option<f64> {
     const COLUMN_GAP_TWIPS: f64 = 720.0;
     let gap = read_attribute(columns, "w:space").and_then(|value| value.parse::<f64>().ok()).filter(|gap| *gap >= 0.0).unwrap_or(COLUMN_GAP_TWIPS);
     Some(((width - gap * PX_PER_TWIP * f64::from(count - 1)) / f64::from(count)).max(PX_PER_TWIP))
+}
+
+/// The table's `w:gridCol` widths in twips, without revision history.
+fn read_grid(parts: &[Part]) -> Vec<f64> {
+    let mut grid = Vec::new();
+    let mut changes = 0usize;
+    for part in parts {
+        let Part::Element { kind, name, raw } = part else { continue };
+        if name == "w:tblGridChange" {
+            match kind { ElementKind::Open => changes += 1, ElementKind::Close => changes = changes.saturating_sub(1), _ => {} }
+        }
+        if changes > 0 || name != "w:gridCol" || *kind == ElementKind::Close { continue; }
+        grid.push(read_attribute(raw, "w:w").and_then(|value| value.parse::<f64>().ok()).filter(|width| width.is_finite() && *width >= 0.0).unwrap_or(0.0));
+    }
+    grid
+}
+
+/// The `w:val` count of the first `element`, outside revision history.
+fn read_count(parts: &[Part], element: &str) -> Option<usize> {
+    let mut changes = 0usize;
+    for part in parts {
+        let Part::Element { kind, name, raw } = part else { continue };
+        if name.ends_with("PrChange") {
+            match kind { ElementKind::Open => changes += 1, ElementKind::Close => changes = changes.saturating_sub(1), _ => {} }
+        }
+        if changes > 0 || name != element || *kind == ElementKind::Close { continue; }
+        return read_attribute(raw, "w:val")?.parse().ok();
+    }
+    None
+}
+
+/// Word's left and right cell margin when no table style gives one.
+pub(crate) const WORD_CELL_MARGIN_TWIPS: f64 = 108.0;
+
+/// The default table style's left and right cell margins in twips, else Word's.
+pub(crate) fn read_default_margins(styles: &str) -> [f64; 2] {
+    let defaults = [WORD_CELL_MARGIN_TWIPS; 2];
+    let Ok(tokens) = tokenize(styles) else { return defaults };
+    let mut style = Vec::new();
+    let mut inside = false;
+    for token in tokens {
+        let Token::Element { kind, name, raw } = token else { continue };
+        if name == "w:style" && kind == ElementKind::Open {
+            inside = read_attribute(raw, "w:type") == Some("table") && matches!(read_attribute(raw, "w:default"), Some("1" | "true" | "on"));
+            continue;
+        }
+        if name == "w:style" && kind == ElementKind::Close && inside { break; }
+        if inside { style.push(Part::Element { kind, name: name.to_string(), raw: raw.to_string() }); }
+    }
+    let margins = read_cell_margins(&style, "w:tblCellMar");
+    [margins[0].unwrap_or(defaults[0]), margins[1].unwrap_or(defaults[1])]
 }
 
 fn read_cell_margins(parts: &[Part], element: &str) -> [Option<f64>; 2] {

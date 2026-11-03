@@ -7,7 +7,7 @@ use crate::{CONTENT_TYPES_PART, DOCUMENT_PART, FillError, add_relationship, inse
 use crate::cell_styling::find_element_start;
 use crate::properties::{RUN_ORDER, SETTINGS_FROM_PROTECTION, edit_each, edit_properties, find_element_end, find_starts, set_attribute, set_child};
 use crate::protection::Protection;
-use crate::xml::{ElementKind, Token, escape, offset_in, tokenize};
+use crate::xml::{ElementKind, Token, escape, offset_in, read_attribute, tokenize};
 
 const SETTINGS_PART: &str = "word/settings.xml";
 const STYLES_PART: &str = "word/styles.xml";
@@ -157,13 +157,15 @@ fn add_watermark(parts: &mut Vec<(String, Cow<[u8]>)>, watermark: &Watermark) {
 
 /// `xml` with namespace `name` declared on its root when missing.
 fn add_namespace(xml: &str, name: &str, value: &str) -> String {
-    let Some(start) = xml.find("<w:") else { return xml.to_string() };
-    let Some(open_end) = xml[start..].find('>').map(|at| start + at + 1) else { return xml.to_string() };
-    let root = &xml[start..open_end];
-    if root.contains(&format!(" {name}=")) {
+    let Some(root) = tokenize(xml).ok().and_then(|tokens| tokens.into_iter().find_map(|token| match token {
+        Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, raw, .. } => Some(raw),
+        _ => None,
+    })) else { return xml.to_string() };
+    if read_attribute(root, name).is_some() {
         return xml.to_string();
     }
-    format!("{}{}{}", &xml[..start], set_attribute(root, name, value), &xml[open_end..])
+    let start = offset_in(xml, root);
+    format!("{}{}{}", &xml[..start], set_attribute(root, name, value), &xml[start + root.len()..])
 }
 
 /// A paragraph holding the watermark as a VML text path, as Word draws one. `index` numbers its
