@@ -17,7 +17,8 @@ const APPEARANCE: &[&str] = &["w:rStyle", "w:rFonts", "w:b", "w:bCs", "w:i", "w:
 
 pub(crate) struct Headings {
     pub(super) ids: [String; 6],
-    missing: BTreeSet<String>,
+    /// Each style to define, with its unique name.
+    missing: BTreeMap<String, String>,
     path: String,
     relationship: Option<String>,
     relationship_ids: BTreeSet<String>,
@@ -46,6 +47,7 @@ impl Headings {
         }
         let styles = parts.get(path.as_str()).map(|bytes| String::from_utf8_lossy(bytes)).unwrap_or_default();
         let mut used = BTreeSet::new();
+        let mut names = BTreeSet::new();
         let mut paragraphs = Vec::new();
         let mut current = None;
         let mut base = None;
@@ -63,6 +65,7 @@ impl Headings {
                     }
                 }
                 Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "w:name", raw } => {
+                    if let Some(value) = read_attribute(raw, "w:val") { names.insert(normalize(&unescape(value))); }
                     if current.is_some() && let Some((_, name)) = paragraphs.last_mut()
                         && let Some(value) = read_attribute(raw, "w:val") { *name = unescape(value); }
                 }
@@ -70,8 +73,9 @@ impl Headings {
                 _ => {}
             }
         }
-        let mut missing = BTreeSet::new();
-        let ids = IDS.map(|wanted| {
+        let mut missing = BTreeMap::new();
+        let ids = std::array::from_fn(|level| {
+            let wanted = IDS[level];
             if let Some((id, _)) = paragraphs.iter().find(|(id, _)| id.eq_ignore_ascii_case(wanted))
                 .or_else(|| paragraphs.iter().find(|(_, name)| normalize(name) == normalize(wanted))) { return id.clone(); }
             let mut id = wanted.to_string();
@@ -79,7 +83,9 @@ impl Headings {
             let base = id.clone();
             let mut suffix = 1;
             while used.contains(&id) { id = format!("{base}{suffix}"); suffix += 1; }
-            used.insert(id.clone()); missing.insert(id.clone()); id
+            used.insert(id.clone());
+            missing.insert(id.clone(), unique_name(level, &mut names));
+            id
         });
         let base = base.or_else(|| paragraphs.iter().find(|(id, _)| id == "Normal").map(|(id, _)| id.clone()));
         Self { ids, missing, path, relationship, relationship_ids, base }
@@ -98,7 +104,8 @@ impl Headings {
         if !self.ids.iter().any(|id| used.contains(id)) { return; }
         let mut added = String::new();
         for (level, id) in self.ids.iter().enumerate() {
-            if self.missing.contains(id) && used.contains(id) { added.push_str(&definition(id, level, self.base.as_deref())); }
+            let Some(name) = self.missing.get(id) else { continue };
+            if used.contains(id) { added.push_str(&definition(id, name, level, self.base.as_deref())); }
         }
         if !added.is_empty() {
             if let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| name == &self.path) {
@@ -207,12 +214,21 @@ fn resolve(folder: &str, target: &str) -> String {
     parts.join("/")
 }
 
-fn definition(id: &str, level: usize, base: Option<&str>) -> String {
-    let name = if level == 0 { "Title".into() } else { format!("heading {level}") };
+/// The built-in name for heading `level`, or a variant no other style has.
+fn unique_name(level: usize, names: &mut BTreeSet<String>) -> String {
+    let wanted = if level == 0 { "Title".to_string() } else { format!("heading {level}") };
+    let mut name = wanted.clone();
+    let mut suffix = 1;
+    while names.contains(&normalize(&name)) { name = format!("{wanted} (DocxFill {suffix})"); suffix += 1; }
+    names.insert(normalize(&name));
+    name
+}
+
+fn definition(id: &str, name: &str, level: usize, base: Option<&str>) -> String {
     let outline = if level == 0 { String::new() } else { format!("<w:outlineLvl w:val=\"{}\"/>", level - 1) };
     let bold = if level == 0 { "<w:b w:val=\"0\"/><w:bCs w:val=\"0\"/>" } else { "<w:b/><w:bCs/>" };
     let size = SIZES[level];
     let tracking = if level == 0 { format!("<w:spacing w:val=\"{TITLE_TRACKING}\"/>") } else { String::new() };
     let base = base.map(|id| format!("<w:basedOn w:val=\"{}\"/><w:next w:val=\"{}\"/>", escaped(id), escaped(id))).unwrap_or_default();
-    format!("<w:style w:type=\"paragraph\" w:styleId=\"{}\"><w:name w:val=\"{name}\"/>{base}<w:qFormat/><w:pPr><w:keepNext/><w:keepLines/>{outline}</w:pPr><w:rPr><w:rFonts w:ascii=\"Arial\" w:hAnsi=\"Arial\" w:cs=\"Arial\" w:asciiTheme=\"majorHAnsi\" w:hAnsiTheme=\"majorHAnsi\" w:eastAsiaTheme=\"majorEastAsia\" w:cstheme=\"majorBidi\"/>{bold}{tracking}<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/></w:rPr></w:style>", escaped(id))
+    format!("<w:style w:type=\"paragraph\" w:styleId=\"{}\"><w:name w:val=\"{}\"/>{base}<w:qFormat/><w:pPr><w:keepNext/><w:keepLines/>{outline}</w:pPr><w:rPr><w:rFonts w:ascii=\"Arial\" w:hAnsi=\"Arial\" w:cs=\"Arial\" w:asciiTheme=\"majorHAnsi\" w:hAnsiTheme=\"majorHAnsi\" w:eastAsiaTheme=\"majorEastAsia\" w:cstheme=\"majorBidi\"/>{bold}{tracking}<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/></w:rPr></w:style>", escaped(id), escaped(name))
 }

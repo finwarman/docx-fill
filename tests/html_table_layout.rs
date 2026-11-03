@@ -227,7 +227,7 @@ fn sizes_tables_in_header_footer() {
     for name in ["word/header1.xml", "word/footer1.xml"] {
         let xml = String::from_utf8_lossy(&parts.iter().find(|(part, _)| part == name).unwrap().1);
 
-        assert!(xml.contains("<w:tblW w:w=\"4500\" w:type=\"dxa\"/>"), "{name}: {xml}");
+        assert!(xml.contains("<w:tblW w:w=\"4284\" w:type=\"dxa\"/>"), "{name}: {xml}");
     }
 }
 
@@ -238,4 +238,69 @@ fn applies_table_margin_in_order() {
 
         assert!(xml.contains(&format!("<w:tblInd w:w=\"{indent}\"")), "{style}: {xml}");
     }
+}
+
+#[test]
+fn fits_auto_width_template_cells() {
+    for (width, expected) in [("<w:tcW w:w=\"0\" w:type=\"auto\"/>", 2784), ("<w:tcW w:w=\"1667\" w:type=\"pct\"/>", 784)] {
+        let body = format!("<w:tbl><w:tblPr><w:tblW w:w=\"3000\" w:type=\"dxa\"/></w:tblPr><w:tblGrid><w:gridCol w:w=\"3000\"/></w:tblGrid><w:tr><w:tc><w:tcPr>{width}</w:tcPr>{TAG}</w:tc></w:tr></w:tbl>{SECTION}");
+        let xml = fill(&body, json!({"html": "<table><tr><td>A</td></tr></table>"}));
+
+        assert!(xml.contains(&format!("<w:tblW w:w=\"{expected}\" w:type=\"dxa\"/>")), "{width}: {xml}");
+    }
+}
+
+#[test]
+fn sums_spanned_grid_columns() {
+    let body = format!("<w:tbl><w:tblGrid><w:gridCol w:w=\"1000\"/><w:gridCol w:w=\"2000\"/><w:gridCol w:w=\"3000\"/></w:tblGrid><w:tr><w:trPr><w:gridBefore w:val=\"1\"/></w:trPr><w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/><w:gridSpan w:val=\"2\"/></w:tcPr>{TAG}</w:tc></w:tr></w:tbl>{SECTION}");
+    let xml = fill(&body, json!({"html": "<table><tr><td>A</td></tr></table>"}));
+
+    assert!(xml.contains("<w:tblW w:w=\"4784\" w:type=\"dxa\"/>"), "{xml}");
+}
+
+#[test]
+fn keeps_full_width_in_unknown_containers() {
+    let cell = format!("<w:tbl><w:tr><w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr>{TAG}</w:tc></w:tr></w:tbl>");
+    let text_box = format!("<w:p><w:r><w:drawing><wps:txbx><w:txbxContent>{TAG}</w:txbxContent></wps:txbx></w:drawing></w:r></w:p>");
+    for body in [cell, text_box] {
+        let xml = fill(&format!("{body}{SECTION}"), json!({"html": "<table style='width:50%'><tr><td>A</td><td>B</td></tr></table>"}));
+
+        assert!(xml.contains("<w:tblW w:w=\"2500\" w:type=\"pct\"/>"), "{xml}");
+        assert_eq!(xml.matches("<w:tcW w:w=\"2500\" w:type=\"pct\"/>").count(), 2, "{xml}");
+    }
+}
+
+#[test]
+fn subtracts_default_cell_margins() {
+    let body = format!("<w:tbl><w:tblGrid><w:gridCol w:w=\"3000\"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w=\"3000\" w:type=\"dxa\"/></w:tcPr>{TAG}</w:tc></w:tr></w:tbl>{SECTION}");
+    let xml = fill(&body, json!({"html": "<table><tr><td>A</td></tr></table>"}));
+
+    assert!(xml.contains("<w:tblW w:w=\"2784\" w:type=\"dxa\"/>"), "{xml}");
+}
+
+#[test]
+fn reads_default_table_style_margins() {
+    let styles = format!("<w:styles {NAMESPACES}><w:style w:type=\"table\" w:default=\"1\" w:styleId=\"TableNormal\"><w:tblPr><w:tblCellMar><w:left w:w=\"50\" w:type=\"dxa\"/><w:right w:w=\"150\" w:type=\"dxa\"/></w:tblCellMar></w:tblPr></w:style></w:styles>");
+    let body = format!("<w:tbl><w:tr><w:tc><w:tcPr><w:tcW w:w=\"3000\" w:type=\"dxa\"/></w:tcPr>{TAG}</w:tc></w:tr></w:tbl>{SECTION}");
+    let template = PackageTemplate::parse([
+        ("word/styles.xml".to_string(), styles.into_bytes()),
+        ("word/document.xml".to_string(), document(&body).into_bytes()),
+    ], &FillOptions::default()).unwrap();
+    let parts = template.render(&json!({"html": "<table><tr><td>A</td></tr></table>"}));
+    let xml = String::from_utf8_lossy(&parts.iter().find(|(part, _)| part == "word/document.xml").unwrap().1);
+
+    assert!(xml.contains("<w:tblW w:w=\"2800\" w:type=\"dxa\"/>"), "{xml}");
+}
+
+#[test]
+fn keeps_rowspan_borders() {
+    let xml = render("<table><tr><td rowspan='3' style='border-bottom:2px solid red;border-left:2px solid blue'>A</td><td>B</td></tr><tr><td>C</td></tr><tr><td>D</td></tr></table>");
+    let cells = elements(&xml, "w:tc");
+    let continued: Vec<_> = cells.iter().filter(|cell| cell.contains("<w:vMerge/>")).collect();
+
+    assert!(!cells[0].contains("w:color=\"FF0000\""), "{xml}");
+    assert!(cells[0].contains("<w:left w:val=\"single\" w:sz=\"12\" w:space=\"0\" w:color=\"0000FF\"/>"));
+    assert!(continued.iter().all(|cell| cell.contains("w:color=\"0000FF\"")), "{xml}");
+    assert!(!continued[0].contains("w:color=\"FF0000\""));
+    assert!(continued[1].contains("<w:bottom w:val=\"single\" w:sz=\"12\" w:space=\"0\" w:color=\"FF0000\"/>"));
 }

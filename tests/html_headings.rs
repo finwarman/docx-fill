@@ -244,3 +244,24 @@ fn keeps_paragraph_history() {
         assert!(!body.contains("w:val=\"18\""));
     }
 }
+
+#[test]
+fn defines_included_headings_without_main_styles() {
+    let sub_doc = format!("<w:document xmlns:w=\"{W}\"><w:body>{TAG}<w:sectPr/></w:body></w:document>");
+    let sub = docx_fill::Subtemplate::parse([("word/document.xml".to_string(), sub_doc.into_bytes())], &FillOptions::default(), docx_fill::IncludeMode::Templated, docx_fill::IncludeStyles::UseMain).unwrap();
+    let mut template = PackageTemplate::parse([("word/document.xml".to_string(), document("<w:p><w:r><w:t>{:include doc}</w:t></w:r></w:p>").into_bytes())], &FillOptions::default()).unwrap();
+    template.add_include("part", sub);
+    let output: Vec<_> = template.render(&json!({"doc":"part","html":"<h2>B</h2>"})).into_iter().map(|(name, bytes)| (name, bytes.into_owned())).collect();
+
+    assert!(part(&output, "word/document.xml").contains("<w:pStyle w:val=\"Heading1\"/>"));
+    assert!(output.iter().any(|(name, bytes)| name == "word/styles.xml" && std::str::from_utf8(bytes).unwrap().contains("w:styleId=\"Heading1\"")), "Heading1 is used but never defined");
+}
+
+#[test]
+fn names_title_apart_from_character_styles() {
+    let styles = format!("<w:styles xmlns:w=\"{W}\"><w:style w:type=\"character\" w:styleId=\"TitleChar\"><w:name w:val=\"Title\"/></w:style></w:styles>");
+    let output = render("<h1>A</h1>", Some(&styles));
+    let styles = part(&output, "word/styles.xml");
+
+    assert_eq!(styles.matches("<w:name w:val=\"Title\"/>").count(), 1, "{styles}");
+}

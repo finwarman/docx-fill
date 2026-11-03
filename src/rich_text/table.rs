@@ -8,6 +8,9 @@ const DEFAULT_WIDTH_TWIPS: u32 = 8640;
 const EIGHTHS_PER_POINT: f64 = 8.0;
 const TWIPS_PER_CSS_PIXEL: f64 = TWIPS_PER_POINT * POINTS_PER_CSS_PIXEL;
 const BORDER_SIDES: [&str; 6] = ["top", "left", "bottom", "right", "insideH", "insideV"];
+// Word stores percentage widths in fiftieths of one percent.
+const PCT_PER_PERCENT: f64 = 50.0;
+const FULL_PERCENT: f64 = 100.0;
 
 #[derive(Debug, Clone, Copy)]
 enum Length { Twips(u32), Percent(f64) }
@@ -54,6 +57,24 @@ pub(super) struct CellLayout {
     margins: [Option<i64>; 4],
     borders: [Option<Border>; 4],
     vertical: Option<&'static str>,
+}
+
+/// A vertically merged cell's row within its merge.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum MergeRow { First, Middle, Last }
+
+impl CellLayout {
+    /// The layout for one row of a merge: side borders on every row, the bottom border on the last.
+    pub(super) fn in_merge(&self, row: MergeRow) -> CellLayout {
+        if matches!(row, MergeRow::First) {
+            let mut layout = self.clone();
+            layout.borders[2] = None;
+            return layout;
+        }
+        let [_, left, bottom, right] = self.borders.clone();
+        let bottom = if matches!(row, MergeRow::Last) { bottom } else { None };
+        CellLayout { borders: [None, left, bottom, right], ..CellLayout::default() }
+    }
 }
 
 fn read_length(value: &str) -> Option<Length> {
@@ -232,19 +253,51 @@ fn write_border(out: &mut String, side: &str, border: &Border) {
     out.push_str(&format!("<w:{side} w:val=\"{}\" w:sz=\"{}\" w:space=\"0\" w:color=\"{}\"/>", border.style, border.size.max(2), border.color));
 }
 
+/// The table's preferred width: twips when the container's width is known or the HTML gives it.
+fn table_width(layout: &TableLayout, natural: Option<u32>, container: Option<u32>) -> Length {
+    match (layout.width, natural, container) {
+        (Some(Length::Twips(width)), _, _) => Length::Twips(width),
+        (Some(percent), _, Some(container)) => Length::Twips(percent.resolve(container)),
+        (Some(percent), _, None) => percent,
+        (None, Some(natural), _) => Length::Twips(natural),
+        (None, None, Some(container)) => Length::Twips(container.saturating_sub((layout.margins[1] + layout.margins[3]).min(i64::from(i32::MAX)) as u32).min(DEFAULT_WIDTH_TWIPS)),
+        (None, None, None) => Length::Percent(FULL_PERCENT),
+    }
+}
+
+/// `w:w` and `w:type` of a preferred width.
+fn preferred_width(width: Length) -> (u32, &'static str) {
+    match width {
+        Length::Twips(width) => (width, "dxa"),
+        Length::Percent(percent) => ((percent * PCT_PER_PERCENT).round().clamp(1.0, f64::from(i32::MAX)) as u32, "pct"),
+    }
+}
+
 pub(super) fn write(out: &mut String, rows: &[Vec<Cell>], layout: &TableLayout, writer: &mut BlockWriter) {
     let rows = place_cells(rows);
     let columns = rows.iter().map(|row| row.iter().map(|cell| cell.span).sum::<usize>()).max().unwrap_or(1).max(1);
     let lengths = column_lengths(&rows, layout, columns);
     let absolute: Option<Vec<_>> = lengths.iter().map(|length| match length { Some(Length::Twips(value)) => Some(u64::from(*value)), _ => None }).collect();
     let natural = absolute.map(|values| values.into_iter().sum::<u64>().min(i32::MAX as u64) as u32);
-    let width = layout.width.map(|width| width.resolve(writer.width)).or(natural)
-        .unwrap_or_else(|| writer.width.saturating_sub((layout.margins[1] + layout.margins[3]).min(i64::from(i32::MAX)) as u32).min(DEFAULT_WIDTH_TWIPS)).max(columns.min(i32::MAX as usize) as u32);
-    let widths = grid_widths(&lengths, width);
+    let width = match table_width(layout, natural, writer.width) {
+        Length::Twips(width) => Length::Twips(width.max(columns.min(i32::MAX as usize) as u32)),
+        percent => percent,
+    };
+    // Without a known width the grid is a hint and cells take percentages of the table.
+    let widths = grid_widths(&lengths, match width { Length::Twips(width) => width, Length::Percent(_) => DEFAULT_WIDTH_TWIPS });
+    let total: u64 = widths.iter().map(|width| u64::from(*width)).sum();
+    let cell_width = |used: usize, span: usize| {
+        let sum: u32 = widths.iter().skip(used).take(span).sum();
+        match width {
+            Length::Twips(_) => Length::Twips(sum),
+            Length::Percent(_) => Length::Percent(FULL_PERCENT * f64::from(sum) / total.max(1) as f64),
+        }
+    };
     let first_padding = rows.first().and_then(|row| row.first()).and_then(|cell| cell.layout.margins[1]).unwrap_or(layout.padding[1]);
     // Word aligns the first cell's text at the table indent; compensate its padding for a border aligned to the text area.
     let indent = layout.margins[1].saturating_add(first_padding);
-    out.push_str(&format!("<w:tbl><w:tblPr><w:tblW w:w=\"{width}\" w:type=\"dxa\"/><w:jc w:val=\"{}\"/><w:tblInd w:w=\"{indent}\" w:type=\"dxa\"/><w:tblBorders>", layout.align));
+    let (preferred, kind) = preferred_width(width);
+    out.push_str(&format!("<w:tbl><w:tblPr><w:tblW w:w=\"{preferred}\" w:type=\"{kind}\"/><w:jc w:val=\"{}\"/><w:tblInd w:w=\"{indent}\" w:type=\"dxa\"/><w:tblBorders>", layout.align));
     for (side, border) in BORDER_SIDES.iter().zip(&layout.borders) { write_border(out, side, border); }
     out.push_str("</w:tblBorders>");
     if matches!(layout.layout, Layout::Fixed) { out.push_str("<w:tblLayout w:type=\"fixed\"/>"); }
@@ -257,20 +310,20 @@ pub(super) fn write(out: &mut String, rows: &[Vec<Cell>], layout: &TableLayout, 
         out.push_str("<w:tr>");
         let mut used = 0;
         for cell in row {
-            let width = widths.iter().skip(used).take(cell.span).sum();
-            write_cell(out, &cell, layout, width, writer);
+            write_cell(out, &cell, layout, cell_width(used, cell.span), writer);
             used += cell.span;
         }
-        for width in widths.iter().skip(used) {
-            write_cell(out, &PlacedCell { span: 1, merge: CellMerge::None, blocks: &[], layout: CellLayout::default() }, layout, *width, writer);
+        for column in used..widths.len() {
+            write_cell(out, &PlacedCell { span: 1, merge: CellMerge::None, blocks: &[], layout: CellLayout::default() }, layout, cell_width(column, 1), writer);
         }
         out.push_str("</w:tr>");
     }
     out.push_str("</w:tbl>");
 }
 
-fn write_cell(out: &mut String, cell: &PlacedCell, table: &TableLayout, width: u32, writer: &mut BlockWriter) {
-    out.push_str(&format!("<w:tc><w:tcPr><w:tcW w:w=\"{width}\" w:type=\"dxa\"/>"));
+fn write_cell(out: &mut String, cell: &PlacedCell, table: &TableLayout, width: Length, writer: &mut BlockWriter) {
+    let (preferred, kind) = preferred_width(width);
+    out.push_str(&format!("<w:tc><w:tcPr><w:tcW w:w=\"{preferred}\" w:type=\"{kind}\"/>"));
     if cell.span > 1 { out.push_str(&format!("<w:gridSpan w:val=\"{}\"/>", cell.span)); }
     match cell.merge { CellMerge::Start => out.push_str("<w:vMerge w:val=\"restart\"/>"), CellMerge::Continue => out.push_str("<w:vMerge/>"), CellMerge::None => {} }
     if cell.layout.borders.iter().any(Option::is_some) {
@@ -287,7 +340,7 @@ fn write_cell(out: &mut String, cell: &PlacedCell, table: &TableLayout, width: u
     out.push_str("</w:tcPr>");
     let padding = cell.layout.margins[1].unwrap_or(table.padding[1]).saturating_add(cell.layout.margins[3].unwrap_or(table.padding[3]));
     let outer_width = writer.width;
-    writer.width = width.saturating_sub(padding.min(i64::from(i32::MAX)) as u32).max(1);
+    writer.width = match width { Length::Twips(width) => Some(width.saturating_sub(padding.min(i64::from(i32::MAX)) as u32).max(1)), Length::Percent(_) => None };
     for (index, block) in cell.blocks.iter().enumerate() {
         if follows_table(cell.blocks, index) { out.push_str("<w:p/>"); }
         write_block(out, "<w:p>", "", "", block, writer);
