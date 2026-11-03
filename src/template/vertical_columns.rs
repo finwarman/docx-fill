@@ -57,6 +57,8 @@ fn read_cells(parts: &[Part], table: (usize, usize)) -> Vec<Vec<Cell>> {
     let mut depth = 0;
     let mut column = 0usize;
     let mut cell: Option<Cell> = None;
+    // Row and cell properties open, so tracked changes' old ones are skipped.
+    let mut properties = 0usize;
     for (at, part) in parts.iter().enumerate().take(table.1 + 1).skip(table.0) {
         let Part::Element { kind, name, raw } = part else { continue };
         if name == TABLE {
@@ -69,6 +71,13 @@ fn read_cells(parts: &[Part], table: (usize, usize)) -> Vec<Vec<Cell>> {
         }
         if depth != 1 {
             continue;
+        }
+        if matches!(name.as_str(), "w:tcPr" | "w:trPr") {
+            match kind {
+                ElementKind::Open => properties += 1,
+                ElementKind::Close => properties = properties.saturating_sub(1),
+                _ => {}
+            }
         }
         match (name.as_str(), kind) {
             (ROW, ElementKind::Open) => {
@@ -83,12 +92,12 @@ fn read_cells(parts: &[Part], table: (usize, usize)) -> Vec<Vec<Cell>> {
                     row.push(current);
                 }
             }
-            ("w:gridSpan", ElementKind::Open | ElementKind::SelfClosing) => {
+            ("w:gridSpan", ElementKind::Open | ElementKind::SelfClosing) if properties == 1 => {
                 if let Some(cell) = &mut cell {
                     cell.span = read_attribute(raw, "w:val").and_then(|value| value.parse().ok()).unwrap_or(1).max(1);
                 }
             }
-            ("w:gridBefore", ElementKind::Open | ElementKind::SelfClosing) => {
+            ("w:gridBefore", ElementKind::Open | ElementKind::SelfClosing) if properties == 1 => {
                 column = read_attribute(raw, "w:val").and_then(|value| value.parse().ok()).unwrap_or(0);
             }
             _ => {}

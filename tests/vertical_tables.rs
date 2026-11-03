@@ -85,6 +85,20 @@ fn repeats_columns_across_rows() {
 }
 
 #[test]
+fn ignores_historical_spans_and_offsets() {
+    let span = "<w:tcPr><w:tcPrChange w:id=\"1\" w:author=\"A\"><w:tcPr><w:gridSpan w:val=\"2\"/></w:tcPr></w:tcPrChange></w:tcPr>";
+    let before = "<w:trPr><w:trPrChange w:id=\"2\" w:author=\"A\"><w:trPr><w:gridBefore w:val=\"1\"/></w:trPr></w:trPrChange></w:trPr>";
+    let items = json!({ "items": [{ "name": "A" }, { "name": "B" }] });
+    for (head, name) in [(span, ""), ("", before)] {
+        let head = cell(&["Head"]).replacen("<w:tc>", &format!("<w:tc>{head}"), 1);
+        let name = row(&[cell(&["Name"]), cell(&["{name}{:vt/items}"]), cell(&["End"])]).replacen("<w:tr>", &format!("<w:tr>{name}"), 1);
+        let xml = fill(&table(&[row(&[head, cell(&["{:vt#items}"]), cell(&["End"])]), name]), items.clone());
+
+        assert_eq!(read_rows(&xml), [["Head", "", "", "End"], ["Name", "A", "B", "End"]]);
+    }
+}
+
+#[test]
 fn drops_empty_columns() {
     let template = table(&[
         row(&[cell(&["Head"]), cell(&["{:vt#items}"])]),
