@@ -42,17 +42,24 @@ cargo run --example fill_docx -- template.docx data.json filled.docx
 
 Missing or null values produce no text. Names are looked up as whole keys unless expressions are enabled. When loop tags each occupy their own paragraph, the paragraphs between them repeat.
 
-## Extensions
+## Supported features
 
-Extensions support HTML, images, charts, table generation and merging, styling, footnotes, comments, and included documents or sections. They are enabled through `FillOptions::extensions` and are on by default. Use `Extensions::NONE` for core tags only.
+The library works with DOCX templates and JSON data. Extension flags in `FillOptions::extensions` are on by default; use `Extensions::NONE` for core tags only.
 
-The [reference](docs/reference.md) lists extension tags, options and limits:
+| Feature | Support |
+|---|---|
+| [HTML](docs/reference.md#html) | Paragraphs, headings, nested lists, links, tables and CSS. |
+| [Images](docs/reference.md#images) | Image hooks, sizing, captions, floating pictures and SVG previews. HTML image data URLs support PNG, JPEG, GIF and SVG. |
+| [Charts](docs/reference.md#charts) | Bar, line, area, radar, pie, doughnut, surface, scatter and bubble charts; ChartEx sunburst, treemap, waterfall and region maps. |
+| [Tables](docs/reference.md#extension-tags) | Tables and grids from data, repeating columns and merged cells. |
+| [Styling](docs/reference.md#styling-and-themes) | Cells, paragraphs, rows, runs, bullets, shapes and theme colours. |
+| [Included content](docs/reference.md#extension-tags) | Subtemplates, named segments, sections, headers and footers. |
+| [Footnotes and comments](docs/reference.md#extension-tags) | Inserted footnotes and comments on values. |
+| [Paragraphs and XML](docs/reference.md#extension-tags) | Conditional or repeated paragraphs, raw paragraphs and raw runs. |
+| [Expressions](docs/reference.md#expressions) | Property access, arithmetic, conditions and filters. |
+| [Text edits](docs/reference.md#text-edits) | Search, replacement, bookmarks and comments. |
 
-- [HTML](docs/reference.md#html): paragraphs, lists, headings, links, tables and styles.
-- [Images](docs/reference.md#images): sizing, captions, floating pictures and SVG.
-- [Charts](docs/reference.md#charts): category, scatter, bubble and supported ChartEx charts.
-- [Expressions](docs/reference.md#expressions): property access, arithmetic, conditions and filters.
-- [Text edits](docs/reference.md#text-edits): search, replacement, bookmarks and comments.
+The [full extension table](docs/reference.md#extension-tags) lists flags and tag syntax. The reference also covers [options and limits](docs/reference.md).
 
 These Cargo features are optional:
 
