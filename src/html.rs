@@ -15,12 +15,22 @@ pub enum HtmlBlockMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HtmlTagKind { Inline, Block }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HtmlHeadingMode {
+    /// Use document paragraph styles for block headings.
+    #[default]
+    Styles,
+    /// Keep template formatting and set heading sizes directly on runs.
+    Direct,
+}
+
 /// Legacy render methods remain best-effort; checked renders enforce these flags.
 #[derive(Debug, Clone, Default)]
 pub struct HtmlOptions {
     pub ignore_unknown_tags: bool,
     pub ignore_css_errors: bool,
     pub on_invalid_block: HtmlBlockMode,
+    pub heading_mode: HtmlHeadingMode,
     pub custom_tags: BTreeMap<String, HtmlTagKind>,
 }
 

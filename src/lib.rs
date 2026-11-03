@@ -64,7 +64,7 @@ pub use comments::CommentDefaults;
 pub use placeholder_lines::{ParagraphPlaceholderOptions, SoftBreakScope};
 pub use footnotes::{FootnoteContent, FootnoteOptions};
 pub use full_table::{TableOptions, TableResize, TableValidation};
-pub use html::{HtmlBlockMode, HtmlCustomization, HtmlElement, HtmlFragment, HtmlOptions, HtmlTagKind};
+pub use html::{HtmlBlockMode, HtmlCustomization, HtmlElement, HtmlFragment, HtmlHeadingMode, HtmlOptions, HtmlTagKind};
 pub use images::{Image, ImageAlignment, ImageBorder, ImageCaption, ImageFloat, ImageLayer, ImageLength, ImageProperties, ImageRelative, ImageSize, ImageWrap};
 pub use includes::{IncludeMode, IncludeStyles, Subtemplate};
 pub use json::read_include_options;

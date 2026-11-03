@@ -39,11 +39,13 @@ Set flags through `FillOptions::extensions`. All flags default to enabled; QR de
 
 ### Lists and headings
 
-`PackageTemplate` creates native Word lists, including nested lists, ordered starts and item-value resets. List text is indented half an inch per level with a quarter-inch hanging marker. CSS indents override those defaults. Marker formatting comes from the tag run; bullets use Symbol when that run has no explicit font. Existing numbering IDs are preserved. Nesting beyond Word's nine levels uses the ninth level.
+`PackageTemplate` creates native Word lists, including nested lists, ordered starts and item-value resets. List text is indented a quarter inch per level with a quarter-inch hanging marker. CSS indents override those defaults. Marker formatting comes from the tag run; bullets use Symbol when that run has no explicit font. Existing numbering IDs are preserved. Nesting beyond Word's nine levels uses the ninth level.
 
 Block headings use `Title` for `h1` and `Heading1` through `Heading5` for `h2` through `h6`. Existing paragraph styles are matched by ID or name and left unchanged. Their font, size and weight replace the tag run's formatting; explicit CSS, emphasis and style hooks can override them. Language and proofing metadata are retained.
 
 Missing heading styles are added when used. They use the theme heading font with Arial as a fallback. Sizes are 28, 20, 16, 14, 12 and 11 points. The title is regular; the other headings are bold.
+
+Set `html.headingMode` to `"direct"` to keep the tag paragraph style and run font. This mode makes `h1` through `h6` bold at 16, 14, 13, 12, 12 and 12 points without adding heading styles. Explicit CSS and custom paragraph styles still take precedence. The default, `"styles"`, uses the paragraph-style mapping above.
 
 Inline headings use direct formatting. `Template` and `fill_part` also use direct heading formatting and literal list markers, since they cannot add package styles or numbering parts.
 

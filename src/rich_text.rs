@@ -31,7 +31,7 @@ use numbering::Numberings;
 pub(crate) const MARK_START: char = '\u{E000}';
 pub(crate) const MARK_END: char = '\u{E001}';
 
-const LIST_INDENT_TWIPS: u32 = 720;
+const LIST_INDENT_TWIPS: u32 = 360;
 const LIST_HANGING_TWIPS: u32 = 360;
 // Word numbering levels are zero-based, with nine levels.
 const MAX_LIST_LEVEL: usize = 8;
