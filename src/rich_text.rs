@@ -1641,7 +1641,7 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
             let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_HANGING_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
             let inner = paragraph_props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("");
             let numbering = number.map(|id| format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{id}\"/></w:numPr>")).unwrap_or_default();
-            let mut inner = set_child(&set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
+            let mut inner = set_child(&set_child(inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
             // Native markers use the paragraph mark's formatting, separate from the text runs.
             if number.is_some() && !run_props.is_empty() {
                 inner = set_child(&inner, "w:rPr", run_props, PARAGRAPH_ORDER);
