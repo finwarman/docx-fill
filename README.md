@@ -133,7 +133,7 @@ ChartEx elements and chart references accept namespace aliases and default names
 
 JSON edit names are `setHyperlinkBase` (`url`), `getPageBreaks`, `dropContentBetween` (`start`/`end`, each `"start"`, `"end"` or a break index), `getLoopTags`, `searchRegex` (`pattern`) and `replaceAllRegex` (`pattern`, `text`).
 
-`FillOptions::tag_prefixes` configures loop, inverted-loop, raw XML, image, HTML and raw-run prefixes. JSON accepts the same fields under `tagPrefixes` with camelCase names. Core prefixes must be nonempty, and all prefixes must be distinct. An empty extension prefix handles otherwise unmatched tags; the longest enabled prefix wins. Existing prefixes remain the defaults.
+`FillOptions::tag_prefixes` configures loop, inverted-loop, raw XML, image, HTML and raw-run prefixes. JSON accepts the same fields under `tagPrefixes` with camelCase names. Core prefixes must be nonempty, and all prefixes must be distinct. A prefix already claimed by an enabled fixed-syntax extension is rejected, such as `$` while charts are enabled; disable that extension to reuse its prefix. An empty extension prefix handles otherwise unmatched tags; the longest enabled prefix wins. Existing prefixes remain the defaults.
 
 `FillHooks::image_size` can return an exact `ImageSize` after the image is loaded. Returning `None` keeps container fitting. Existing `Image` values need no changes.
 

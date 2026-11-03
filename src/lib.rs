@@ -384,7 +384,7 @@ impl PackageTemplate {
         if options.chart_data == ChartDataMode::Workbook {
             return Err(FillError::new("Workbook chart data needs the chart-workbook cargo feature").with_id(FillErrorId::ChartWorkbook));
         }
-        options.tag_prefixes.validate()?;
+        template::validate_tag_prefixes(options)?;
         let mut parts: Vec<(String, Vec<u8>)> = parts.into_iter().collect();
         let chart_titles = if options.extensions.charts { charts::prepare(&mut parts, options) } else { BTreeMap::new() };
         #[cfg(feature = "qr-codes")]
