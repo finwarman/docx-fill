@@ -1,5 +1,5 @@
 use crate::properties::{find_element_end, find_starts};
-use crate::xml::{escape, read_attribute, unescape};
+use crate::xml::{ElementKind, Token, escape, read_attribute, tokenize, unescape};
 use super::{EMU_PER_PX, Image, ImageSize};
 
 pub(crate) struct PictureReplacement {
@@ -18,7 +18,7 @@ pub(crate) struct PictureFrame {
 
 /// Change the picture source while preserving its existing anchor, crop and geometry.
 pub(crate) fn replace_picture(xml: &str, relationship: &str, size: Option<ImageSize>, tag: &str, svg: Option<&str>) -> Option<String> {
-    let start = *find_starts(xml, "a:blip").first()?;
+    let start = own_blip(xml)?;
     let end = find_element_end(xml, start, "a:blip")?;
     let mut out = format!("{}{}{}", &xml[..start], super::blip_xml(relationship, svg), &xml[end..]);
     if let Some(size) = size {
@@ -51,6 +51,24 @@ pub(crate) fn replace_picture(xml: &str, relationship: &str, size: Option<ImageS
         }
     }
     Some(out)
+}
+
+fn own_blip(xml: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut at = 0;
+    for token in tokenize(xml).ok()? {
+        let length = match token { Token::Element { raw, .. } => raw.len(), Token::Text(text) => text.len() };
+        if let Token::Element { kind, name, .. } = token {
+            match (kind, name) {
+                (ElementKind::Open, "w:drawing") => depth += 1,
+                (ElementKind::Close, "w:drawing") => depth = depth.checked_sub(1)?,
+                (ElementKind::Open | ElementKind::SelfClosing, "a:blip") if depth == 1 => return Some(at),
+                _ => {}
+            }
+        }
+        at += length;
+    }
+    None
 }
 
 fn set_attribute(raw: &str, name: &str, value: &str) -> String {
