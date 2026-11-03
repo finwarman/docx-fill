@@ -12,6 +12,7 @@ const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const IDS: [&str; 6] = ["Title", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5"];
 // Concrete fallback sizes in half-points; existing template styles are never restyled.
 const SIZES: [u32; 6] = [56, 40, 32, 28, 24, 22];
+const TITLE_TRACKING: i32 = -10;
 const APPEARANCE: &[&str] = &["w:rStyle", "w:rFonts", "w:b", "w:bCs", "w:i", "w:iCs", "w:caps", "w:smallCaps", "w:strike", "w:dstrike", "w:outline", "w:shadow", "w:emboss", "w:imprint", "w:color", "w:spacing", "w:w", "w:kern", "w:position", "w:sz", "w:szCs", "w:highlight", "w:u", "w:effect", "w:bdr", "w:shd", "w:vertAlign", "w:em"];
 
 pub(crate) struct Headings {
@@ -199,6 +200,7 @@ fn definition(id: &str, level: usize, base: Option<&str>) -> String {
     let outline = if level == 0 { String::new() } else { format!("<w:outlineLvl w:val=\"{}\"/>", level - 1) };
     let bold = if level == 0 { "<w:b w:val=\"0\"/><w:bCs w:val=\"0\"/>" } else { "<w:b/><w:bCs/>" };
     let size = SIZES[level];
+    let tracking = if level == 0 { format!("<w:spacing w:val=\"{TITLE_TRACKING}\"/>") } else { String::new() };
     let base = base.map(|id| format!("<w:basedOn w:val=\"{}\"/><w:next w:val=\"{}\"/>", escaped(id), escaped(id))).unwrap_or_default();
-    format!("<w:style w:type=\"paragraph\" w:styleId=\"{}\"><w:name w:val=\"{name}\"/>{base}<w:qFormat/><w:pPr><w:keepNext/><w:keepLines/>{outline}</w:pPr><w:rPr><w:rFonts w:ascii=\"Arial\" w:hAnsi=\"Arial\" w:cs=\"Arial\" w:asciiTheme=\"majorHAnsi\" w:hAnsiTheme=\"majorHAnsi\" w:eastAsiaTheme=\"majorEastAsia\" w:cstheme=\"majorBidi\"/>{bold}<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/></w:rPr></w:style>", escaped(id))
+    format!("<w:style w:type=\"paragraph\" w:styleId=\"{}\"><w:name w:val=\"{name}\"/>{base}<w:qFormat/><w:pPr><w:keepNext/><w:keepLines/>{outline}</w:pPr><w:rPr><w:rFonts w:ascii=\"Arial\" w:hAnsi=\"Arial\" w:cs=\"Arial\" w:asciiTheme=\"majorHAnsi\" w:hAnsiTheme=\"majorHAnsi\" w:eastAsiaTheme=\"majorEastAsia\" w:cstheme=\"majorBidi\"/>{bold}{tracking}<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/></w:rPr></w:style>", escaped(id))
 }

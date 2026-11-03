@@ -45,6 +45,20 @@ fn creates_missing_styles() {
 }
 
 #[test]
+fn tracks_fallback_title_only() {
+    let output = render("<h1>A</h1><h2>B</h2>", None);
+    let styles = part(&output, "word/styles.xml");
+    let title = styles.split("w:styleId=\"Title\"").nth(1).unwrap().split("</w:style>").next().unwrap();
+    let heading = styles.split("w:styleId=\"Heading1\"").nth(1).unwrap().split("</w:style>").next().unwrap();
+    assert!(title.contains("<w:spacing w:val=\"-10\"/>"));
+    assert!(!heading.contains("<w:spacing"));
+
+    let existing = format!("<w:styles xmlns:w=\"{W}\"><w:style w:type=\"paragraph\" w:styleId=\"Title\"><w:name w:val=\"Title\"/><w:rPr><w:spacing w:val=\"8\"/></w:rPr></w:style></w:styles>");
+    let output = render("<h1>A</h1>", Some(&existing));
+    assert_eq!(part(&output, "word/styles.xml"), existing);
+}
+
+#[test]
 fn keeps_explicit_heading_css() {
     let output = render("<h1 style='font-family:Explicit;font-size:9pt;font-weight:normal;color:red'>A <i>B</i></h1>", None);
     let body = part(&output, "word/document.xml");
