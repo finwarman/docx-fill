@@ -84,6 +84,44 @@ fn does_not_overflow_on_deeply_nested_tables() {
 }
 
 #[test]
+fn inherits_formatting_through_deep_inline_elements() {
+    const DEPTH: usize = 20_000;
+    let value = format!("<b>{}z{}</b>after", "<span>x".repeat(DEPTH), "</span>".repeat(DEPTH));
+
+    let body = html(&value);
+    assert_eq!(text(&body), format!("{}zafter", "x".repeat(DEPTH)));
+    let runs = elements(&body, "w:r");
+    assert!(runs[..runs.len() - 1].iter().all(|run| run.contains("<w:b/>")));
+    assert!(!runs.last().unwrap().contains("<w:b/>"));
+}
+
+#[test]
+fn inherits_layout_through_deep_containers() {
+    const DEPTH: usize = 10_000;
+    let value = format!("<div style=\"margin-left:1pt\">{}z{}</div><p>after</p>", "<div>x".repeat(DEPTH), "</div>".repeat(DEPTH));
+
+    let body = html(&value);
+    let paragraphs = elements(&body, "w:p");
+    assert_eq!(paragraphs.len(), DEPTH + 1);
+    assert!(paragraphs[..DEPTH].iter().all(|paragraph| paragraph.contains("w:left=\"20\"")));
+    assert!(!paragraphs.last().unwrap().contains("<w:ind"));
+    assert_eq!(text(&body), format!("{}zafter", "x".repeat(DEPTH)));
+}
+
+#[test]
+fn updates_inheritance_after_crossed_closing_tags() {
+    let body = html("<div style=\"margin-left:1pt\"><section style=\"margin-left:2pt\"><b><i>a</b>b</div>c</i></section><p>d</p>");
+    let paragraphs = elements(&body, "w:p");
+    assert!(paragraphs[0].contains("w:left=\"60\""));
+    assert!(paragraphs[1].contains("w:left=\"40\""));
+    let runs = elements(&body, "w:r");
+    assert!(runs[0].contains("<w:b/>") && runs[0].contains("<w:i/>"));
+    assert!(!runs[1].contains("<w:b/>") && runs[1].contains("<w:i/>"));
+    assert!(!runs.last().unwrap().contains("<w:i/>"));
+    assert_eq!(text(&body), "abcd");
+}
+
+#[test]
 fn keeps_the_text_after_tables_past_the_nesting_limit() {
     let value = format!("{}x{}after", "<table><td>".repeat(100), "</td></table>".repeat(100));
 
