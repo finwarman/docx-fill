@@ -117,6 +117,18 @@ fn keeps_explicit_marker_fonts() {
 }
 
 #[test]
+fn keeps_historical_list_indent() {
+    let history = "<w:pPrChange w:id=\"1\" w:author=\"Editor\"><w:pPr><w:ind w:left=\"123\"/></w:pPr></w:pPrChange>";
+    let tag = format!("<w:p><w:pPr>{history}</w:pPr><w:r><w:t>{{~~html}}</w:t></w:r></w:p>");
+    let template = PackageTemplate::parse([("word/document.xml".into(), document(&tag).into_bytes())], &FillOptions::default()).unwrap();
+    let parts: Vec<_> = template.render(&json!({"html":"<ul><li>A</li></ul>"})).into_iter().map(|(name, bytes)| (name, String::from_utf8_lossy(&bytes).into_owned())).collect();
+    let body = part(&parts, "word/document.xml");
+
+    assert!(body.contains(history), "{body}");
+    assert!(body.contains("<w:ind w:left=\"720\" w:hanging=\"360\"/>"), "{body}");
+}
+
+#[test]
 fn preserves_nested_restarts() {
     let parts = render("<ol start=\"3\"><li>A<ul><li>B</li></ul></li><li value=\"10\">C</li><li>D</li></ol>", &[]);
     let body = part(&parts, "word/document.xml");

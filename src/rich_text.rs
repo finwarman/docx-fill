@@ -12,7 +12,7 @@
 //! `<ol start>`, `<li value>`, list-style-type, and inline `style` (color, background-color,
 //! font-size in px or pt, font-family, font-weight, font-style, text-decoration, text-align).
 
-use crate::cell_styling::{find_element_start, remove_first_element};
+use crate::cell_styling::find_element_start;
 use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, read_child, set_attribute, set_child};
 use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
@@ -1640,7 +1640,6 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
             let level = if number.is_some() { item.level.min(MAX_LIST_LEVEL) } else { item.level };
             let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_HANGING_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
             let inner = paragraph_props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("");
-            let inner = remove_first_element(inner, "<w:ind");
             let numbering = number.map(|id| format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{id}\"/></w:numPr>")).unwrap_or_default();
             let mut inner = set_child(&set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
             // Native markers use the paragraph mark's formatting, separate from the text runs.
