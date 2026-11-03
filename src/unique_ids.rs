@@ -9,10 +9,15 @@ const DRAWING: &str = "wp:docPr";
 const BOOKMARK_START: &str = "w:bookmarkStart";
 const BOOKMARK_END: &str = "w:bookmarkEnd";
 const PARAGRAPH_ID: &str = "w14:paraId";
+const REVISIONS: &[&str] = &[
+    "w:ins", "w:del", "w:moveFrom", "w:moveTo", "w:rPrChange", "w:pPrChange", "w:sectPrChange",
+    "w:tblPrChange", "w:tblPrExChange", "w:tblGridChange", "w:trPrChange", "w:tcPrChange",
+    "w:numberingChange", "w:cellIns", "w:cellDel", "w:cellMerge",
+];
 /// `w14:paraId` values must stay below this.
 const PARAGRAPH_ID_LIMIT: u32 = 0x8000_0000;
 
-/// `xml` with each repeated drawing id, bookmark id and name, and paragraph id given a new one.
+/// `xml` with each repeated drawing, bookmark, paragraph and revision id given a new one.
 /// A renamed bookmark's end follows its start, and bookmarks named with `kept_bookmarks` keep
 /// their names. `None` when nothing repeats or the XML does not tokenize.
 pub(crate) fn make_ids_unique(xml: &str, kept_bookmarks: Option<&str>) -> Option<String> {
@@ -46,6 +51,9 @@ struct Ids {
     all_names: BTreeSet<String>,
     paragraphs: BTreeSet<u32>,
     next_paragraph: u32,
+    revisions: BTreeSet<i64>,
+    all_revisions: BTreeSet<i64>,
+    next_revision: i64,
 }
 
 impl Ids {
@@ -64,6 +72,9 @@ impl Ids {
             }
             if let Some(id) = read_paragraph_id(raw) {
                 ids.next_paragraph = ids.next_paragraph.max(id + 1);
+            }
+            if REVISIONS.contains(name) && let Some(id) = read_revision_id(raw) {
+                ids.all_revisions.insert(id);
             }
         }
         ids
@@ -96,6 +107,12 @@ impl Ids {
                 let new = self.renamed_bookmarks.remove(&read_number(raw, "w:id"))?;
                 edited = Some(set_attribute(raw, "w:id", &new.to_string()));
             }
+            name if REVISIONS.contains(&name) => {
+                if let Some(id) = read_revision_id(raw) && !self.revisions.insert(id) {
+                    let new = self.new_revision_id()?;
+                    edited = Some(set_attribute(raw, "w:id", &new.to_string()));
+                }
+            }
             _ => {}
         }
         if read_paragraph_id(raw).is_some_and(|id| !self.paragraphs.insert(id)) {
@@ -104,6 +121,13 @@ impl Ids {
             edited = Some(set_attribute(edited.as_deref().unwrap_or(raw), PARAGRAPH_ID, &new));
         }
         edited
+    }
+
+    fn new_revision_id(&mut self) -> Option<i64> {
+        while !self.all_revisions.insert(self.next_revision) {
+            self.next_revision = self.next_revision.checked_add(1)?;
+        }
+        Some(self.next_revision)
     }
 
     /// `name_2`, `name_3` and so on: the first no bookmark in the part has.
@@ -121,4 +145,8 @@ fn read_number(raw: &str, attribute: &str) -> u64 {
 
 fn read_paragraph_id(raw: &str) -> Option<u32> {
     read_attribute(raw, PARAGRAPH_ID).and_then(|value| u32::from_str_radix(value, 16).ok())
+}
+
+fn read_revision_id(raw: &str) -> Option<i64> {
+    read_attribute(raw, "w:id").and_then(|value| value.parse().ok())
 }
