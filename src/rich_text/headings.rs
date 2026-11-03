@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::xml::{ElementKind, Token, escape, read_attribute, tokenize, unescape};
-use crate::{CONTENT_TYPES_PART, add_relationship, insert_before_last};
+use crate::{CONTENT_TYPES_PART, add_relationship};
 
 const RELATIONSHIP: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
 const CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml";
@@ -175,14 +175,25 @@ pub(super) fn paragraph_props(inner: &str) -> String {
 }
 
 fn append_root(xml: &str, root: &str, added: &str) -> String {
+    let mut depth = 0usize;
     for token in tokenize(xml).unwrap_or_default() {
-        if let Token::Element { kind: ElementKind::SelfClosing, name, raw } = token
-            && name == root && let Some(open) = raw.strip_suffix("/>") {
-            let at = crate::xml::offset_in(xml, raw);
-            return format!("{}{open}>{added}</{root}>{}", &xml[..at], &xml[at + raw.len()..]);
+        let Token::Element { kind, name, raw } = token else { continue };
+        if name != root { continue; }
+        let at = crate::xml::offset_in(xml, raw);
+        match kind {
+            ElementKind::Open => depth += 1,
+            ElementKind::SelfClosing if depth == 0 => {
+                let open = &raw[..raw.len() - 2];
+                return format!("{}{open}>{added}</{root}>{}", &xml[..at], &xml[at + raw.len()..]);
+            }
+            ElementKind::Close if depth > 0 => {
+                depth -= 1;
+                if depth == 0 { return format!("{}{added}{}", &xml[..at], &xml[at..]); }
+            }
+            _ => {}
         }
     }
-    insert_before_last(xml, &format!("</{root}>"), added)
+    xml.to_string()
 }
 
 fn normalize(name: &str) -> String { name.chars().filter(|c| !c.is_whitespace()).flat_map(char::to_lowercase).collect() }
