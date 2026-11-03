@@ -85,6 +85,18 @@ fn handles_large_revision_ids() {
 }
 
 #[test]
+fn keeps_revision_ids_apart_from_other_annotations() {
+    let marked = r#"<w:p><w:commentRangeStart w:id="0"/><w:bookmarkStart w:id="1" w:name="b"/><w:r><w:t>c</w:t></w:r><w:bookmarkEnd w:id="1"/><w:commentRangeEnd w:id="0"/></w:p>"#;
+    let changed = r#"<w:p><w:ins w:id="5" w:author="Editor"><w:r><w:t>x</w:t></w:r></w:ins></w:p>"#;
+    let body = fill(&(marked.to_string() + &paragraph(&["{#l}"]) + changed + &paragraph(&["{/l}"])), three_items());
+    let ids: Vec<_> = body.split("<w:ins w:id=\"").skip(1).map(|rest| &rest[..rest.find('"').unwrap()]).collect();
+
+    assert_eq!(ids.len(), 3);
+    assert!(are_unique(&ids), "{ids:?}");
+    assert!(!ids.iter().any(|id| ["0", "1"].contains(id)), "{ids:?}");
+}
+
+#[test]
 fn keeps_the_names_of_continued_bookmarks() {
     let options = FillOptions { continued_bookmarks: Some("tag_".into()), ..FillOptions::default() };
     let marked = r#"<w:p><w:bookmarkStart w:id="3" w:name="tag_0"/><w:bookmarkEnd w:id="3"/><w:r><w:t>x</w:t></w:r></w:p>"#;
