@@ -79,3 +79,18 @@ fn keeps_loop_copies_of_soft_lines_apart() {
     assert_eq!(xml.matches("<w:br/>").count(), 2);
     assert!(!xml.contains("data-docx-fill"));
 }
+
+#[test]
+fn gives_split_changes_new_ids() {
+    let paragraph = "<w:p><w:ins w:id=\"7\" w:author=\"Editor\" w:date=\"2026-01-01T00:00:00Z\"><w:r><w:t>first</w:t><w:br/><w:t>{?show}middle</w:t><w:br/><w:t>last</w:t></w:r></w:ins></w:p>";
+    let xml = fill(paragraph, json!({"show":true}), json!({"paragraphPlaceholder":{"expandSoftBreaks":true}}));
+    let ids: Vec<_> = xml.split("<w:ins ").skip(1).map(|tag| tag.split("w:id=\"").nth(1).unwrap().split('"').next().unwrap()).collect();
+
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.iter().collect::<std::collections::BTreeSet<_>>().len(), 3);
+    assert_eq!(ids[0], "7");
+    assert_eq!(xml.matches("w:author=\"Editor\"").count(), 3);
+    assert_eq!(xml.matches("w:date=\"2026-01-01T00:00:00Z\"").count(), 3);
+    assert_eq!(xml.matches("<w:br/>").count(), 2);
+    assert!(xml.contains("first") && xml.contains("middle") && xml.contains("last"));
+}
