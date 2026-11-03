@@ -371,10 +371,11 @@ impl Template {
             tag.is_alone = paragraph.len() == 1 && paragraph[0].end - paragraph[0].start == joined_texts[tag.paragraph].len();
         }
 
+        let cells = find_each_enclosing(&parts, CELL);
         let html_widths = read_html_widths(&parts, &tags, fallback_width, cell_margins);
         for (index, tag) in tags.iter_mut().enumerate() {
             match &mut tag.kind {
-                TagKind::Image { cell_width, .. } => *cell_width = read_cell_width(&parts, tag.part),
+                TagKind::Image { cell_width, .. } => *cell_width = read_cell_width(&parts, &cells, tag.part),
                 TagKind::RichText { container_width, .. } => *container_width = html_widths[index],
                 TagKind::Value if options.linebreaks || options.extensions.comments => tag.run_props = read_run_props(&parts, tag.part),
                 TagKind::Footnote => tag.run_props = read_run_props(&parts, tag.part),
@@ -382,7 +383,7 @@ impl Template {
             }
         }
 
-        let blocks = pair_blocks(&parts, &tags, &paragraphs, options, &mut errors);
+        let blocks = pair_blocks(&parts, &cells, &tags, &paragraphs, options, &mut errors);
         let has_cell_loops = blocks.iter().any(|block| matches!(&tags[block.open_tag].kind, TagKind::Open { element: Some(element), .. } if element == CELL));
         let mut expressions = parse_expressions(&tags, options, &mut errors);
         let mut picture_tags = BTreeMap::new();
@@ -1094,8 +1095,8 @@ fn read_cell_margins(parts: &[Part], element: &str) -> [Option<f64>; 2] {
 }
 
 /// The innermost cell's preferred width in pixels, when supplied in twips.
-fn read_cell_width(parts: &[Part], at: usize) -> Option<f64> {
-    let (start, _) = find_enclosing(parts, at, CELL)?;
+fn read_cell_width(parts: &[Part], cells: &[Option<(usize, usize)>], at: usize) -> Option<f64> {
+    let (start, _) = cells[at]?;
     property_width(&parts[start + 1..at], "w:tcPr", "w:tcW", None)
 }
 
@@ -1148,7 +1149,7 @@ fn read_run_props(parts: &[Part], at: usize) -> Option<String> {
 }
 
 /// Pairs each loop's tags and works out the parts every loop and raw tag replaces.
-fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: &FillOptions, errors: &mut Vec<FillError>) -> Vec<Block> {
+fn pair_blocks(parts: &[Part], cells: &[Option<(usize, usize)>], tags: &[Tag], paragraphs: &[Paragraph], options: &FillOptions, errors: &mut Vec<FillError>) -> Vec<Block> {
     let chart_parts = if tags.iter().any(|tag| tag.kind == TagKind::Chart) { crate::charts::chart_parts(parts) } else { Default::default() };
     let mut blocks = Vec::new();
     let mut open: Vec<usize> = Vec::new();
@@ -1171,12 +1172,12 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                     blocks.push(expand_segment(tags, paragraphs, opening, index, is_inline)?);
                     return Ok(());
                 }
-                check_cell_loops(parts, tags, opening, index, &options.delimiters)?;
+                check_cell_loops(cells, tags, opening, index, &options.delimiters)?;
                 if let Some(columns) = vertical_columns::column_blocks(parts, tags, opening, index)? {
                     blocks.extend(columns);
                     return Ok(());
                 }
-                blocks.push(expand_loop(parts, tags, paragraphs, opening, index, options)?);
+                blocks.push(expand_loop(parts, cells, tags, paragraphs, opening, index, options)?);
             }
             TagKind::Raw if !tag.is_alone => {
                 return Err(FillError::new(format!("The raw tag \"{}\" should be the only text in its paragraph", tag.name)));
@@ -1228,7 +1229,7 @@ fn pair_blocks(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], options: 
                 }
                 let (start, end) = find_enclosing(parts, tag.part, PARAGRAPH).ok_or_else(|| not_inside(tag, PARAGRAPH))?;
                 blocks.push(Block {
-                    kind: BlockKind::FullTable { name: tag.name.clone(), is_in_cell: find_enclosing(parts, tag.part, CELL).is_some() },
+                    kind: BlockKind::FullTable { name: tag.name.clone(), is_in_cell: cells[tag.part].is_some() },
                     start,
                     end: end + 1,
                     body_start: end + 1,
@@ -1359,7 +1360,7 @@ fn expand_grid(tags: &[Tag], paragraphs: &[Paragraph], opening: usize, closing: 
 /// - with `paragraph_loop`, the paragraphs between its tags, when each tag is alone in its own
 ///   paragraph (the tags' paragraphs go);
 /// - otherwise the XML between its tags.
-fn expand_loop(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], opening: usize, closing: usize, options: &FillOptions) -> Result<Block, FillError> {
+fn expand_loop(parts: &[Part], cells: &[Option<(usize, usize)>], tags: &[Tag], paragraphs: &[Paragraph], opening: usize, closing: usize, options: &FillOptions) -> Result<Block, FillError> {
     let (open, close) = (&tags[opening], &tags[closing]);
     let TagKind::Open { is_inverted, element } = &open.kind else { unreachable!("pairs start at an opening tag") };
     let block = |start, end, body_start, body_end, page_breaks| Block {
@@ -1374,7 +1375,7 @@ fn expand_loop(parts: &[Part], tags: &[Tag], paragraphs: &[Paragraph], opening: 
 
     let element = match element {
         Some(element) => Some(element.clone()),
-        None => is_crossing_cells(parts, open.part, close.part).map_err(|_| misplaced_loop(open))?.then(|| ROW.to_string()),
+        None => is_crossing_cells(cells, open.part, close.part).map_err(|_| misplaced_loop(open))?.then(|| ROW.to_string()),
     };
     if let Some(element) = element {
         let (start, _) = find_enclosing(parts, open.part, &element).ok_or_else(|| not_inside(open, &element))?;
@@ -1398,8 +1399,8 @@ fn has_page_break(parts: &[Part]) -> bool {
 }
 
 /// Whether a loop's tags sit in different table cells. An error when only one is in a cell.
-fn is_crossing_cells(parts: &[Part], from: usize, to: usize) -> Result<bool, ()> {
-    match (find_enclosing(parts, from, CELL), find_enclosing(parts, to, CELL)) {
+fn is_crossing_cells(cells: &[Option<(usize, usize)>], from: usize, to: usize) -> Result<bool, ()> {
+    match (cells[from], cells[to]) {
         (Some(open), Some(close)) => Ok(open != close),
         (None, None) => Ok(false),
         _ => Err(()),
@@ -1446,16 +1447,41 @@ fn find_enclosing(parts: &[Part], at: usize, element: &str) -> Option<(usize, us
     None
 }
 
+/// The innermost `element` around each part that is not itself that element, as `find_enclosing`
+/// reads it, in one pass.
+fn find_each_enclosing(parts: &[Part], element: &str) -> Vec<Option<(usize, usize)>> {
+    let mut starts = vec![None; parts.len()];
+    let mut ends = vec![None; parts.len()];
+    let mut open = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        starts[index] = open.last().copied();
+        let Part::Element { kind, name, .. } = part else { continue };
+        if name != element {
+            continue;
+        }
+        match kind {
+            ElementKind::Open => open.push(index),
+            ElementKind::Close => {
+                if let Some(start) = open.pop() {
+                    ends[start] = Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    starts.into_iter().map(|start| Some((start?, ends[start?]?))).collect()
+}
+
 /// A loop across table cells repeats the row, so no other loop may close before it in its first
 /// cell or open after it in its last: `{#a}1{/a}{#b}` | `2{/b}`.
-fn check_cell_loops(parts: &[Part], tags: &[Tag], opening: usize, closing: usize, delimiters: &Delimiters) -> Result<(), FillError> {
-    let first_cell = find_enclosing(parts, tags[opening].part, CELL);
-    let last_cell = find_enclosing(parts, tags[closing].part, CELL);
+fn check_cell_loops(cells: &[Option<(usize, usize)>], tags: &[Tag], opening: usize, closing: usize, delimiters: &Delimiters) -> Result<(), FillError> {
+    let first_cell = cells[tags[opening].part];
+    let last_cell = cells[tags[closing].part];
     if first_cell.is_none() || first_cell == last_cell {
         return Ok(());
     }
 
-    let is_in = |cell: Option<(usize, usize)>, tag: &Tag| find_enclosing(parts, tag.part, CELL) == cell;
+    let is_in = |cell: Option<(usize, usize)>, tag: &Tag| cells[tag.part] == cell;
     let before = tags[..opening].iter().rev().take_while(|tag| is_in(first_cell, tag)).find(|tag| tag.kind == TagKind::Close);
     let after = tags[closing + 1..].iter().take_while(|tag| is_in(last_cell, tag)).find(|tag| matches!(tag.kind, TagKind::Open { .. }));
     let Some(other) = before.or(after) else { return Ok(()) };
