@@ -1,6 +1,7 @@
 # docx-fill
 
-A Rust library for filling Word documents from JSON data. Templates use docxtemplater's tag syntax. It also builds for WebAssembly.
+A Rust library for filling Word documents from JSON data, builds for Webassembly.  
+Templates use `docxtemplater` tag syntax. 
 
 ## Usage
 
