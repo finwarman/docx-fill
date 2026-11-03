@@ -209,3 +209,16 @@ fn limits_a_cell_span_to_words_column_count() {
     assert!(body.contains(r#"<w:gridSpan w:val="63"/>"#));
     assert!(body.len() < 10_000, "{} bytes", body.len());
 }
+
+#[test]
+fn keeps_one_section_break() {
+    let section = "<w:sectPr><w:pgSz w:w=\"100\"/></w:sectPr>";
+    let template = format!("<w:p><w:pPr>{section}</w:pPr><w:r><w:t>{{~~html}}</w:t></w:r></w:p><w:p/>");
+    for value in ["<p>A</p><p>B</p>", "<p>A</p><table><tr><td>B</td></tr></table>"] {
+        let body = fill(&template, json!({ "html": value }));
+        let last = elements(&body, "w:p").into_iter().rfind(|paragraph| paragraph.contains("w:sectPr")).unwrap_or_default();
+
+        assert_eq!(body.matches("<w:sectPr>").count(), 1, "{body}");
+        assert!(body.find(last).unwrap() + last.len() > body.rfind("B</w:t>").unwrap(), "{body}");
+    }
+}

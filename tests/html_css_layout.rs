@@ -56,3 +56,11 @@ fn orders_cell_properties_with_row_spans() {
 
     assert!(xml.contains("<w:vMerge w:val=\"restart\"/><w:tcMar><w:top w:w=\"15\" w:type=\"dxa\"/></w:tcMar><w:vAlign w:val=\"bottom\"/></w:tcPr>"));
 }
+
+#[test]
+fn adds_nested_margins() {
+    let xml = render("<div style='margin-left:20px'><div style='margin-left:20px'><p>A</p></div><p style='margin-left:10px'>B</p></div>");
+
+    assert!(xml.contains("<w:ind w:left=\"600\"/>"), "{xml}");
+    assert!(xml.contains("<w:ind w:left=\"450\"/>"), "{xml}");
+}

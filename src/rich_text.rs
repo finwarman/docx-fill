@@ -161,6 +161,11 @@ impl ParagraphLayout {
             page_before: over.page_before || self.page_before, page_after: over.page_after || self.page_after }
     }
     fn inherited(self) -> Self { Self { before: None, after: None, page_before: false, page_after: false, ..self } }
+    /// `inner` inside this layout: side margins add up, as CSS boxes nest.
+    fn nest(self, inner: Self) -> Self {
+        let add = |outer: Option<i64>, inner: Option<i64>| if outer.is_none() && inner.is_none() { None } else { Some(outer.unwrap_or(0).saturating_add(inner.unwrap_or(0))) };
+        Self { left: add(self.left, inner.left), right: add(self.right, inner.right), ..self.and(inner) }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -362,14 +367,12 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
             continue;
         }
 
-        let open = &run[..run.find('>').map_or(0, |at| at + 1)];
         let run_props = find_between(run, "<w:rPr>", "</w:rPr>").unwrap_or("");
-        let text = read_text(run);
-        let mut rest = text.as_str();
+        let mut rest = run.to_string();
         while left > 0 {
-            let Some((mark, index)) = find_mark(rest) else { break };
-            let at = rest.find(&mark).unwrap_or(0);
-            out.push_str(&write_text_run(open, run_props, &rest[..at]));
+            let Some((mark, index)) = find_mark(&read_text(&rest)) else { break };
+            let (written, cut) = cut_run(&rest, &mark);
+            out.push_str(&written);
             let (before, after) = following.split_once(&mark).unwrap_or(("", ""));
             previous = before.chars().next_back().or(previous);
             if let Some(value) = values.get(index) {
@@ -379,10 +382,10 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
                 out.push_str(&inline);
             }
             following = after;
-            rest = &rest[at + mark.len()..];
+            rest = cut;
             left -= 1;
         }
-        out.push_str(&write_text_run(open, run_props, rest));
+        out.push_str(&rest);
     }
     out.push_str(&paragraph[from..]);
     out
@@ -396,6 +399,10 @@ fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut 
     let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
     let mut out = String::new();
     let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new() } };
+    // A section break belongs to the last paragraph only.
+    let has_section = find_element_start(paragraph_props, "<w:sectPr").is_some();
+    let body_props = if has_section { preserve::without(paragraph_props, "w:sectPr") } else { paragraph_props.to_string() };
+    let ends_in_paragraph = blocks.last().is_some_and(|block| block.table.is_none() && block.raw_xml.is_none());
     for (index, block) in blocks.iter().enumerate() {
         let later = match (&mut continued, index) {
             (_, 0) => String::new(),
@@ -408,9 +415,13 @@ fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut 
         };
         let bookmarks = if index == 0 { bookmarks.as_str() } else { later.as_str() };
         if follows_table(blocks, index) {
-            out.push_str(&format!("{open}{paragraph_props}</w:p>"));
+            out.push_str(&format!("{open}{body_props}</w:p>"));
         }
-        write_block(&mut out, open, paragraph_props, bookmarks, block, &mut writer);
+        let props = if ends_in_paragraph && index + 1 == blocks.len() { paragraph_props } else { body_props.as_str() };
+        write_block(&mut out, open, props, bookmarks, block, &mut writer);
+    }
+    if has_section && !ends_in_paragraph {
+        out.push_str(&format!("{open}{paragraph_props}</w:p>"));
     }
     // The final structure pass adds a trailing paragraph only where required.
     out
@@ -512,14 +523,33 @@ fn find_run<'a>(paragraph: &'a str, mark: &str) -> Option<&'a str> {
     None
 }
 
-/// `run` with `mark` replaced by `runs`, its text either side kept.
+/// `run` with `mark` replaced by `runs`, its content either side kept.
 fn split_run(run: &str, mark: &str, runs: &str) -> String {
+    let (before, after) = cut_run(run, mark);
+    format!("{before}{runs}{after}")
+}
+
+/// `run` cut at `mark` into the runs before and after it, keeping tabs, breaks and other content.
+fn cut_run(run: &str, mark: &str) -> (String, String) {
     let open = &run[..run.find('>').map_or(0, |at| at + 1)];
     let props = find_between(run, "<w:rPr>", "</w:rPr>").unwrap_or("");
-    let text = read_text(run);
-    let mut pieces = text.split(mark);
-    let (before, after) = (pieces.next().unwrap_or(""), pieces.next().unwrap_or(""));
-    format!("{}{runs}{}", write_text_run(open, props, before), write_text_run(open, props, after))
+    let body = run.strip_suffix("</w:r>").unwrap_or(run);
+    let at = body.find(mark).unwrap_or(0);
+    let text_start = [body[..at].rfind("<w:t>"), body[..at].rfind("<w:t ")].into_iter().flatten().max().filter(|start| *start >= open.len());
+    let text_open = text_start.and_then(|start| body[start..].find('>').map(|end| start + end + 1)).filter(|end| *end <= at);
+    let (Some(text_start), Some(text_open)) = (text_start, text_open) else {
+        // Broken XML can put the mark outside text.
+        let text = read_text(run);
+        let (before, after) = text.split_once(mark).unwrap_or((&text, ""));
+        return (write_text_run(open, props, before), write_text_run(open, props, after));
+    };
+    let text_end = at + body[at..].find("</w:t>").unwrap_or(body.len() - at);
+    let tail = &body[(text_end + "</w:t>".len()).min(body.len())..];
+    let text = |text: &str| if text.is_empty() { String::new() } else { format!("<w:t xml:space=\"preserve\">{text}</w:t>") };
+    let before = format!("{}{}", &body[open.len()..text_start], text(&body[text_open..at]));
+    let after = format!("{props}{}{tail}", text(&body[at + mark.len()..text_end]));
+    let write = |content: String| if content == props { String::new() } else { format!("{open}{content}</w:r>") };
+    (write(before), write(after))
 }
 
 fn write_text_run(open: &str, props: &str, text: &str) -> String {
@@ -703,7 +733,7 @@ impl Reader {
             align: inner.align.or(outer.align),
             quote_level: outer.quote_level + inner.quote_level,
             is_pre: outer.is_pre || inner.is_pre,
-            layout: outer.layout.and(inner.layout),
+            layout: outer.layout.nest(inner.layout),
             ..Container::default()
         })
     }
@@ -711,7 +741,7 @@ impl Reader {
     fn start_block(&mut self, block: Block) {
         let container = self.container();
         let paragraph_style = block.paragraph_style.clone().or_else(|| self.format().paragraph_style);
-        let block = Block { align: block.align.or(container.align), quote_level: container.quote_level, layout: container.layout.inherited().and(block.layout), paragraph_style, ..block };
+        let block = Block { align: block.align.or(container.align), quote_level: container.quote_level, layout: container.layout.inherited().nest(block.layout), paragraph_style, ..block };
         self.blocks().push(block);
         self.current = Some(self.blocks().len() - 1);
     }
@@ -885,6 +915,13 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges, style_sheet: &str
                     let align = has_extras.then(|| read_style(&attributes, "text-align").and_then(read_align)).flatten();
                     let layout = if has_extras { read_layout(&attributes) } else { ParagraphLayout::default() };
                     reader.start_block(Block { heading_level: heading, align, layout, ..Block::default() });
+                }
+            }
+            // A list item's later paragraphs start new lines in it.
+            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" if !is_closing => {
+                let index = reader.current.expect("in a list item");
+                if !reader.blocks()[index].runs.is_empty() {
+                    reader.add_run(None, true);
                 }
             }
             "ul" | "ol" => {
@@ -1570,8 +1607,8 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
             let inner = paragraph_props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("");
             let inner = remove_first_element(inner, "<w:ind");
             let numbering = number.map(|id| format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{id}\"/></w:numPr>")).unwrap_or_default();
-            let inner = set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER);
-            format!("<w:pPr>{inner}{indent}</w:pPr>")
+            let inner = set_child(&set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
+            format!("<w:pPr>{inner}</w:pPr>")
         }
         None => paragraph_props.to_string(),
     };
@@ -1657,11 +1694,8 @@ pub(crate) fn link_relationship_id(index: usize) -> String {
 fn write_run_props(run_props: &str, is_bold: bool, is_italic: bool, is_underlined: bool, size: Option<u32>, format: &Format) -> String {
     let mut inner = run_props.strip_prefix("<w:rPr>").and_then(|props| props.strip_suffix("</w:rPr>")).unwrap_or("").to_string();
     if let Some(size) = size {
-        while let Some(start) = find_element_start(&inner, "<w:sz").or_else(|| find_element_start(&inner, "<w:szCs")) {
-            let Some(end) = inner[start..].find("/>") else { break };
-            inner.replace_range(start..start + end + 2, "");
-        }
-        inner.push_str(&format!("<w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/>"));
+        inner = set_child(&inner, "w:sz", &format!("<w:sz w:val=\"{size}\"/>"), RUN_ORDER);
+        inner = set_child(&inner, "w:szCs", &format!("<w:szCs w:val=\"{size}\"/>"), RUN_ORDER);
     }
     if is_bold {
         inner = set_child(&inner, "w:b", "<w:b/>", RUN_ORDER);
@@ -1672,7 +1706,7 @@ fn write_run_props(run_props: &str, is_bold: bool, is_italic: bool, is_underline
         inner = set_child(&inner, "w:iCs", "<w:iCs/>", RUN_ORDER);
     }
     if is_underlined && !inner.contains("<w:u ") {
-        inner.push_str("<w:u w:val=\"single\"/>");
+        inner = set_child(&inner, "w:u", "<w:u w:val=\"single\"/>", RUN_ORDER);
     }
     if *format != Format::default() {
         inner = write_format(&inner, format);

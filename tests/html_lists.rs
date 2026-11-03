@@ -144,3 +144,18 @@ fn imports_subtemplate_lists() {
         assert!(numbers.contains(&format!("<w:num w:numId=\"{id}\">")));
     }
 }
+
+#[test]
+fn keeps_list_indent_in_schema_order() {
+    let tag = "<w:p><w:pPr><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:t>{~~html}</w:t></w:r></w:p>";
+    let xml = fill_part(&document(tag), &json!({"html": "<ul><li>A</li></ul>"}), &FillOptions::default()).unwrap();
+
+    assert!(xml.contains("<w:pPr><w:ind w:left=\"360\" w:hanging=\"360\"/><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr>"), "{xml}");
+}
+
+#[test]
+fn separates_paragraphs_in_list_items() {
+    let xml = fill_part(&document(TAG), &json!({"html": "<ul><li><p>A</p><p>B</p></li></ul>"}), &FillOptions::default()).unwrap();
+
+    assert!(xml.contains(">A</w:t></w:r><w:r><w:br/></w:r><w:r><w:t xml:space=\"preserve\">B<"), "{xml}");
+}
