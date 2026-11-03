@@ -71,6 +71,32 @@ fn prints_the_body_in_place_of_the_tags_paragraph() {
 }
 
 #[test]
+fn imports_linked_footnotes() {
+    let options = FillOptions::default();
+    let mut source = sub_parts();
+    for (name, bytes) in &mut source {
+        if name == "word/footnotes.xml" { *name = "notes/source.xml".into(); }
+        if name == "word/_rels/document.xml.rels" {
+            *bytes = String::from_utf8(bytes.clone()).unwrap().replace("</Relationships>", "<Relationship Id=\"notes\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes\" Target=\"../notes/source.xml\"/></Relationships>").into_bytes();
+        }
+    }
+    let mut destination = main_parts("<w:p><w:r><w:t>{:include doc}</w:t></w:r></w:p>");
+    destination.push(("notes/main.xml".into(), b"<w:footnotes xmlns:w=\"w\"><w:footnote w:id=\"4\"><w:p/></w:footnote></w:footnotes>".to_vec()));
+    for (name, bytes) in &mut destination {
+        if name == "word/_rels/document.xml.rels" {
+            *bytes = b"<Relationships xmlns=\"r\"><Relationship Id=\"notes\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes\" Target=\"../notes/main.xml\"/></Relationships>".to_vec();
+        }
+    }
+    let mut template = PackageTemplate::parse(destination, &options).unwrap();
+    template.add_include("part", Subtemplate::parse(source, &options, IncludeMode::AsIs, IncludeStyles::UseMain).unwrap());
+    let parts = template.render(&json!({"doc":"part"})).into_iter().map(|(name, bytes)| (name, String::from_utf8_lossy(&bytes).into_owned())).collect::<Vec<_>>();
+    assert!(part(&parts, "notes/main.xml").contains("Sub note"));
+    assert!(part(&parts, "notes/main.xml").contains("<w:footnote w:id=\"5\""));
+    assert!(part(&parts, "word/document.xml").contains("<w:footnoteReference w:id=\"5\"/>"));
+    assert!(!parts.iter().any(|(name, _)| name == "word/footnotes.xml"));
+}
+
+#[test]
 fn fills_a_templated_include_with_the_scope_at_its_tag() {
     let body = r#"<w:p><w:r><w:t>{#people}</w:t></w:r></w:p><w:p><w:r><w:t>{:include doc}</w:t></w:r></w:p><w:p><w:r><w:t>{/people}</w:t></w:r></w:p>"#;
     let parts = fill(body, json!({ "doc": "part", "people": [{ "name": "Ada" }, { "name": "Bo" }] }), IncludeMode::Templated, IncludeStyles::UseMain);

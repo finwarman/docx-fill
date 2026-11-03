@@ -392,12 +392,13 @@ impl PackageTemplate {
         let content_types = parts.iter().find(|(name, _)| name == CONTENT_TYPES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes));
         let kinds = PartKinds::read(content_types.as_deref());
         let main_part = parts.iter().map(|(name, _)| name).find(|name| kinds.kind(name) == PartKind::Main).cloned().unwrap_or_else(|| DOCUMENT_PART.to_string());
+        let footnotes_part = footnotes::target(parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())));
         let mut max_footnote_id = None;
         let mut max_comment_id = None;
         let mut parsed = Vec::new();
         let mut errors = Vec::new();
         for (name, bytes) in parts {
-            if name == footnotes::FOOTNOTES_PART {
+            if name == footnotes_part {
                 max_footnote_id = Some(footnotes::read_max_id(&String::from_utf8_lossy(&bytes)));
             }
             if name == comments::COMMENTS_PART {

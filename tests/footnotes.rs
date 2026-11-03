@@ -60,7 +60,7 @@ fn numbers_new_footnotes_after_the_existing_ones() {
 
     assert!(part(&parts, "word/document.xml").contains(r#"<w:footnoteReference w:id="5"/>"#));
     assert!(part(&parts, "word/footnotes.xml").contains(r#"<w:footnote w:id="4"><w:p/></w:footnote><w:footnote w:id="5">"#));
-    assert!(!part(&parts, "word/_rels/document.xml.rels").contains("footnotes"));
+    assert!(part(&parts, "word/_rels/document.xml.rels").contains("Target=\"footnotes.xml\""));
 }
 
 #[test]
@@ -70,4 +70,88 @@ fn leaves_headers_without_footnotes() {
 
     assert!(!part(&parts, "word/header1.xml").contains("footnote"));
     assert!(!parts.iter().any(|(name, _)| name == "word/footnotes.xml"));
+}
+
+fn linked_notes(main: &str, target: &str, path: &str, existing: Option<&str>) -> Vec<(String, String)> {
+    let reference = if existing.is_some() { "<w:footnoteReference w:id=\"4\"/>" } else { "" };
+    let body = document(&format!("<w:p><w:r>{reference}<w:t>{{:footnote note}}</w:t></w:r></w:p>"));
+    let (folder, file) = main.rsplit_once('/').unwrap_or(("", main));
+    let rels = format!("{folder}/_rels/{file}.rels");
+    let mut parts = vec![
+        (main.to_string(), body.into_bytes()),
+        (rels, format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="notes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="{target}"/></Relationships>"#).into_bytes()),
+        ("[Content_Types].xml".to_string(), format!(r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/{main}" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/{path}" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/></Types>"#).into_bytes()),
+    ];
+    if let Some(existing) = existing { parts.push((path.to_string(), existing.as_bytes().to_vec())); }
+    PackageTemplate::parse(parts, &FillOptions::default()).unwrap().render(&json!({"note":"Added"})).into_iter().map(|(name, bytes)| (name, String::from_utf8(bytes.into_owned()).unwrap())).collect()
+}
+
+#[test]
+fn appends_to_the_linked_notes_part() {
+    let existing = r#"<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:id="4"><w:p><w:r><w:t>Existing</w:t></w:r></w:p></w:footnote></w:footnotes>"#;
+    let parts = linked_notes("word/document.xml", "notes/custom.xml", "word/notes/custom.xml", Some(existing));
+    assert!(part(&parts, "word/document.xml").contains("<w:footnoteReference w:id=\"5\"/>"));
+    assert!(part(&parts, "word/notes/custom.xml").contains("<w:footnote w:id=\"5\""));
+    assert!(part(&parts, "word/notes/custom.xml").contains("Existing"));
+    assert!(!parts.iter().any(|(name, _)| name == "word/footnotes.xml"));
+    assert_eq!(part(&parts, "word/_rels/document.xml.rels").matches("/footnotes\"").count(), 1);
+}
+
+#[test]
+fn creates_the_missing_linked_part() {
+    let parts = linked_notes("custom/body.xml", "../notes/custom.xml", "notes/custom.xml", None);
+    assert!(part(&parts, "notes/custom.xml").contains("<w:footnote w:id=\"1\""));
+    assert!(part(&parts, "custom/body.xml").contains("<w:footnoteReference w:id=\"1\"/>"));
+    assert!(!parts.iter().any(|(name, _)| name == "word/footnotes.xml"));
+}
+
+#[test]
+fn creates_the_notes_relationship_part() {
+    let parts = vec![
+        ("word/document.xml".into(), document("<w:p><w:r><w:t>{:footnote note}</w:t></w:r></w:p>").into_bytes()),
+        ("[Content_Types].xml".into(), TYPES.as_bytes().to_vec()),
+    ];
+    let template = PackageTemplate::parse(parts, &FillOptions::default()).unwrap();
+    let filled = template.render(&json!({"note":"Added"})).into_iter().map(|(name, bytes)| (name, String::from_utf8(bytes.into_owned()).unwrap())).collect::<Vec<_>>();
+    assert!(part(&filled, "word/_rels/document.xml.rels").contains("Target=\"footnotes.xml\""));
+    assert!(part(&filled, "word/footnotes.xml").contains("Added"));
+}
+
+#[test]
+fn repairs_metadata_for_empty_notes() {
+    let parts = package("<w:p><w:r><w:t>{:footnote note}</w:t></w:r></w:p>", &[("word/footnotes.xml", "<w:footnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>")]);
+    assert!(part(&parts, "word/footnotes.xml").contains("<w:footnote w:id=\"1\""));
+    assert!(part(&parts, "word/_rels/document.xml.rels").contains("Target=\"footnotes.xml\""));
+    assert!(part(&parts, "[Content_Types].xml").contains("PartName=\"/word/footnotes.xml\""));
+}
+
+#[test]
+fn replaces_external_note_relationship() {
+    let relations = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="notes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="https://example.com/notes.xml" TargetMode="External"/></Relationships>"#;
+    let parts = vec![
+        ("word/document.xml".into(), document("<w:p><w:r><w:t>{:footnote note}</w:t></w:r></w:p>").into_bytes()),
+        ("word/_rels/document.xml.rels".into(), relations.as_bytes().to_vec()),
+        ("[Content_Types].xml".into(), TYPES.as_bytes().to_vec()),
+    ];
+    let template = PackageTemplate::parse(parts, &FillOptions::default()).unwrap();
+    let filled = template.render(&json!({"note":"Added"})).into_iter().map(|(name, bytes)| (name, String::from_utf8(bytes.into_owned()).unwrap())).collect::<Vec<_>>();
+    let relations = part(&filled, "word/_rels/document.xml.rels");
+    assert!(relations.contains("Target=\"footnotes.xml\""));
+    assert!(!relations.contains("External") && !relations.contains("https://example.com"));
+    assert_eq!(relations.matches("/relationships/footnotes").count(), 1);
+}
+
+#[test]
+fn preserves_existing_note_overrides() {
+    for attribute in ["PartName='/word/footnotes.xml'", "PartName = \"/word/footnotes.xml\""] {
+        let types = format!("<Types><Override {attribute} ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml\"/></Types>");
+        let parts = vec![
+            ("[Content_Types].xml".into(), types.into_bytes()),
+            ("word/document.xml".into(), document("<w:p><w:r><w:t>{:footnote note}</w:t></w:r></w:p>").into_bytes()),
+            ("word/footnotes.xml".into(), b"<w:footnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>".to_vec()),
+        ];
+        let template = PackageTemplate::parse(parts, &FillOptions::default()).unwrap();
+        let filled = template.render(&json!({"note":"Added"})).into_iter().map(|(name, bytes)| (name, String::from_utf8(bytes.into_owned()).unwrap())).collect::<Vec<_>>();
+        assert_eq!(part(&filled, "[Content_Types].xml").matches("/word/footnotes.xml").count(), 1);
+    }
 }
