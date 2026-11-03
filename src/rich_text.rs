@@ -303,7 +303,7 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
         };
         let other_text = read_text(&paragraph).replacen(&mark, "", 1);
         let run = find_run(&paragraph, &mark);
-        let run_props = run.and_then(|run| find_between(run, "<w:rPr>", "</w:rPr>")).unwrap_or("");
+        let run_props = run.and_then(|run| find_element(run, "w:rPr")).unwrap_or("");
         let is_block = value.is_block && (other_text.trim().is_empty() || value.block_mode == crate::HtmlBlockMode::Block) && run.is_some();
         let spaces = if is_block { SpaceEdges::default() } else {
             let text = read_flow_text(&paragraph);
@@ -368,7 +368,7 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
             continue;
         }
 
-        let run_props = find_between(run, "<w:rPr>", "</w:rPr>").unwrap_or("");
+        let run_props = find_element(run, "w:rPr").unwrap_or("");
         let mut rest = run.to_string();
         while left > 0 {
             let Some((mark, index)) = find_mark(&read_text(&rest)) else { break };
@@ -395,7 +395,7 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
 /// The paragraph as the value's paragraphs, in place of its own.
 fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>) -> String {
     let open = &paragraph[..paragraph.find('>').map_or(0, |at| at + 1)];
-    let paragraph_props = find_between(paragraph, "<w:pPr>", "</w:pPr>").unwrap_or("");
+    let paragraph_props = find_element(paragraph, "w:pPr").unwrap_or("");
     let bookmarks = find_bookmarks(paragraph);
     let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
     let mut out = String::new();
@@ -533,7 +533,7 @@ fn split_run(run: &str, mark: &str, runs: &str) -> String {
 /// `run` cut at `mark` into the runs before and after it, keeping tabs, breaks and other content.
 fn cut_run(run: &str, mark: &str) -> (String, String) {
     let open = &run[..run.find('>').map_or(0, |at| at + 1)];
-    let props = find_between(run, "<w:rPr>", "</w:rPr>").unwrap_or("");
+    let props = find_element(run, "w:rPr").unwrap_or("");
     let body = run.strip_suffix("</w:r>").unwrap_or(run);
     let at = body.find(mark).unwrap_or(0);
     let text_start = [body[..at].rfind("<w:t>"), body[..at].rfind("<w:t ")].into_iter().flatten().max().filter(|start| *start >= open.len());
@@ -592,10 +592,10 @@ fn read_flow_text(xml: &str) -> String {
     text
 }
 
-/// The first `open…close` element, whole.
-fn find_between<'a>(xml: &'a str, open: &str, close: &str) -> Option<&'a str> {
-    let start = xml.find(open)?;
-    let end = start + xml[start..].find(close)? + close.len();
+/// The first `name` element, whole, including any nested `name` inside it.
+fn find_element<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let start = find_element_start(xml, &format!("<{name}"))?;
+    let end = crate::properties::find_element_end(xml, start, name)?;
     Some(&xml[start..end])
 }
 
