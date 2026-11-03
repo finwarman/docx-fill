@@ -183,6 +183,25 @@ fn expands_roots_with_attributes() {
 }
 
 #[test]
+fn keeps_commented_root_examples() {
+    let styles = format!("<w:styles xmlns:w=\"{W}\"/>");
+    let types = "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"/>";
+    let style_comment = format!("<!-- example: {styles} -->");
+    let type_comment = format!("<!-- example: {types} -->");
+    let template = PackageTemplate::parse([
+        ("word/document.xml".into(), document(TAG).into_bytes()),
+        ("word/styles.xml".into(), format!("{style_comment}{styles}").into_bytes()),
+        ("[Content_Types].xml".into(), format!("{type_comment}{types}").into_bytes()),
+    ], &FillOptions::default()).unwrap();
+    let output: Vec<_> = template.render(&json!({"html":"<h1>A</h1>"})).into_iter().map(|(name, bytes)| (name, bytes.into_owned())).collect();
+
+    let styles = part(&output, "word/styles.xml").strip_prefix(&style_comment).expect("style comment unchanged");
+    let types = part(&output, "[Content_Types].xml").strip_prefix(&type_comment).expect("type comment unchanged");
+    assert!(styles.contains("<w:style w:type=\"paragraph\" w:styleId=\"Title\""));
+    assert!(types.contains("<Override PartName=\"/word/styles.xml\""));
+}
+
+#[test]
 fn keeps_historical_run_styles() {
     let props = "<w:rPr><w:sz w:val=\"18\"></w:sz><w:lang w:val=\"fr-FR\"/><w:rPrChange w:id=\"7\" w:author=\"Editor\"><w:rPr><w:sz w:val=\"12\"/></w:rPr></w:rPrChange></w:rPr>";
     let tag = format!("<w:p><w:r>{props}<w:t>{{~~html}}</w:t></w:r></w:p>");

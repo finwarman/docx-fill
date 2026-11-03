@@ -178,7 +178,8 @@ fn append_root(xml: &str, root: &str, added: &str) -> String {
     for token in tokenize(xml).unwrap_or_default() {
         if let Token::Element { kind: ElementKind::SelfClosing, name, raw } = token
             && name == root && let Some(open) = raw.strip_suffix("/>") {
-            return xml.replacen(raw, &format!("{open}>{added}</{root}>"), 1);
+            let at = crate::xml::offset_in(xml, raw);
+            return format!("{}{open}>{added}</{root}>{}", &xml[..at], &xml[at + raw.len()..]);
         }
     }
     insert_before_last(xml, &format!("</{root}>"), added)
