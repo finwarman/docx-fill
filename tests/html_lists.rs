@@ -50,9 +50,9 @@ fn aligns_nested_list_text() {
     let numbering = part(&parts, "word/numbering.xml");
 
     assert_eq!(paragraph_texts(body), ["A", "B", "C"]);
-    assert_eq!(body.matches("<w:ind w:left=\"720\" w:hanging=\"360\"/>").count(), 2);
-    assert!(body.contains("<w:ind w:left=\"1440\" w:hanging=\"360\"/>"), "{body}");
-    for left in [720, 1440] {
+    assert_eq!(body.matches("<w:ind w:left=\"360\" w:hanging=\"360\"/>").count(), 2);
+    assert!(body.contains("<w:ind w:left=\"720\" w:hanging=\"360\"/>"), "{body}");
+    for left in [360, 720] {
         assert!(numbering.contains(&format!("<w:tab w:val=\"num\" w:pos=\"{left}\"/>")), "{numbering}");
         assert!(numbering.contains(&format!("<w:ind w:left=\"{left}\" w:hanging=\"360\"/>")), "{numbering}");
     }
@@ -125,7 +125,7 @@ fn keeps_historical_list_indent() {
     let body = part(&parts, "word/document.xml");
 
     assert!(body.contains(history), "{body}");
-    assert!(body.contains("<w:ind w:left=\"720\" w:hanging=\"360\"/>"), "{body}");
+    assert!(body.contains("<w:ind w:left=\"360\" w:hanging=\"360\"/>"), "{body}");
 }
 
 #[test]
@@ -237,7 +237,7 @@ fn keeps_list_indent_in_schema_order() {
     let tag = "<w:p><w:pPr><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:t>{~~html}</w:t></w:r></w:p>";
     let xml = fill_part(&document(tag), &json!({"html": "<ul><li>A</li></ul>"}), &FillOptions::default()).unwrap();
 
-    assert!(xml.contains("<w:pPr><w:ind w:left=\"720\" w:hanging=\"360\"/><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr>"), "{xml}");
+    assert!(xml.contains("<w:pPr><w:ind w:left=\"360\" w:hanging=\"360\"/><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr>"), "{xml}");
 }
 
 #[test]

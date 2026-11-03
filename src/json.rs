@@ -127,6 +127,10 @@ impl FillOptions {
                         match name.as_str() {
                             "ignoreUnknownTags" => self.html.ignore_unknown_tags = read_bool(value, name)?,
                             "ignoreCssErrors" => self.html.ignore_css_errors = read_bool(value, name)?,
+                            "headingMode" => self.html.heading_mode = match read_string(value, name)?.as_str() {
+                                "styles" => crate::HtmlHeadingMode::Styles, "direct" => crate::HtmlHeadingMode::Direct,
+                                other => return Err(FillError::new(format!("Unknown HTML heading mode {other}"))),
+                            },
                             "onInvalidBlock" => self.html.on_invalid_block = match read_string(value, name)?.as_str() {
                                 "block" => crate::HtmlBlockMode::Block, "inline" => crate::HtmlBlockMode::Inline, "error" => crate::HtmlBlockMode::Error, "preserve" => crate::HtmlBlockMode::Preserve,
                                 other => return Err(FillError::new(format!("Unknown HTML block mode {other}"))),

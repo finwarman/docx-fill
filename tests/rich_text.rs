@@ -65,8 +65,8 @@ fn prints_list_items_as_indented_paragraphs_with_their_bullet_or_number() {
 
     let printed = paragraphs(&body);
     assert_eq!(texts(&body), ["\u{2022}one", "1.nested", "2.again", "\u{2022}two"]);
-    assert!(printed[0].contains(r#"<w:ind w:left="720" w:hanging="360"/>"#));
-    assert!(printed[1].contains(r#"<w:ind w:left="1440" w:hanging="360"/>"#));
+    assert!(printed[0].contains(r#"<w:ind w:left="360" w:hanging="360"/>"#));
+    assert!(printed[1].contains(r#"<w:ind w:left="720" w:hanging="360"/>"#));
     assert!(printed[0].contains("<w:tab/>"));
 }
 

@@ -615,7 +615,8 @@ impl<'a> Render<'a, '_> {
                                 error
                             }));
                             let is_block = is_block || (prepared.has_block && matches!(self.template.html_options.on_invalid_block, crate::HtmlBlockMode::Block | crate::HtmlBlockMode::Preserve));
-                            self.state.has_headings |= is_block && prepared.has_headings;
+                            let headings = self.state.headings.as_ref().filter(|_| self.template.html_options.heading_mode == crate::HtmlHeadingMode::Styles).cloned();
+                            self.state.has_headings |= is_block && prepared.has_headings && headings.is_some();
                             self.out.push_str(&rich_text::mark(self.rich_values.len()));
                             let container_width = match container_width {
                                 crate::template::HtmlWidth::Known(width) => Some(width),
@@ -623,7 +624,7 @@ impl<'a> Render<'a, '_> {
                                 crate::template::HtmlWidth::Unknown => None,
                             };
                             let container_width = container_width.map(|width| (width / crate::template::PX_PER_TWIP).round().clamp(1.0, i32::MAX as f64) as u32);
-                            self.rich_values.push(RichValue { html: prepared.html, raw: prepared.raw, container_width, is_block, block_mode: self.template.html_options.on_invalid_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone(), headings: self.state.headings.clone() });
+                            self.rich_values.push(RichValue { html: prepared.html, raw: prepared.raw, container_width, is_block, block_mode: self.template.html_options.on_invalid_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone(), headings });
                             if let Some(paragraph) = self.paragraphs.last_mut() {
                                 paragraph.has_rich_text = true;
                             }

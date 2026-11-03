@@ -18,7 +18,7 @@ fn reads_every_option() {
         "footnotes": { "raw": true, "refProperties": "<w:b/>", "refRun": "<w:r/>", "paragraphProperties": "<w:keepNext/>", "runProperties": "<w:i/>" },
         "table": { "paragraphValidation": "ignore", "autoResizeTable": true },
         "htmlStyleSheet": "p { color: red }",
-        "html": { "ignoreUnknownTags": true, "ignoreCssErrors": true, "onInvalidBlock": "error", "customTags": { "box": "block" } },
+        "html": { "ignoreUnknownTags": true, "ignoreCssErrors": true, "onInvalidBlock": "error", "headingMode": "direct", "customTags": { "box": "block" } },
         "document": {
             "readOnly": true,
             "language": "en-GB",
@@ -57,6 +57,7 @@ fn reads_every_option() {
     assert_eq!(options.html_style_sheet, "p { color: red }");
     assert!(options.html.ignore_unknown_tags && options.html.ignore_css_errors);
     assert_eq!(options.html.on_invalid_block, docx_fill::HtmlBlockMode::Error);
+    assert_eq!(options.html.heading_mode, docx_fill::HtmlHeadingMode::Direct);
     assert_eq!(options.html.custom_tags["box"], docx_fill::HtmlTagKind::Block);
     let document = &options.document;
     assert!(document.read_only);
@@ -65,6 +66,19 @@ fn reads_every_option() {
     assert_eq!((protection.kind, protection.algorithm, protection.spin_count, protection.salt.as_deref()), (ProtectionKind::Forms, HashAlgorithm::Sha256, 10, Some("AAAA")));
     assert_eq!(document.watermark.as_ref().unwrap().layout, WatermarkLayout::Horizontal);
     assert_eq!(document.margins.unwrap().right, 0.5);
+}
+
+#[test]
+fn reads_heading_modes() {
+    let defaults = FillOptions::default();
+    assert_eq!(defaults.html.heading_mode, docx_fill::HtmlHeadingMode::Styles);
+    for (mode, expected) in [("styles", docx_fill::HtmlHeadingMode::Styles), ("direct", docx_fill::HtmlHeadingMode::Direct)] {
+        let options = defaults.clone().read_json(&json!({"html":{"headingMode":mode}})).unwrap();
+        assert_eq!(options.html.heading_mode, expected);
+    }
+    for mode in [json!("other"), json!(true), json!(1)] {
+        assert!(defaults.clone().read_json(&json!({"html":{"headingMode":mode}})).is_err());
+    }
 }
 
 #[test]
