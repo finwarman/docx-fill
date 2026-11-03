@@ -10,6 +10,7 @@ pub enum FillErrorId {
     RawTagNotAlone, ImageTagNotAlone, TableTagNotAlone, SegmentTagNotAlone,
     UndefinedSegment, ScopeParserCompilation, NoXmlTagFound,
     HtmlUnknownTag, HtmlCssInvalid, HtmlBlockInvalid, ChartWorkbook,
+    SpreadsheetPackage, SpreadsheetCell, SpreadsheetReference,
 }
 
 impl FillErrorId {
@@ -28,6 +29,9 @@ impl FillErrorId {
             Self::NoXmlTagFound => "no_xml_tag_found_at_left", Self::HtmlUnknownTag => "html_tag_name_unsupported",
             Self::HtmlCssInvalid => "style_property_invalid", Self::HtmlBlockInvalid => "html_tag_invalid_type",
             Self::ChartWorkbook => "chart_workbook_error",
+            Self::SpreadsheetPackage => "spreadsheet_package_error",
+            Self::SpreadsheetCell => "spreadsheet_cell_error",
+            Self::SpreadsheetReference => "spreadsheet_reference_error",
         }
     }
 }
