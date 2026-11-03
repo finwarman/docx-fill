@@ -28,7 +28,8 @@ use numbering::Numberings;
 pub(crate) const MARK_START: char = '\u{E000}';
 pub(crate) const MARK_END: char = '\u{E001}';
 
-const LIST_INDENT_TWIPS: u32 = 360;
+const LIST_INDENT_TWIPS: u32 = 720;
+const LIST_HANGING_TWIPS: u32 = 360;
 // Word numbering levels are zero-based, with nine levels.
 const MAX_LIST_LEVEL: usize = 8;
 const QUOTE_INDENT_TWIPS: u32 = 720;
@@ -1626,7 +1627,7 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     let mut props = match &block.list {
         Some(item) => {
             let level = if number.is_some() { item.level.min(MAX_LIST_LEVEL) } else { item.level };
-            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_INDENT_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
+            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_HANGING_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
             let inner = paragraph_props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("");
             let inner = remove_first_element(inner, "<w:ind");
             let numbering = number.map(|id| format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{id}\"/></w:numPr>")).unwrap_or_default();

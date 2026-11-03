@@ -42,6 +42,29 @@ fn writes_native_bullet_lists() {
 }
 
 #[test]
+fn aligns_nested_list_text() {
+    let parts = render("<ul><li>A<ol><li>B</li></ol></li><li>C</li></ul>", &[]);
+    let body = part(&parts, "word/document.xml");
+    let numbering = part(&parts, "word/numbering.xml");
+
+    assert_eq!(paragraph_texts(body), ["A", "B", "C"]);
+    assert_eq!(body.matches("<w:ind w:left=\"720\" w:hanging=\"360\"/>").count(), 2);
+    assert!(body.contains("<w:ind w:left=\"1440\" w:hanging=\"360\"/>"), "{body}");
+    for left in [720, 1440] {
+        assert!(numbering.contains(&format!("<w:tab w:val=\"num\" w:pos=\"{left}\"/>")), "{numbering}");
+        assert!(numbering.contains(&format!("<w:ind w:left=\"{left}\" w:hanging=\"360\"/>")), "{numbering}");
+    }
+}
+
+#[test]
+fn keeps_explicit_list_indents() {
+    let parts = render("<ul><li style='margin-left:48px;text-indent:-12px'>A</li></ul>", &[]);
+    let body = part(&parts, "word/document.xml");
+
+    assert!(body.contains("<w:ind w:left=\"720\" w:hanging=\"180\"/>"), "{body}");
+}
+
+#[test]
 fn matches_tag_marker_style() {
     let run = "<w:rPr><w:rFonts w:ascii=\"Arial\" w:hAnsi=\"Arial\"/><w:color w:val=\"224466\"/><w:sz w:val=\"32\"/></w:rPr>";
     let tag = TAG.replace("<w:r>", &format!("<w:r>{run}"));
@@ -170,7 +193,7 @@ fn keeps_list_indent_in_schema_order() {
     let tag = "<w:p><w:pPr><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:t>{~~html}</w:t></w:r></w:p>";
     let xml = fill_part(&document(tag), &json!({"html": "<ul><li>A</li></ul>"}), &FillOptions::default()).unwrap();
 
-    assert!(xml.contains("<w:pPr><w:ind w:left=\"360\" w:hanging=\"360\"/><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr>"), "{xml}");
+    assert!(xml.contains("<w:pPr><w:ind w:left=\"720\" w:hanging=\"360\"/><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr>"), "{xml}");
 }
 
 #[test]
