@@ -55,6 +55,46 @@ fn rejects_ambiguous_prefixes() {
 }
 
 #[test]
+fn rejects_prefixes_claimed_by_extensions() {
+    for prefix in ["$", "$raw ", "?", ":table ", ":footnote ", ":include ", ":stylepar ", ":vt#", ":stylecell ", ":page ", ":merge-cells-col "] {
+        let result = FillOptions::default().read_json(&json!({"tagPrefixes":{"raw":prefix}}));
+        let error = result.unwrap_err();
+        assert!(error.message.contains("raw") && error.message.contains("enabled extension"), "{prefix:?}: {error}");
+    }
+    let mut options = FillOptions::default();
+    options.tag_prefixes.loop_start = "$".into();
+    assert!(Template::parse(&document(&paragraph(&["{$rows}{/rows}"])), &options).is_err());
+    assert!(docx_fill::PackageTemplate::parse([], &options).is_err());
+}
+
+#[test]
+fn allows_disabled_extension_prefixes() {
+    for (prefix, extension) in [("$", "charts"), ("?", "paragraphPlaceholder"), (":table ", "fullTables"), (":footnote ", "footnotes"), (":include ", "subtemplates"), (":stylepar ", "styling"), (":vt#", "verticalTables"), (":stylecell ", "cellStyling"), (":page ", "sections"), (":merge-cells-col ", "tableMerge")] {
+        let options = FillOptions::default().read_json(&json!({"tagPrefixes":{"raw":prefix},"extensions":{extension:false}})).unwrap();
+        let tags = Template::parse(&document(&paragraph(&[&format!("{{{prefix}xml}}")])), &options).unwrap().tags();
+        assert_eq!(tags[0].kind, TagType::Raw, "{prefix:?}");
+        assert_eq!(tags[0].name, "xml");
+    }
+}
+
+#[test]
+fn allows_distinct_shorter_prefixes() {
+    let options = FillOptions::default().read_json(&json!({"tagPrefixes":{"raw":":"}})).unwrap();
+    let tags = Template::parse(&document(&paragraph(&["{:footnote note}"])), &options).unwrap().tags();
+    assert_eq!(tags[0].kind, TagType::Footnote);
+
+    let options = FillOptions::default().read_json(&json!({"tagPrefixes":{"image":"$"},"extensions":{"images":false}})).unwrap();
+    assert!(options.read_json(&json!({"extensions":{"images":true}})).is_err());
+}
+
+#[test]
+fn keeps_custom_module_precedence() {
+    let options = FillOptions::default().read_json(&json!({"tagPrefixes":{"raw":"$"},"modulePrefixes":["$"]})).unwrap();
+    let tags = Template::parse(&document(&paragraph(&["{$value}"])), &options).unwrap().tags();
+    assert_eq!(tags[0].kind, TagType::Module);
+}
+
+#[test]
 fn allows_unprefixed_html() {
     let options = FillOptions::default().read_json(&json!({"tagPrefixes":{"html":""}})).unwrap();
     let output = fill_part(&document(&paragraph(&["{value}"])), &json!({"value":"<b>word</b>"}), &options).unwrap();

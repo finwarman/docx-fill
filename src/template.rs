@@ -292,7 +292,7 @@ impl Template {
     }
 
     pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout) -> Result<Template, FillError> {
-        options.tag_prefixes.validate()?;
+        validate_tag_prefixes(options)?;
         let expanded = (options.extensions.paragraph_placeholder && options.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::None)
             .then(|| crate::placeholder_lines::expand(xml, options.paragraph_placeholder.soft_breaks));
         let source_changed = expanded.as_deref().is_some_and(|expanded| expanded != xml);
@@ -728,6 +728,28 @@ fn unopened_tag(text: &str, tags: &[FoundTag], at: usize, length: usize) -> Fill
             FillError::new(format!("The tag beginning with \"{}\" is unopened", unescape(&text[context_start..at]))).with_id(crate::FillErrorId::UnopenedTag)
         }
     }
+}
+
+pub(crate) fn validate_tag_prefixes(options: &FillOptions) -> Result<(), FillError> {
+    options.tag_prefixes.validate()?;
+    let prefixes = &options.tag_prefixes;
+    for (name, prefix, enabled) in [
+        ("loopStart", &prefixes.loop_start, true),
+        ("loopEnd", &prefixes.loop_end, true),
+        ("invertedLoop", &prefixes.inverted_loop, true),
+        ("raw", &prefixes.raw, true),
+        ("wordRun", &prefixes.word_run, options.extensions.word_run),
+        ("html", &prefixes.html, options.extensions.rich_text),
+        ("blockHtml", &prefixes.block_html, options.extensions.rich_text),
+        ("image", &prefixes.image, options.extensions.images),
+        ("centeredImage", &prefixes.centered_image, options.extensions.images),
+    ] {
+        if !enabled || prefix.is_empty() || options.module_prefixes.iter().any(|module| prefix.starts_with(module)) { continue; }
+        if read_extension_tag(prefix, &options.extensions).is_some() {
+            return Err(FillError::new(format!("The {name} tag prefix {prefix:?} is claimed by an enabled extension")));
+        }
+    }
+    Ok(())
 }
 
 /// A tag's kind and the name it looks up.
