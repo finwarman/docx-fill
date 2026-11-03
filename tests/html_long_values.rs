@@ -96,6 +96,16 @@ fn inherits_formatting_through_deep_inline_elements() {
 }
 
 #[test]
+fn keeps_long_font_names() {
+    let font = "A".repeat(8_000);
+    let value = format!("<span style=\"font-family:{font}\">{}text{}</span>", "<span>".repeat(2_000), "</span>".repeat(2_000));
+    let body = html(&value);
+
+    assert_eq!(text(&body), "text");
+    assert!(body.contains(&format!("w:ascii=\"{font}\"")));
+}
+
+#[test]
 fn inherits_layout_through_deep_containers() {
     const DEPTH: usize = 10_000;
     let value = format!("<div style=\"margin-left:1pt\">{}z{}</div><p>after</p>", "<div>x".repeat(DEPTH), "</div>".repeat(DEPTH));
