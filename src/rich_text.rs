@@ -12,13 +12,14 @@
 //! `<ol start>`, `<li value>`, list-style-type, and inline `style` (color, background-color,
 //! font-size in px or pt, font-family, font-weight, font-style, text-decoration, text-align).
 
-use crate::cell_styling::{find_element_start, remove_first_element};
-use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_attribute, set_child};
+use crate::cell_styling::find_element_start;
+use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, read_child, set_attribute, set_child};
 use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) mod numbering;
+pub(crate) mod headings;
 mod css;
 mod preserve;
 mod table;
@@ -30,7 +31,8 @@ use numbering::Numberings;
 pub(crate) const MARK_START: char = '\u{E000}';
 pub(crate) const MARK_END: char = '\u{E001}';
 
-const LIST_INDENT_TWIPS: u32 = 360;
+const LIST_INDENT_TWIPS: u32 = 720;
+const LIST_HANGING_TWIPS: u32 = 360;
 // Word numbering levels are zero-based, with nine levels.
 const MAX_LIST_LEVEL: usize = 8;
 const QUOTE_INDENT_TWIPS: u32 = 720;
@@ -65,6 +67,7 @@ pub(crate) struct RichValue {
     pub style_sheet: String,
     pub block_mode: crate::HtmlBlockMode,
     pub raw: Vec<crate::HtmlFragment>,
+    pub headings: Option<Arc<headings::Headings>>,
     pub container_width: u32,
 }
 
@@ -76,6 +79,7 @@ pub(crate) struct PreparedHtml {
     pub raw: Vec<crate::HtmlFragment>,
     pub errors: Vec<crate::FillError>,
     pub has_block: bool,
+    pub has_headings: bool,
 }
 
 /// How a run looks beyond the tag run's own properties.
@@ -178,9 +182,20 @@ struct ListItem {
     value: i64,
 }
 
+#[derive(Clone, Copy)]
+enum MarkerFont { Inherited, Symbol }
+
+impl MarkerFont {
+    fn from_run(props: &str) -> Self {
+        let inner = read_child(props, "w:rPr").unwrap_or("");
+        if read_child(inner, "w:rFonts").is_some() { Self::Inherited } else { Self::Symbol }
+    }
+}
+
 struct ListWriter<'a> {
     numbering: Option<&'a mut Numberings>,
     ids: BTreeMap<usize, u32>,
+    marker_font: MarkerFont,
 }
 
 struct BlockWriter<'a, 'n> {
@@ -210,7 +225,7 @@ impl ListWriter<'_> {
         if let Some(id) = self.ids.get(&item.group) {
             return Some(*id);
         }
-        let id = self.numbering.as_mut()?.add(item.format, item.level, item.value)?;
+        let id = self.numbering.as_mut()?.add(item.format, item.level, item.value, self.marker_font)?;
         self.ids.insert(item.group, id);
         Some(id)
     }
@@ -295,14 +310,15 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
         };
         let other_text = read_text(&paragraph).replacen(&mark, "", 1);
         let run = find_run(&paragraph, &mark);
-        let run_props = run.and_then(|run| find_between(run, "<w:rPr>", "</w:rPr>")).unwrap_or("");
+        let run_props = run.and_then(|run| find_element(run, "w:rPr")).unwrap_or("");
         let is_block = value.is_block && (other_text.trim().is_empty() || value.block_mode == crate::HtmlBlockMode::Block) && run.is_some();
         let spaces = if is_block { SpaceEdges::default() } else {
             let text = read_flow_text(&paragraph);
             let (before, after) = text.split_once(&mark).unwrap_or(("", ""));
             SpaceEdges::between(before.chars().next_back(), after.chars().next())
         };
-        let blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet, &value.raw);
+        let mut blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet, &value.raw);
+        if is_block && let Some(headings) = &value.headings { apply_headings(&mut blocks, &headings.ids); }
 
         // Alone in its paragraph: the paragraph becomes the value's paragraphs.
         if is_block && !blocks.is_empty() {
@@ -360,7 +376,7 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
             continue;
         }
 
-        let run_props = find_between(run, "<w:rPr>", "</w:rPr>").unwrap_or("");
+        let run_props = find_element(run, "w:rPr").unwrap_or("");
         let mut rest = run.to_string();
         while left > 0 {
             let Some((mark, index)) = find_mark(&read_text(&rest)) else { break };
@@ -387,11 +403,11 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
 /// The paragraph as the value's paragraphs, in place of its own.
 fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>, width: u32) -> String {
     let open = &paragraph[..paragraph.find('>').map_or(0, |at| at + 1)];
-    let paragraph_props = find_between(paragraph, "<w:pPr>", "</w:pPr>").unwrap_or("");
+    let paragraph_props = find_element(paragraph, "w:pPr").unwrap_or("");
     let bookmarks = find_bookmarks(paragraph);
     let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
     let mut out = String::new();
-    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new() }, width };
+    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new(), marker_font: MarkerFont::from_run(run_props) }, width };
     // A section break belongs to the last paragraph only.
     let has_section = find_element_start(paragraph_props, "<w:sectPr").is_some();
     let body_props = if has_section { preserve::without(paragraph_props, "w:sectPr") } else { paragraph_props.to_string() };
@@ -422,6 +438,15 @@ fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut 
 
 fn join_inline(blocks: &[Block], run_props: &str, links: &mut Vec<String>) -> String {
     blocks.iter().map(|block| write_inline(block, run_props, links)).collect::<Vec<_>>().join(&format!("<w:r>{run_props}<w:br/></w:r>"))
+}
+
+fn apply_headings(blocks: &mut [Block], styles: &[String; 6]) {
+    for block in blocks {
+        if block.paragraph_style.is_none() && let Some(level) = block.heading_level { block.paragraph_style = Some(styles[level - 1].clone()); }
+        if let Some(rows) = &mut block.table {
+            for cell in rows.iter_mut().flatten() { apply_headings(&mut cell.blocks, styles); }
+        }
+    }
 }
 
 fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &str, block: &Block, writer: &mut BlockWriter) {
@@ -484,7 +509,7 @@ fn split_run(run: &str, mark: &str, runs: &str) -> String {
 /// `run` cut at `mark` into the runs before and after it, keeping tabs, breaks and other content.
 fn cut_run(run: &str, mark: &str) -> (String, String) {
     let open = &run[..run.find('>').map_or(0, |at| at + 1)];
-    let props = find_between(run, "<w:rPr>", "</w:rPr>").unwrap_or("");
+    let props = find_element(run, "w:rPr").unwrap_or("");
     let body = run.strip_suffix("</w:r>").unwrap_or(run);
     let at = body.find(mark).unwrap_or(0);
     let text_start = [body[..at].rfind("<w:t>"), body[..at].rfind("<w:t ")].into_iter().flatten().max().filter(|start| *start >= open.len());
@@ -543,10 +568,10 @@ fn read_flow_text(xml: &str) -> String {
     text
 }
 
-/// The first `open…close` element, whole.
-fn find_between<'a>(xml: &'a str, open: &str, close: &str) -> Option<&'a str> {
-    let start = xml.find(open)?;
-    let end = start + xml[start..].find(close)? + close.len();
+/// The first `name` element, whole, including any nested `name` inside it.
+fn find_element<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let start = find_element_start(xml, &format!("<{name}"))?;
+    let end = crate::properties::find_element_end(xml, start, name)?;
     Some(&xml[start..end])
 }
 
@@ -951,10 +976,11 @@ pub(crate) fn validate_style_sheet(sheet: &str) -> Result<(), String> { css::val
 
 const KNOWN_HTML: &[&str] = &["p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b", "em", "i", "u", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "input", "table", "tr", "td", "th", "thead", "tbody", "tfoot", "col", "colgroup", "caption", "img", "svg", "script", "style", "template", "cite", "var", "ins", "s", "strike", "del", "sup", "sub", "mark", "code", "kbd", "samp", "tt", "a", "span", "font", "small", "big", "abbr", "q"];
 const BLOCK_HTML: &[&str] = &["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "table"];
+const HEADING_HTML: &[&str] = &["h1", "h2", "h3", "h4", "h5", "h6"];
 const VOID_HTML: &[&str] = &["br", "hr", "input", "img", "col"];
 
 pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str, image_mode: ImageMode, hooks: &mut dyn crate::FillHooks) -> PreparedHtml {
-    let mut prepared = PreparedHtml { images: Vec::new(), html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false };
+    let mut prepared = PreparedHtml { images: Vec::new(), html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false, has_headings: false };
     if !options.ignore_css_errors {
         for sheet in std::iter::once(sheet.to_string()).chain(embedded_sheets(html)) {
             if let Err(error) = css::validate_sheet(&sheet) { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::HtmlCssInvalid)); }
@@ -1039,6 +1065,7 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
         }
         let emitted = if known { name.clone() } else if options.custom_tags.get(&name) == Some(&crate::HtmlTagKind::Block) { "p".into() } else { "span".into() };
         prepared.has_block |= BLOCK_HTML.contains(&emitted.as_str());
+        prepared.has_headings |= HEADING_HTML.contains(&emitted.as_str());
         prepared.html.push('<'); prepared.html.push_str(&emitted);
         for (name, value) in &attributes {
             prepared.html.push(' '); prepared.html.push_str(name); prepared.html.push_str("=\""); escape(value, &mut prepared.html); prepared.html.push('"');
@@ -1579,11 +1606,10 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     let mut props = match &block.list {
         Some(item) => {
             let level = if number.is_some() { item.level.min(MAX_LIST_LEVEL) } else { item.level };
-            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_INDENT_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
+            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_HANGING_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
             let inner = paragraph_props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("");
-            let inner = remove_first_element(inner, "<w:ind");
             let numbering = number.map(|id| format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{id}\"/></w:numPr>")).unwrap_or_default();
-            let mut inner = set_child(&set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
+            let mut inner = set_child(&set_child(inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
             // Native markers use the paragraph mark's formatting, separate from the text runs.
             if number.is_some() && !run_props.is_empty() {
                 inner = set_child(&inner, "w:rPr", run_props, PARAGRAPH_ORDER);
@@ -1597,6 +1623,7 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     }
 
     let mut inner = props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("").to_string();
+    if block.heading_level.is_some() && block.paragraph_style.is_some() { inner = headings::paragraph_props(&inner); }
     if let Some(style) = &block.paragraph_style {
         let mut escaped = String::new(); escape(style, &mut escaped);
         inner = set_child(&inner, "w:pStyle", &format!("<w:pStyle w:val=\"{escaped}\"/>"), PARAGRAPH_ORDER);
@@ -1616,6 +1643,8 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
 }
 
 fn write_runs(block: &Block, run_props: &str, links: &mut Vec<String>, number: Option<u32>) -> String {
+    let heading_props = (block.heading_level.is_some() && block.paragraph_style.is_some()).then(|| headings::inherited_props(run_props));
+    let run_props = heading_props.as_deref().unwrap_or(run_props);
     let size = block.heading_level.filter(|_| block.paragraph_style.is_none()).map(|level| HEADING_SIZES[level - 1]);
     let mut out = match &block.list {
         Some(item) if number.is_none() => format!("<w:r>{run_props}<w:t>{}</w:t></w:r><w:r>{run_props}<w:tab/></w:r>", item.format.marker(item.value)),

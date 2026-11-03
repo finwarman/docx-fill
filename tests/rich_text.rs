@@ -65,8 +65,8 @@ fn prints_list_items_as_indented_paragraphs_with_their_bullet_or_number() {
 
     let printed = paragraphs(&body);
     assert_eq!(texts(&body), ["\u{2022}one", "1.nested", "2.again", "\u{2022}two"]);
-    assert!(printed[0].contains(r#"<w:ind w:left="360" w:hanging="360"/>"#));
-    assert!(printed[1].contains(r#"<w:ind w:left="720" w:hanging="360"/>"#));
+    assert!(printed[0].contains(r#"<w:ind w:left="720" w:hanging="360"/>"#));
+    assert!(printed[1].contains(r#"<w:ind w:left="1440" w:hanging="360"/>"#));
     assert!(printed[0].contains("<w:tab/>"));
 }
 
@@ -159,4 +159,19 @@ fn keeps_run_properties_in_schema_order() {
 
     assert!(heading.contains(r#"<w:sz w:val="32"/><w:szCs w:val="32"/><w:lang w:val="en-GB"/>"#), "{heading}");
     assert!(underline.contains(r#"<w:u w:val="single"/><w:lang w:val="en-GB"/>"#), "{underline}");
+}
+
+#[test]
+fn keeps_tracked_property_changes_whole() {
+    let ppr = r#"<w:pPr><w:pStyle w:val="Body"/><w:pPrChange w:id="8" w:author="E"><w:pPr><w:jc w:val="center"/></w:pPr></w:pPrChange></w:pPr>"#;
+    let rpr = r#"<w:rPr><w:b/><w:rPrChange w:id="9" w:author="E"><w:rPr><w:i/></w:rPr></w:rPrChange></w:rPr>"#;
+    for (before, tags) in [("", "{~~html:a.value}"), ("x ", "{~~html:a.value}"), ("", "{~~html:a.value} {~~html:b.value}")] {
+        let body = format!(r#"<w:p>{ppr}<w:r>{rpr}<w:t xml:space="preserve">{before}{tags}</w:t></w:r></w:p>"#);
+        for html in ["<ul><li>one</li></ul>", "<p>plain</p>"] {
+            let xml = fill(&body, json!({ "html:a.value": html, "html:b.value": html }));
+            for name in ["w:pPr", "w:rPr", "w:pPrChange", "w:rPrChange"] {
+                assert_eq!(xml.matches(&format!("<{name}>")).count() + xml.matches(&format!("<{name} ")).count(), xml.matches(&format!("</{name}>")).count(), "{name} in {xml}");
+            }
+        }
+    }
 }
