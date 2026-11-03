@@ -1,6 +1,7 @@
 mod common;
 
-use common::{elements, fill};
+use common::{NAMESPACES, document, elements, fill};
+use docx_fill::{FillOptions, PackageTemplate};
 use serde_json::json;
 
 const TAG: &str = "<w:p><w:r><w:t>{~~html}</w:t></w:r></w:p>";
@@ -211,6 +212,23 @@ fn resolves_nested_native_width() {
     let xml = fill(&body, json!({"html": "<table><tr><td>A</td></tr></table>"}));
 
     assert!(xml.contains("<w:tblW w:w=\"1850\" w:type=\"dxa\"/>"), "{xml}");
+}
+
+#[test]
+fn sizes_tables_in_header_footer() {
+    let table = format!("<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/></w:tblPr><w:tr><w:tc><w:tcPr><w:tcW w:w=\"2500\" w:type=\"pct\"/></w:tcPr>{TAG}</w:tc></w:tr></w:tbl>");
+    let template = PackageTemplate::parse([
+        ("word/header1.xml".to_string(), format!("<w:hdr {NAMESPACES}>{table}</w:hdr>").into_bytes()),
+        ("word/footer1.xml".to_string(), format!("<w:ftr {NAMESPACES}>{table}</w:ftr>").into_bytes()),
+        ("word/document.xml".to_string(), document(SECTION).into_bytes()),
+    ], &FillOptions::default()).unwrap();
+    let parts = template.render(&json!({"html": "<table><tr><td>A</td></tr></table>"}));
+
+    for name in ["word/header1.xml", "word/footer1.xml"] {
+        let xml = String::from_utf8_lossy(&parts.iter().find(|(part, _)| part == name).unwrap().1);
+
+        assert!(xml.contains("<w:tblW w:w=\"4500\" w:type=\"dxa\"/>"), "{name}: {xml}");
+    }
 }
 
 #[test]

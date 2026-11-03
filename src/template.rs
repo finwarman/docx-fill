@@ -288,10 +288,10 @@ impl Template {
     /// @returns An error for an unclosed or unopened tag or loop, a loop closed by another loop's
     ///   tag, or a dash loop outside the element it names.
     pub fn parse(xml: &str, options: &FillOptions) -> Result<Template, FillError> {
-        Template::parse_text(xml, options, TextLayout::Paragraphs)
+        Template::parse_text(xml, options, TextLayout::Paragraphs, None)
     }
 
-    pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout) -> Result<Template, FillError> {
+    pub(crate) fn parse_text(xml: &str, options: &FillOptions, layout: TextLayout, fallback_width: Option<f64>) -> Result<Template, FillError> {
         validate_tag_prefixes(options)?;
         let expanded = (options.extensions.paragraph_placeholder && options.paragraph_placeholder.soft_breaks != crate::SoftBreakScope::None)
             .then(|| crate::placeholder_lines::expand(xml, options.paragraph_placeholder.soft_breaks));
@@ -371,7 +371,7 @@ impl Template {
             tag.is_alone = paragraph.len() == 1 && paragraph[0].end - paragraph[0].start == joined_texts[tag.paragraph].len();
         }
 
-        let html_widths = read_html_widths(&parts, &tags);
+        let html_widths = read_html_widths(&parts, &tags, fallback_width);
         for (index, tag) in tags.iter_mut().enumerate() {
             match &mut tag.kind {
                 TagKind::Image { cell_width, .. } => *cell_width = read_cell_width(&parts, tag.part),
@@ -898,7 +898,7 @@ fn read_extension_tag(text: &str, extensions: &Extensions) -> Option<(TagKind, S
 }
 
 /// Each HTML tag's section-column or innermost cell content width.
-fn read_html_widths(parts: &[Part], tags: &[Tag]) -> Vec<Option<f64>> {
+fn read_html_widths(parts: &[Part], tags: &[Tag], fallback_width: Option<f64>) -> Vec<Option<f64>> {
     let mut widths = vec![None; tags.len()];
     if !tags.iter().any(|tag| matches!(tag.kind, TagKind::RichText { .. })) { return widths; }
     // A paragraph's section properties can precede its text; the section ends at that paragraph.
@@ -933,7 +933,7 @@ fn read_html_widths(parts: &[Part], tags: &[Tag]) -> Vec<Option<f64>> {
             Part::Element { kind: ElementKind::Open, name, .. } if name == "w:tbl" => {
                 let end = parts[at + 1..].iter().position(|part| matches!(part, Part::Element { kind, name, .. } if name == ROW || (name == "w:tbl" && *kind == ElementKind::Close))).map_or(parts.len(), |end| at + 1 + end);
                 let properties = &parts[at..end];
-                let parent = cells.last().copied().flatten().or_else(|| sections.get(section).and_then(|(_, width)| *width));
+                let parent = cells.last().copied().flatten().or_else(|| sections.get(section).and_then(|(_, width)| *width)).or(fallback_width);
                 let width = property_width(properties, "w:tblPr", "w:tblW", parent).or(parent);
                 tables.push((read_cell_margins(properties, "w:tblCellMar"), width));
             }
@@ -948,7 +948,7 @@ fn read_html_widths(parts: &[Part], tags: &[Tag]) -> Vec<Option<f64>> {
             }
             Part::Element { kind: ElementKind::Close, name, .. } if name == CELL => { cells.pop(); }
             Part::Tag(index) if matches!(tags[*index].kind, TagKind::RichText { .. }) => {
-                widths[*index] = cells.last().copied().flatten().or_else(|| sections.get(section).and_then(|(_, width)| *width));
+                widths[*index] = cells.last().copied().flatten().or_else(|| sections.get(section).and_then(|(_, width)| *width)).or(fallback_width);
             }
             _ => {}
         }
