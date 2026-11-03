@@ -26,7 +26,11 @@ pub fn fill_xlsx(bytes: &[u8], data: &Value) -> Outcome<Vec<u8>> {
         total = total.checked_add(entry.size()).ok_or("ZIP size overflow")?;
         if total > MAX_EXPANDED { return Err("Expanded XLSX exceeds 256 MiB".into()); }
         let name = entry.name()?.into_owned();
+        if name.starts_with('/') || (name.contains(char::from(92)) || name.contains(':')) || name.split('/').any(|part| matches!(part, "" | "." | "..")) {
+            return Err("Invalid XLSX archive member path".into());
+        }
         let declared = entry.size();
+        if name.ends_with(".xml") && declared > 16 * 1024 * 1024 { return Err("XLSX XML part exceeds 16 MiB".into()); }
         let mut content = Vec::new();
         entry.take(declared + 1).read_to_end(&mut content)?;
         if content.len() as u64 != declared { return Err("ZIP entry size differs from its declaration".into()); }

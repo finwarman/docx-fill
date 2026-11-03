@@ -53,3 +53,18 @@ Two runs on the same machine differed by less than 3% per case. The exception is
 1. Before a change, run `benches/run.sh --save benches/local.json` on main. Paths are inside the repository, which the container mounts, and `benches/local.json` is ignored by git. The committed baseline also works if it came from the same machine.
 2. After the change, run `benches/run.sh --compare benches/local.json`.
 3. If a change makes the bench faster or slower on purpose, rerun with `--save benches/baseline.json` and commit the new baseline with the change.
+
+## Spreadsheet expansion
+
+`cargo bench --bench spreadsheet` renders 10,000 and 100,000 items from a three-cell row template. It also fills 1,024 shared-string cells and a 128-column worksheet. The allocator records peak live bytes, including input JSON and retained output.
+
+Measured on the local development machine on 2026-11-03, using the optimized Cargo bench profile:
+
+| Scenario | Rows or cells | Parse | Render | Output bytes | Peak live bytes |
+|---|---:|---:|---:|---:|---:|
+| Row expansion | 10,000 rows | 0.535 ms | 114 ms | 1,504,587 | 33,584,702 |
+| Row expansion | 100,000 rows | 0.082 ms | 1,124 ms | 15,634,591 | 302,752,610 |
+| Shared strings | 1,024 cells | 2.943 ms | 5.085 ms | 100,053 | 1,809,185 |
+| Wide sheet | 128 columns | 0.367 ms | 0.286 ms | 8,024 | 377,493 |
+
+For row expansion, parsing measures the fixed template, so it does not grow with the data. Render time and tracked allocations include output construction and package validation. These measurements are a reproducible local comparison, not a latency guarantee. The 256 MiB package limit concerns package bytes, not total allocator use while input data and intermediate structures coexist.

@@ -613,3 +613,23 @@ fn add_chart_relationship(parts: &mut Vec<(String, Cow<[u8]>)>, part: &str, id: 
         if let Some(changed) = namespaces::append_relation(&xml, relationship) { *bytes = Cow::Owned(changed.into_bytes()); }
     } else { add_relationship(parts, part, id, relationship); }
 }
+
+/// Reuse chart data validation and cache rendering for a chart owned by an XLSX package.
+pub(crate) fn fill_spreadsheet_chart(xml: &str, value: &Value) -> Result<String, FillError> {
+    let normalized = namespaces::normalize_chart(xml);
+    let xml = normalized.as_deref().unwrap_or(xml);
+    let data = ChartData::read(value).ok_or_else(|| {
+        FillError::new("Invalid spreadsheet chart data").with_id(FillErrorId::SpreadsheetCell)
+    })?;
+    let points: usize = data.series.iter().map(|series| series.values.len()).sum();
+    if points > 1_000_000 {
+        return Err(
+            FillError::new("Spreadsheet chart exceeds one million points")
+                .with_id(FillErrorId::SpreadsheetCell),
+        );
+    }
+    fill_chart(xml, &data, None).ok_or_else(|| {
+        FillError::new("Unsupported spreadsheet chart layout or data")
+            .with_id(FillErrorId::SpreadsheetCell)
+    })
+}

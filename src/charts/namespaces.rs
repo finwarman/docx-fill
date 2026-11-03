@@ -44,10 +44,19 @@ pub(super) struct Relation {
 
 /// Canonicalize only ChartEx parts and chart-reference names. Other namespaces keep their URIs.
 pub(super) fn normalize(xml: &str) -> Option<String> {
+    normalize_impl(xml, false)
+}
+
+pub(super) fn normalize_chart(xml: &str) -> Option<String> {
+    normalize_impl(xml, true)
+}
+
+fn normalize_impl(xml: &str, standard: bool) -> Option<String> {
     let tokens = tokenize(xml).ok()?;
     let mut frames: Vec<NormalFrame> = Vec::new();
     let mut out = String::with_capacity(xml.len());
     let mut extended_part = false;
+    let mut standard_part = false;
     let mut seen_root = false;
     let mut next_prefix = 0;
     for token in tokens {
@@ -66,14 +75,16 @@ pub(super) fn normalize(xml: &str) -> Option<String> {
         let bindings = read_bindings(frames.last().map(|frame| &frame.bindings), &attrs);
         let mut output = read_bindings(frames.last().map(|frame| &frame.output), &attrs);
         let uri = element_uri(name, &bindings);
-        if !seen_root { extended_part = uri == Some(EXTENDED) && local(name) == "chartSpace"; seen_root = true; }
+        if !seen_root { extended_part = uri == Some(EXTENDED) && local(name) == "chartSpace"; standard_part = standard && uri == Some(CHART) && local(name) == "chartSpace"; seen_root = true; }
+        let chart_part = extended_part || standard_part;
         let reference = local(name) == "chart" && matches!(uri, Some(EXTENDED | CHART)) && relationship_id(&attrs, &bindings).is_some();
         let mut declarations = Bindings::new();
         let mut locked = Bindings::new();
         let renamed = if extended_part && uri == Some(EXTENDED) { format!("cx:{}", local(name)) }
-            else if extended_part && uri == Some(DRAWING) { format!("a:{}", local(name)) }
+            else if standard_part && uri == Some(CHART) { format!("c:{}", local(name)) }
+            else if chart_part && uri == Some(DRAWING) { format!("a:{}", local(name)) }
             else if reference { format!("{}:chart", if uri == Some(EXTENDED) { "cx" } else { "c" }) }
-            else if extended_part && foreign_reserved(name, uri) { fresh_name(local(name), uri?, &output, &mut next_prefix) }
+            else if chart_part && foreign_reserved(name, uri) { fresh_name(local(name), uri?, &output, &mut next_prefix) }
             else { name.to_string() };
         bind_name(&renamed, uri, &mut output, &mut declarations, &mut locked);
         let mut edits = Vec::new();
@@ -82,10 +93,10 @@ pub(super) fn normalize(xml: &str) -> Option<String> {
             if attr.name == "xmlns" || attr.name.starts_with("xmlns:") { continue; }
             let uri = attribute_uri(attr.name, &bindings);
             let mut renamed = if extended_part && uri == Some(EXTENDED) { format!("cx:{}", local(attr.name)) }
-                else if (extended_part || reference) && uri == Some(RELATIONSHIPS) { format!("r:{}", local(attr.name)) }
+                else if (chart_part || reference) && uri == Some(RELATIONSHIPS) { format!("r:{}", local(attr.name)) }
                 else { attr.name.to_string() };
             let conflict = prefix(&renamed).is_some_and(|prefix| locked.get(prefix).is_some_and(|locked| Some(locked.as_str()) != uri));
-            if conflict || ((extended_part || reference) && foreign_reserved(&renamed, uri)) {
+            if conflict || ((chart_part || reference) && foreign_reserved(&renamed, uri)) {
                 renamed = fresh_name(local(attr.name), uri?, &output, &mut next_prefix);
             }
             if prefix(&renamed).is_some() { bind_name(&renamed, uri, &mut output, &mut declarations, &mut locked); }

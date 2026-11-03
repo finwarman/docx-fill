@@ -11,6 +11,7 @@ pub enum FillErrorId {
     UndefinedSegment, ScopeParserCompilation, NoXmlTagFound,
     HtmlUnknownTag, HtmlCssInvalid, HtmlBlockInvalid, ChartWorkbook,
     SpreadsheetPackage, SpreadsheetCell, SpreadsheetReference,
+    SpreadsheetLimit,
 }
 
 impl FillErrorId {
@@ -32,6 +33,7 @@ impl FillErrorId {
             Self::SpreadsheetPackage => "spreadsheet_package_error",
             Self::SpreadsheetCell => "spreadsheet_cell_error",
             Self::SpreadsheetReference => "spreadsheet_reference_error",
+            Self::SpreadsheetLimit => "spreadsheet_limit_error",
         }
     }
 }
