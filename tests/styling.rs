@@ -43,6 +43,73 @@ fn styles_only_the_run_holding_the_tag() {
 }
 
 #[test]
+fn styles_multiline_run_fragments() {
+    for content in ["{:stylerun s}{name}", "{name}{:stylerun s}"] {
+        for value in ["A\nB", "A\r\nB", "A\n\nB", "\nA\n"] {
+            let template = format!(r#"<w:p><w:r><w:t>before</w:t></w:r><w:r><w:rPr><w:i/><w:lang w:val="en-GB"/></w:rPr><w:t>{content}</w:t></w:r><w:r><w:t>after</w:t></w:r></w:p>"#);
+            let body = fill(&template, json!({ "name": value, "s": { "fontFamily": "Calibri", "fontSize": 40, "textColor": "#C00000", "bold": false } }));
+            let runs = elements(&body, "w:r");
+
+            assert!(!runs[0].contains("<w:rPr>"));
+            assert!(!runs.last().unwrap().contains("<w:rPr>"));
+            assert_eq!(body.matches("<w:br/>").count(), value.matches('\n').count());
+            assert_eq!(common::text(&body), format!("before{}after", value.replace(['\r', '\n'], "")));
+            for run in &runs[1..runs.len() - 1] {
+                assert!(run.contains(r#"<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri" w:eastAsia="Calibri"/>"#), "{run}");
+                assert!(run.contains(r#"<w:color w:val="C00000"/>"#) && run.contains(r#"<w:sz w:val="40"/>"#), "{run}");
+                assert!(run.contains(r#"<w:b w:val="0"/>"#), "{run}");
+            }
+            for run in runs.iter().filter(|run| run.contains("<w:t")) {
+                if run.contains(">before<") || run.contains(">after<") { continue; }
+                assert!(run.contains("<w:i/>") && run.contains(r#"<w:lang w:val="en-GB"/>"#), "{run}");
+            }
+        }
+    }
+}
+
+#[test]
+fn styles_text_from_style_value() {
+    let body = fill(r#"<w:p><w:r><w:t>{:stylerun s}</w:t></w:r></w:p>"#, json!({ "s": { "text": "A\nB", "textColor": "#C00000" } }));
+
+    assert_eq!(common::text(&body), "AB");
+    assert_eq!(body.matches("<w:br/>").count(), 1);
+    for run in elements(&body, "w:r") {
+        assert!(run.contains(r#"<w:color w:val="C00000"/>"#), "{run}");
+    }
+}
+
+#[test]
+fn styles_multiple_multiline_tags() {
+    let body = fill(r#"<w:p><w:r><w:t>{:stylerun s}{a}|{b}</w:t></w:r></w:p>"#, json!({ "a": "A\nB", "b": "C\nD", "s": { "italic": true } }));
+
+    assert_eq!(common::text(&body), "AB|CD");
+    assert_eq!(body.matches("<w:br/>").count(), 2);
+    for run in elements(&body, "w:r") {
+        assert!(run.contains("<w:i/>"), "{run}");
+    }
+}
+
+#[test]
+fn styles_with_linebreaks_off() {
+    let options = FillOptions { linebreaks: false, ..FillOptions::default() };
+    let body = common::fill_with(r#"<w:p><w:r><w:t>{:stylerun s}{name}</w:t></w:r></w:p>"#, json!({ "name": "A\nB", "s": { "bold": true } }), &options);
+
+    assert_eq!(common::text(&body), "A\nB");
+    assert_eq!(elements(&body, "w:r").len(), 1);
+    assert!(!body.contains("<w:br/>"));
+    assert!(body.contains("<w:b/>"));
+}
+
+#[test]
+fn keeps_nested_run_style() {
+    let inner = r#"<w:r><w:rPr><w:color w:val="00AA55"/></w:rPr><w:t>inner</w:t></w:r>"#;
+    let body = fill(&format!("<w:p><w:r><w:t>{{:stylerun s}}outer</w:t><w:drawing><w:txbxContent><w:p>{inner}</w:p></w:txbxContent></w:drawing></w:r></w:p>"), json!({ "s": { "textColor": "#C00000" } }));
+
+    assert!(body.contains(r#"<w:color w:val="C00000"/>"#));
+    assert!(body.contains(inner), "{body}");
+}
+
+#[test]
 fn styles_every_cell_of_the_tags_row() {
     let body = fill(
         &table(&[row(&[cell(&["{:stylerow s}a"]), cell(&["b"])]), row(&[cell(&["c"]), cell(&["d"])])]),

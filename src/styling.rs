@@ -7,7 +7,9 @@ use serde_json::Value;
 
 use crate::cell_styling::{read_fill, shade_cell};
 use crate::properties::{CELL_ORDER, PARAGRAPH_ORDER, RUN_ORDER, edit_each, edit_properties, read_child, set_attribute, set_child};
-use crate::xml::escape;
+use crate::xml::{ElementKind, Token, escape, tokenize};
+
+const RUN: &str = "w:r";
 
 // Mark a `{:stylestart}` range's start (with its index) and end in the filled XML.
 pub(crate) const RANGE_START: char = '\u{E002}';
@@ -203,6 +205,38 @@ pub(crate) fn style_run(run: &str, style: &Style) -> String {
         return run.to_string();
     }
     edit_properties(run, "w:rPr", |inner| style_run_properties(inner, style))
+}
+
+/// The outer runs produced from one template run, with the style applied to each fragment.
+pub(crate) fn style_run_fragments(runs: &str, style: &Style) -> String {
+    if !style.has_run_properties() { return runs.to_string(); }
+    let Ok(tokens) = tokenize(runs) else { return runs.to_string() };
+    let mut out = String::with_capacity(runs.len());
+    let (mut at, mut start, mut copied, mut depth) = (0, 0, 0, 0usize);
+    for token in tokens {
+        let length = match token { Token::Element { raw, .. } => raw.len(), Token::Text(text) => text.len() };
+        if let Token::Element { name: RUN, kind, .. } = token {
+            match kind {
+                ElementKind::Open => {
+                    if depth == 0 { start = at; }
+                    depth += 1;
+                }
+                ElementKind::Close if depth > 0 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let end = at + length;
+                        out.push_str(&runs[copied..start]);
+                        out.push_str(&style_run(&runs[start..end], style));
+                        copied = end;
+                    }
+                }
+                _ => {}
+            }
+        }
+        at += length;
+    }
+    out.push_str(&runs[copied..]);
+    out
 }
 
 /// `paragraph`, a whole `<w:p>`, with the style's paragraph properties, and its run properties on

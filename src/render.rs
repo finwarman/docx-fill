@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use serde_json::Value;
 
 use crate::properties::edit_each;
-use crate::styling::{RANGE_END, RANGE_START, RANGE_START_END, Style, StyleKind, read_style, style_cell, style_paragraph, style_ranges, style_row, style_run, style_shape};
+use crate::styling::{RANGE_END, RANGE_START, RANGE_START_END, Style, StyleKind, read_style, style_cell, style_paragraph, style_ranges, style_row, style_run_fragments, style_shape};
 use crate::table_merge::{Merge, merge_table};
 use crate::full_table::{Grid, write_table};
 use crate::images::{Image, MediaUse, body_or_default, drawing_size, drawing_xml};
@@ -734,7 +734,7 @@ impl<'a> Render<'a, '_> {
             }
             (ElementKind::Close, RUN) => {
                 let frame = self.runs.pop();
-                self.restyle(frame, style_run);
+                self.restyle(frame, style_run_fragments);
             }
             (ElementKind::Close, shape) if SHAPES.contains(&shape) => {
                 let frame = self.shapes.pop();
