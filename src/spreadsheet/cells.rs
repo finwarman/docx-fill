@@ -12,6 +12,7 @@ pub(crate) struct Cell {
     pub text: Option<String>,
     pub tags: Vec<Tag>,
     text_elements: Vec<(usize, usize, usize)>,
+    phonetic: Vec<(usize, usize)>,
     original_type: Option<String>,
 }
 
@@ -41,6 +42,12 @@ impl Cell {
         }
 
         let mut text_elements: Vec<(usize, usize, usize)> = Vec::new();
+        // Phonetic runs annotate the cell text; they are not part of it.
+        let phonetic: Vec<_> = all
+            .iter()
+            .filter(|element| local_name(&element.name) == "rPh")
+            .map(|element| (element.start, element.end))
+            .collect();
         let mut value_text = String::new();
         if cell_type.as_deref() == Some("s") {
             if let Some((_, content_start, value_end)) = value_element {
@@ -80,6 +87,7 @@ impl Cell {
                 local_name(&element.name) == target
                     && element.start >= cell.open_end
                     && element.end <= cell.end
+                    && !phonetic.iter().any(|(start, end)| item_is_inside(element.start, *start, *end))
             }) {
                 text_elements.push((element.start, element.open_end, element.close_start));
                 value_text.push_str(&crate::xml::unescape(
@@ -108,6 +116,7 @@ impl Cell {
             text,
             tags,
             text_elements,
+            phonetic,
             original_type: cell_type,
         })
     }
@@ -205,7 +214,7 @@ impl Cell {
             }
             return Ok(self.original.clone());
         }
-        let mut edits = Vec::new();
+        let mut edits: Vec<_> = self.phonetic.iter().map(|(start, end)| (*start, *end, String::new())).collect();
         for (index, (start, open_end, close_start)) in self.text_elements.iter().enumerate() {
             edits.push((
                 *open_end,

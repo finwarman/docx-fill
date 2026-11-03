@@ -170,6 +170,8 @@ impl Sheet {
                     && first_source > prior
                 {
                     *next_number = next_number.checked_add(first_source - prior - 1).ok_or_else(|| error("Rendered worksheet row number overflow"))?;
+                    // The gap is placed; the block's first row must not add it again.
+                    *prior_source = Some(first_source - 1);
                 }
                 let value = context.value(self.tag(block.open), scopes, indexes);
                 match value.as_ref() {
@@ -367,12 +369,8 @@ fn renumber_cells(xml: &mut String, source_row: u32, target_row: u32) -> Result<
         let Some(reference) = read_attribute(open, "r") else { continue };
         let Some((column, row)) = split_reference(reference) else { continue };
         if row != source_row { continue; }
-        let letters = column_name(column);
-        let old = format!("r=\"{reference}\"");
-        if let Some(at) = open.find(&old) {
-            let new = format!("r=\"{letters}{target_row}\"");
-            xml.replace_range(cell.start + at..cell.start + at + old.len(), &new);
-        }
+        let at = cell.start + (reference.as_ptr() as usize - open.as_ptr() as usize);
+        xml.replace_range(at..at + reference.len(), &format!("{}{target_row}", column_name(column)));
     }
     Ok(())
 }
