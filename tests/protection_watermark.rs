@@ -91,3 +91,12 @@ fn keeps_index_text_in_the_watermark() {
 
     assert!(part(&parts, "word/header1.xml").contains(r#"string="Copy {index}""#));
 }
+
+#[test]
+fn declares_watermark_namespaces_after_a_quoted_gt() {
+    let watermark = DocumentEdits { watermark: Some(Watermark { text: "COPY".to_string(), layout: WatermarkLayout::Horizontal }), ..DocumentEdits::default() };
+    let parts = edit(watermark, &[("word/document.xml", &document("<w:p/>")), ("word/header1.xml", r#"<w:hdr xmlns:w="w" xmlns:m="m" m:note='a>b'/>"#)]);
+    let header = part(&parts, "word/header1.xml");
+
+    assert!(header.starts_with(r#"<w:hdr xmlns:w="w" xmlns:m="m" m:note='a>b' xmlns:v="#), "{header}");
+}

@@ -1,0 +1,13 @@
+{
+  "median_ms": {
+    "conditions/5k": 540.82,
+    "errors/2k": 1.79,
+    "expressions/loop-5k": 3.26,
+    "html/blocks-300k": 17.73,
+    "html/style-sheet-3k": 20.73,
+    "loop/nested-200x100": 7.21,
+    "loop/table-rows-20k": 53.16,
+    "package/report-2k": 1.26,
+    "tags/split-1k": 2.55
+  }
+}

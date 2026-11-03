@@ -395,6 +395,7 @@ impl PackageTemplate {
         let kinds = PartKinds::read(content_types.as_deref());
         let main_part = parts.iter().map(|(name, _)| name).find(|name| kinds.kind(name) == PartKind::Main).cloned().unwrap_or_else(|| DOCUMENT_PART.to_string());
         let main_width = parts.iter().find(|(name, _)| *name == main_part).and_then(|(_, bytes)| std::str::from_utf8(bytes).ok()).and_then(images::read_body_size).map(|(width, _)| width);
+        let cell_margins = parts.iter().find(|(name, _)| name == STYLES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes)).map_or([template::WORD_CELL_MARGIN_TWIPS; 2], |styles| template::read_default_margins(&styles));
         let footnotes_part = footnotes::target(parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())));
         let mut max_footnote_id = None;
         let mut max_comment_id = None;
@@ -424,7 +425,7 @@ impl PackageTemplate {
             let qr = qr_tags.remove(&name).unwrap_or_default();
             #[cfg(feature = "qr-codes")]
             let qr_errors: Vec<_> = qr.errors.into_iter().map(|error| error.in_part(&name)).collect();
-            match Template::parse_text(&xml, options, layout, main_width) {
+            match Template::parse_text(&xml, options, layout, main_width, cell_margins) {
                 Ok(template) => {
                     #[cfg(feature = "qr-codes")]
                     let template = {

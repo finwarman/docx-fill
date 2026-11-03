@@ -96,9 +96,9 @@ Inline headings and standalone XML rendering retain direct heading formatting be
 
 HTML `<img>` data URLs support PNG, JPEG, GIF and SVG. Inline `<svg>` also embeds its source. Width and height come from CSS or attributes, then intrinsic dimensions; one supplied dimension preserves the aspect ratio. CSS pixels, points, inches, centimeters, millimeters and picas are accepted. Percentage dimensions use the document body width. `FillHooks::image` can resolve a `src` string, and `image_size`, `image_properties` and `svg_fallback` also apply. External URLs require a hook; the library does not fetch them. Image captions follow the containing template paragraph.
 
-HTML table cells support combined `rowspan` and `colspan`. Vertical spans keep later cells in their columns and stop at the table's final row.
+HTML table cells support combined `rowspan` and `colspan`. Vertical spans keep later cells in their columns and stop at the table's final row. A spanning cell's side borders apply to every row it covers, and its bottom border to the last.
 
-HTML tables default to at most six inches within the section column or enclosing cell's inner width. Explicit table widths and fully specified cell widths can exceed that default. Nested tables subtract the parent cell's padding. Default cell padding is 55/45/55/55twips (top/left/bottom/right), with 0.25pt borders; these are renderer defaults. CSS and HTML widths, column widths, `cellpadding`, cell padding, table margins and borders override those defaults. `table-layout: fixed` fixes the grid; otherwise Word may adjust preferred widths for content. Tables in unequal page columns use the first column's width.
+HTML tables default to at most six inches within the section column or enclosing cell's inner width. Explicit table widths and fully specified cell widths can exceed that default. A template cell's width comes from its `w:tcW`, else its grid columns; its margins from `w:tcMar`, `w:tblCellMar` or the default table style, else 108 twips per side. Tables in text boxes, or cells with no known width, keep percentage widths. Nested tables subtract the parent cell's padding. Default cell padding is 55/45/55/55twips (top/left/bottom/right), with 0.25pt borders; these are renderer defaults. CSS and HTML widths, column widths, `cellpadding`, cell padding, table margins and borders override those defaults. `table-layout: fixed` fixes the grid; otherwise Word may adjust preferred widths for content. Tables in unequal page columns use the first column's width.
 
 HTML CSS maps margins and padding to paragraph spacing/indents or table-cell margins. It also reads line height, text indentation, cell vertical alignment, page-break boundaries, `white-space: pre` and `direction`. Lengths accept `px`, `pt` and `em`; line height also accepts a multiplier or percentage. This is a Word layout mapping, not a full CSS box model.
 
@@ -250,6 +250,8 @@ For callers that pass settings as JSON, such as a wasm build, `FillOptions::read
 ## Contributing
 
 Run `cargo test` and `cargo clippy --all-targets -- -D warnings`. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+To check a change for slowdowns, run `benches/run.sh --compare benches/baseline.json`. See [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Sources
 
