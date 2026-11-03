@@ -37,6 +37,8 @@ fn writes_native_bullet_lists() {
     assert_eq!(references.len(), 2);
     assert_eq!(references[0], references[1]);
     assert!(numbering.contains("<w:numFmt w:val=\"bullet\"/>"));
+    assert!(numbering.contains("<w:lvlText w:val=\"\u{f0b7}\"/>"));
+    assert!(numbering.contains("<w:rFonts w:ascii=\"Symbol\" w:hAnsi=\"Symbol\" w:hint=\"default\"/>"));
     assert!(part(&parts, "word/_rels/document.xml.rels").contains(&format!("Type=\"{R}/numbering\"")));
     assert!(part(&parts, "[Content_Types].xml").contains("/word/numbering.xml"));
 }
@@ -82,6 +84,36 @@ fn matches_tag_marker_style() {
         assert!(props.find("<w:ind").unwrap() < props.find("<w:rPr>").unwrap());
     }
     assert!(body.contains("<w:b/>") && body.contains("nested"));
+    let numbering = String::from_utf8_lossy(&rendered.iter().find(|(name, _)| name == "word/numbering.xml").unwrap().1);
+    assert!(!numbering.contains("Symbol") && !numbering.contains('\u{f0b7}'));
+}
+
+#[test]
+fn keeps_nonfont_marker_style() {
+    let run = "<w:rPr><w:b/><w:i/><w:color w:val=\"224466\"/><w:sz w:val=\"22\"/></w:rPr>";
+    let tag = TAG.replace("<w:r>", &format!("<w:r>{run}"));
+    let template = PackageTemplate::parse([("word/document.xml".into(), document(&tag).into_bytes())], &FillOptions::default()).unwrap();
+    let parts: Vec<_> = template.render(&json!({"html":"<ul><li>A</li></ul><ol><li>B</li></ol>"})).into_iter().map(|(name, bytes)| (name, String::from_utf8_lossy(&bytes).into_owned())).collect();
+    let body = part(&parts, "word/document.xml");
+    let numbering = part(&parts, "word/numbering.xml");
+
+    assert_eq!(body.matches(run).count(), 4);
+    assert!(!body.contains("Symbol"));
+    assert_eq!(numbering.matches("<w:rFonts w:ascii=\"Symbol\"").count(), 1);
+    assert!(numbering.contains("<w:lvlText w:val=\"%1.\"/>"));
+}
+
+#[test]
+fn keeps_explicit_marker_fonts() {
+    for fonts in ["<w:rFonts w:asciiTheme=\"majorHAnsi\"/>", "<w:rFonts w:ascii=\"Arial\"></w:rFonts>", "<w:rFonts/>"] {
+        let tag = TAG.replace("<w:r>", &format!("<w:r><w:rPr>{fonts}</w:rPr>"));
+        let template = PackageTemplate::parse([("word/document.xml".into(), document(&tag).into_bytes())], &FillOptions::default()).unwrap();
+        let parts: Vec<_> = template.render(&json!({"html":"<ul><li>A</li></ul>"})).into_iter().map(|(name, bytes)| (name, String::from_utf8_lossy(&bytes).into_owned())).collect();
+
+        assert!(part(&parts, "word/document.xml").contains(fonts));
+        assert!(!part(&parts, "word/numbering.xml").contains("Symbol"));
+        assert!(part(&parts, "word/numbering.xml").contains("<w:lvlText w:val=\"•\"/>"));
+    }
 }
 
 #[test]

@@ -13,7 +13,7 @@
 //! font-size in px or pt, font-family, font-weight, font-style, text-decoration, text-align).
 
 use crate::cell_styling::{find_element_start, remove_first_element};
-use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_attribute, set_child};
+use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, read_child, set_attribute, set_child};
 use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -188,9 +188,20 @@ struct ListItem {
     value: i64,
 }
 
+#[derive(Clone, Copy)]
+enum MarkerFont { Inherited, Symbol }
+
+impl MarkerFont {
+    fn from_run(props: &str) -> Self {
+        let inner = read_child(props, "w:rPr").unwrap_or("");
+        if read_child(inner, "w:rFonts").is_some() { Self::Inherited } else { Self::Symbol }
+    }
+}
+
 struct ListWriter<'a> {
     numbering: Option<&'a mut Numberings>,
     ids: BTreeMap<usize, u32>,
+    marker_font: MarkerFont,
 }
 
 struct BlockWriter<'a, 'n> {
@@ -219,7 +230,7 @@ impl ListWriter<'_> {
         if let Some(id) = self.ids.get(&item.group) {
             return Some(*id);
         }
-        let id = self.numbering.as_mut()?.add(item.format, item.level, item.value)?;
+        let id = self.numbering.as_mut()?.add(item.format, item.level, item.value, self.marker_font)?;
         self.ids.insert(item.group, id);
         Some(id)
     }
@@ -400,7 +411,7 @@ fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut 
     let bookmarks = find_bookmarks(paragraph);
     let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
     let mut out = String::new();
-    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new() } };
+    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new(), marker_font: MarkerFont::from_run(run_props) } };
     // A section break belongs to the last paragraph only.
     let has_section = find_element_start(paragraph_props, "<w:sectPr").is_some();
     let body_props = if has_section { preserve::without(paragraph_props, "w:sectPr") } else { paragraph_props.to_string() };
