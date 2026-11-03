@@ -59,6 +59,32 @@ fn leaves_unrepeated_ids_alone() {
 }
 
 #[test]
+fn reserves_all_revision_ids() {
+    let changed = r#"<w:p><w:ins w:id="2" w:author="Editor"><w:r><w:rPr><w:rPrChange w:id="0" w:author="Editor"><w:rPr/></w:rPrChange></w:rPr><w:t>x</w:t></w:r></w:ins></w:p>"#;
+    let removed = r#"<w:p><w:del w:id="1" w:author="Editor"><w:r><w:delText>old</w:delText></w:r></w:del></w:p>"#;
+    let body = fill(&(paragraph(&["{#l}"]) + changed + &paragraph(&["{/l}"]) + removed), three_items());
+    let ids = values(&body, "w:id");
+
+    assert_eq!(ids.len(), 7);
+    assert!(are_unique(&ids), "{ids:?}");
+    assert_eq!(&ids[..2], ["2", "0"]);
+    assert_eq!(ids.last(), Some(&"1"));
+    assert_eq!(body.matches("w:author=\"Editor\"").count(), 7);
+}
+
+#[test]
+fn handles_large_revision_ids() {
+    for id in ["-1", "2147483647"] {
+        let changed = format!("<w:p><w:ins w:id=\"{id}\" w:author=\"Editor\"><w:r><w:t>x</w:t></w:r></w:ins></w:p>");
+        let body = fill(&(paragraph(&["{#l}"]) + &changed + &paragraph(&["{/l}"])), three_items());
+        let ids = values(&body, "w:id");
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids[0], id);
+        assert!(are_unique(&ids));
+    }
+}
+
+#[test]
 fn keeps_the_names_of_continued_bookmarks() {
     let options = FillOptions { continued_bookmarks: Some("tag_".into()), ..FillOptions::default() };
     let marked = r#"<w:p><w:bookmarkStart w:id="3" w:name="tag_0"/><w:bookmarkEnd w:id="3"/><w:r><w:t>x</w:t></w:r></w:p>"#;

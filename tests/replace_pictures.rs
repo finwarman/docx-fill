@@ -102,3 +102,27 @@ fn replaces_svg_with_png_preview() {
     assert_eq!(parts["word/media/replacements/8.png"], b"preview");
     assert!(xml.contains("<wp:extent cx=\"19050\" cy=\"28575\"/>"));
 }
+
+fn textbox(tag: &str, content: &str) -> String {
+    format!(r#"<w:p><w:r><w:drawing xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wp:inline><wp:extent cx="500000" cy="600000"/><wp:docPr id="20" name="Textbox" descr="{tag}"/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp><wps:txbx><w:txbxContent>{content}</w:txbxContent></wps:txbx></wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#)
+}
+
+#[test]
+fn ignores_picture_tags_on_textboxes() {
+    let body = textbox("{%outer}", &picture(""));
+    let parts = render(&body, json!({}), json!({"outer":"wrong"}));
+    let xml = String::from_utf8_lossy(&parts["word/document.xml"]);
+    assert!(xml.contains("r:embed=\"rIdOld\"") && xml.contains("descr=\"{%outer}\""));
+    assert!(!parts.keys().any(|name| name.contains("/replacements/")));
+}
+
+#[test]
+fn replaces_only_the_nested_picture() {
+    let body = textbox("{%outer}", &picture("{%inner}"));
+    let parts = render(&body, json!({}), json!({"outer":"wrong","inner":"nested"}));
+    let xml = String::from_utf8_lossy(&parts["word/document.xml"]);
+    let replacements = parts.iter().filter(|(name, _)| name.contains("/replacements/")).map(|(_, bytes)| bytes.as_slice()).collect::<Vec<_>>();
+    assert_eq!(replacements, [b"nested"]);
+    assert!(xml.contains("descr=\"{%outer}\"") && !xml.contains("{%inner}"));
+    assert!(xml.contains("<wp:extent cx=\"500000\" cy=\"600000\"/>"));
+}
