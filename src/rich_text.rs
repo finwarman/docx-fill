@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) mod numbering;
+pub(crate) mod headings;
 mod css;
 mod preserve;
 pub(crate) mod images;
@@ -66,6 +67,7 @@ pub(crate) struct RichValue {
     pub style_sheet: String,
     pub block_mode: crate::HtmlBlockMode,
     pub raw: Vec<crate::HtmlFragment>,
+    pub headings: Option<Arc<headings::Headings>>,
 }
 
 pub(crate) enum ImageMode { Embed, Ignore }
@@ -76,6 +78,7 @@ pub(crate) struct PreparedHtml {
     pub raw: Vec<crate::HtmlFragment>,
     pub errors: Vec<crate::FillError>,
     pub has_block: bool,
+    pub has_headings: bool,
 }
 
 /// How a run looks beyond the tag run's own properties.
@@ -310,7 +313,8 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
             let (before, after) = text.split_once(&mark).unwrap_or(("", ""));
             SpaceEdges::between(before.chars().next_back(), after.chars().next())
         };
-        let blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet, &value.raw);
+        let mut blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet, &value.raw);
+        if is_block && let Some(headings) = &value.headings { apply_headings(&mut blocks, &headings.ids); }
 
         // Alone in its paragraph: the paragraph becomes the value's paragraphs.
         if is_block && !blocks.is_empty() {
@@ -430,6 +434,15 @@ fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut 
 
 fn join_inline(blocks: &[Block], run_props: &str, links: &mut Vec<String>) -> String {
     blocks.iter().map(|block| write_inline(block, run_props, links)).collect::<Vec<_>>().join(&format!("<w:r>{run_props}<w:br/></w:r>"))
+}
+
+fn apply_headings(blocks: &mut [Block], styles: &[String; 6]) {
+    for block in blocks {
+        if block.paragraph_style.is_none() && let Some(level) = block.heading_level { block.paragraph_style = Some(styles[level - 1].clone()); }
+        if let Some(rows) = &mut block.table {
+            for cell in rows.iter_mut().flatten() { apply_headings(&mut cell.blocks, styles); }
+        }
+    }
 }
 
 fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &str, block: &Block, writer: &mut BlockWriter) {
@@ -1000,10 +1013,11 @@ pub(crate) fn validate_style_sheet(sheet: &str) -> Result<(), String> { css::val
 
 const KNOWN_HTML: &[&str] = &["p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b", "em", "i", "u", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "input", "table", "tr", "td", "th", "thead", "tbody", "tfoot", "col", "colgroup", "caption", "img", "svg", "script", "style", "template", "cite", "var", "ins", "s", "strike", "del", "sup", "sub", "mark", "code", "kbd", "samp", "tt", "a", "span", "font", "small", "big", "abbr", "q"];
 const BLOCK_HTML: &[&str] = &["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "table"];
+const HEADING_HTML: &[&str] = &["h1", "h2", "h3", "h4", "h5", "h6"];
 const VOID_HTML: &[&str] = &["br", "hr", "input", "img", "col"];
 
 pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str, image_mode: ImageMode, hooks: &mut dyn crate::FillHooks) -> PreparedHtml {
-    let mut prepared = PreparedHtml { images: Vec::new(), html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false };
+    let mut prepared = PreparedHtml { images: Vec::new(), html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false, has_headings: false };
     if !options.ignore_css_errors {
         for sheet in std::iter::once(sheet.to_string()).chain(embedded_sheets(html)) {
             if let Err(error) = css::validate_sheet(&sheet) { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::HtmlCssInvalid)); }
@@ -1088,6 +1102,7 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
         }
         let emitted = if known { name.clone() } else if options.custom_tags.get(&name) == Some(&crate::HtmlTagKind::Block) { "p".into() } else { "span".into() };
         prepared.has_block |= BLOCK_HTML.contains(&emitted.as_str());
+        prepared.has_headings |= HEADING_HTML.contains(&emitted.as_str());
         prepared.html.push('<'); prepared.html.push_str(&emitted);
         for (name, value) in &attributes {
             prepared.html.push(' '); prepared.html.push_str(name); prepared.html.push_str("=\""); escape(value, &mut prepared.html); prepared.html.push('"');
@@ -1644,6 +1659,10 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     }
 
     let mut inner = props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("").to_string();
+    if block.heading_level.is_some() && block.paragraph_style.is_some()
+        && let Some(mark_props) = find_between(&inner, "<w:rPr>", "</w:rPr>") {
+        inner = inner.replacen(mark_props, &headings::inherited_props(mark_props), 1);
+    }
     if let Some(style) = &block.paragraph_style {
         let mut escaped = String::new(); escape(style, &mut escaped);
         inner = set_child(&inner, "w:pStyle", &format!("<w:pStyle w:val=\"{escaped}\"/>"), PARAGRAPH_ORDER);
@@ -1663,6 +1682,8 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
 }
 
 fn write_runs(block: &Block, run_props: &str, links: &mut Vec<String>, number: Option<u32>) -> String {
+    let heading_props = (block.heading_level.is_some() && block.paragraph_style.is_some()).then(|| headings::inherited_props(run_props));
+    let run_props = heading_props.as_deref().unwrap_or(run_props);
     let size = block.heading_level.filter(|_| block.paragraph_style.is_none()).map(|level| HEADING_SIZES[level - 1]);
     let mut out = match &block.list {
         Some(item) if number.is_none() => format!("<w:r>{run_props}<w:t>{}</w:t></w:r><w:r>{run_props}<w:tab/></w:r>", item.format.marker(item.value)),

@@ -59,6 +59,10 @@ Each is a flag on `FillOptions::extensions`. All are on by default; `Extensions:
 
 Package rendering writes HTML lists as native Word lists, with numbering definitions, nesting, ordered starts and item-value resets. List markers inherit the tag run's formatting. Existing numbering IDs are preserved. Word supports nine nesting levels; deeper HTML lists use the ninth level. Standalone `Template` and `fill_part` rendering keep literal markers because they do not return package parts.
 
+Package block headings map `h1` to `Title` and `h2`–`h6` to `Heading1`–`Heading5`. Existing paragraph style IDs or matching style names are reused without changing their definitions. Heading styles supply the font, size and weight instead of the placeholder run's formatting; language/proofing metadata stays, and explicit HTML CSS, nested emphasis and custom style hooks override the heading style. Missing styles are added only when used, with theme heading fonts, Arial fallback and sizes of 28, 20, 16, 14, 12 and 11 points. The fallback title is regular; the other fallback headings are bold.
+
+Inline headings and standalone XML rendering retain direct heading formatting because they cannot add package paragraph styles.
+
 
 HTML `<img>` data URLs support PNG, JPEG, GIF and SVG. Inline `<svg>` also embeds its source. Width and height come from CSS or attributes, then intrinsic dimensions; one supplied dimension preserves the aspect ratio. CSS pixels, points, inches, centimeters, millimeters and picas are accepted. Percentage dimensions use the document body width. `FillHooks::image` can resolve a `src` string, and `image_size`, `image_properties` and `svg_fallback` also apply. External URLs require a hook; the library does not fetch them. Image captions follow the containing template paragraph.
 
