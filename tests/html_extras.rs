@@ -108,7 +108,7 @@ fn adds_a_relationship_per_address_to_the_parts_rels() {
 fn builds_a_bordered_table_with_bold_header_cells_and_spans() {
     let body = html(r#"<p>before</p><table><thead><tr><th>H1</th><th>H2</th></tr></thead><tbody><tr><td colspan="2">wide</td></tr><tr><td><p>a</p><p>b</p></td></tr></tbody></table>"#);
 
-    assert!(body.contains(r#"<w:tblW w:w="5000" w:type="pct"/><w:tblBorders>"#));
+    assert!(body.contains(r#"<w:tblW w:w="8640" w:type="dxa"/>"#));
     assert_eq!(read_rows(&body), vec![vec!["H1", "H2"], vec!["wide"], vec!["ab", ""]]);
     assert!(run_with(&body, "H1").contains("<w:b/>"));
     assert!(body.contains(r#"<w:gridSpan w:val="2"/>"#));

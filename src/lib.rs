@@ -392,6 +392,8 @@ impl PackageTemplate {
         let content_types = parts.iter().find(|(name, _)| name == CONTENT_TYPES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes));
         let kinds = PartKinds::read(content_types.as_deref());
         let main_part = parts.iter().map(|(name, _)| name).find(|name| kinds.kind(name) == PartKind::Main).cloned().unwrap_or_else(|| DOCUMENT_PART.to_string());
+        let main_width = parts.iter().find(|(name, _)| *name == main_part).and_then(|(_, bytes)| std::str::from_utf8(bytes).ok()).and_then(images::read_body_size).map(|(width, _)| width);
+        let cell_margins = parts.iter().find(|(name, _)| name == STYLES_PART).map(|(_, bytes)| String::from_utf8_lossy(bytes)).map_or([template::WORD_CELL_MARGIN_TWIPS; 2], |styles| template::read_default_margins(&styles));
         let footnotes_part = footnotes::target(parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice())));
         let mut max_footnote_id = None;
         let mut max_comment_id = None;
@@ -421,7 +423,7 @@ impl PackageTemplate {
             let qr = qr_tags.remove(&name).unwrap_or_default();
             #[cfg(feature = "qr-codes")]
             let qr_errors: Vec<_> = qr.errors.into_iter().map(|error| error.in_part(&name)).collect();
-            match Template::parse_text(&xml, options, layout) {
+            match Template::parse_text(&xml, options, layout, main_width, cell_margins) {
                 Ok(template) => {
                     #[cfg(feature = "qr-codes")]
                     let template = {
@@ -510,6 +512,10 @@ impl PackageTemplate {
     }
 
     fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (PackageParts<'_>, Vec<FillError>) {
+        let headings = std::sync::Arc::new(rich_text::headings::Headings::read(&self.main_part, self.parts.iter().filter_map(|(name, part)| match part {
+            PackagePart::Bytes(bytes) => Some((name.as_str(), bytes.as_slice())),
+            PackagePart::Template(_) => None,
+        })));
         let mut state = FillState {
             assignments: expressions::Assignments::default(),
             next_drawing_id: self.max_drawing_id.wrapping_add(1),
@@ -520,6 +526,8 @@ impl PackageTemplate {
             next_comment_id: self.max_comment_id.map_or(0, |id| id + 1),
             next_bookmark_id: self.max_bookmark_id + 1,
             main_part: self.main_part.clone(),
+            headings: Some(headings.clone()),
+            has_headings: false,
             numbering: Some(rich_text::numbering::Numberings::read(&self.main_part, self.parts.iter().filter_map(|(name, part)| match part {
                 PackagePart::Bytes(bytes) => Some((name.as_str(), bytes.as_slice())),
                 PackagePart::Template(_) => None,
@@ -563,6 +571,7 @@ impl PackageTemplate {
         add_media(&mut out, &media);
         add_links(&mut out, &links);
         errors.extend(charts::apply(&mut out, &chart_uses, &self.chart_titles, self.chart_data));
+        if state.has_headings { headings.write(&mut out, &self.main_part); }
         restyle_definitions(&mut out, &definitions);
         footnotes::add_footnotes(&mut out, &notes);
         comments::add_comments(&mut out, &comments);

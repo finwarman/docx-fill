@@ -12,15 +12,18 @@
 //! `<ol start>`, `<li value>`, list-style-type, and inline `style` (color, background-color,
 //! font-size in px or pt, font-family, font-weight, font-style, text-decoration, text-align).
 
-use crate::cell_styling::{find_element_start, remove_first_element};
-use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_attribute, set_child};
+use crate::cell_styling::find_element_start;
+use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, read_child, set_attribute, set_child};
 use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub(crate) mod numbering;
+pub(crate) mod headings;
 mod css;
 mod preserve;
+mod table;
+use table::{CellLayout, MergeRow, TableLayout};
 pub(crate) mod images;
 use numbering::Numberings;
 
@@ -28,7 +31,8 @@ use numbering::Numberings;
 pub(crate) const MARK_START: char = '\u{E000}';
 pub(crate) const MARK_END: char = '\u{E001}';
 
-const LIST_INDENT_TWIPS: u32 = 360;
+const LIST_INDENT_TWIPS: u32 = 720;
+const LIST_HANGING_TWIPS: u32 = 360;
 // Word numbering levels are zero-based, with nine levels.
 const MAX_LIST_LEVEL: usize = 8;
 const QUOTE_INDENT_TWIPS: u32 = 720;
@@ -49,9 +53,6 @@ const RAW_INLINE: &str = "docx-fill-inline";
 const RAW_BLOCK: &str = "docx-fill-block";
 const RAW_TAG_ATTRIBUTE: &str = "data-docx-fill-tag";
 const STYLE_ATTRIBUTE: &str = "data-docx-fill-style";
-const TABLE_BORDERS: &str = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"auto\"/></w:tblBorders>";
-// Grid column width for HTML tables, which take the full width (5000 fiftieths of a percent).
-const TABLE_COLUMN_TWIPS: u32 = 2000;
 // Writing and dropping a table recurses, and a value decides how deep it goes.
 const MAX_TABLE_DEPTH: usize = 32;
 /// Word's column limit, so a user's `colspan` cannot grow the output without bound.
@@ -66,6 +67,9 @@ pub(crate) struct RichValue {
     pub style_sheet: String,
     pub block_mode: crate::HtmlBlockMode,
     pub raw: Vec<crate::HtmlFragment>,
+    pub headings: Option<Arc<headings::Headings>>,
+    /// Content width in twips, `None` when the template does not give it.
+    pub container_width: Option<u32>,
 }
 
 pub(crate) enum ImageMode { Embed, Ignore }
@@ -76,6 +80,7 @@ pub(crate) struct PreparedHtml {
     pub raw: Vec<crate::HtmlFragment>,
     pub errors: Vec<crate::FillError>,
     pub has_block: bool,
+    pub has_headings: bool,
 }
 
 /// How a run looks beyond the tag run's own properties.
@@ -140,6 +145,7 @@ struct Block {
     quote_level: u32,
     is_rule: bool,
     table: Option<Vec<Vec<Cell>>>,
+    table_layout: Option<TableLayout>,
     layout: ParagraphLayout,
     raw_xml: Option<String>,
     paragraph_style: Option<String>,
@@ -169,16 +175,6 @@ impl ParagraphLayout {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct CellLayout { margins: [Option<i64>; 4], vertical: Option<CellVertical> }
-
-#[derive(Debug, Clone, Copy)]
-enum CellVertical { Top, Center, Bottom }
-
-impl CellVertical {
-    fn as_str(self) -> &'static str { match self { Self::Top => "top", Self::Center => "center", Self::Bottom => "bottom" } }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct ListItem {
     group: usize,
@@ -187,15 +183,27 @@ struct ListItem {
     value: i64,
 }
 
+#[derive(Clone, Copy)]
+enum MarkerFont { Inherited, Symbol }
+
+impl MarkerFont {
+    fn from_run(props: &str) -> Self {
+        let inner = read_child(props, "w:rPr").unwrap_or("");
+        if read_child(inner, "w:rFonts").is_some() { Self::Inherited } else { Self::Symbol }
+    }
+}
+
 struct ListWriter<'a> {
     numbering: Option<&'a mut Numberings>,
     ids: BTreeMap<usize, u32>,
+    marker_font: MarkerFont,
 }
 
 struct BlockWriter<'a, 'n> {
     run_props: &'a str,
     links: &'a mut Vec<String>,
     lists: ListWriter<'n>,
+    width: Option<u32>,
 }
 
 #[derive(Default)]
@@ -218,7 +226,7 @@ impl ListWriter<'_> {
         if let Some(id) = self.ids.get(&item.group) {
             return Some(*id);
         }
-        let id = self.numbering.as_mut()?.add(item.format, item.level, item.value)?;
+        let id = self.numbering.as_mut()?.add(item.format, item.level, item.value, self.marker_font)?;
         self.ids.insert(item.group, id);
         Some(id)
     }
@@ -243,7 +251,7 @@ struct PlacedCell<'a> {
 }
 
 fn place_cells(rows: &[Vec<Cell>]) -> Vec<Vec<PlacedCell<'_>>> {
-    let mut active = BTreeMap::<usize, (usize, usize)>::new();
+    let mut active = BTreeMap::<usize, (usize, usize, &CellLayout)>::new();
     let mut placed = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         let mut occupied = active.into_iter().peekable();
@@ -253,9 +261,10 @@ fn place_cells(rows: &[Vec<Cell>]) -> Vec<Vec<PlacedCell<'_>>> {
         let mut output = Vec::new();
         while cells.peek().is_some() || occupied.peek().is_some() {
             if occupied.peek().is_some_and(|(at, _)| *at == column) {
-                let (_, (span, left)) = occupied.next().expect("checked above");
-                output.push(PlacedCell { span, merge: CellMerge::Continue, blocks: &[], layout: CellLayout::default() });
-                if left > 1 { active.insert(column, (span, left - 1)); }
+                let (_, (span, left, origin)) = occupied.next().expect("checked above");
+                let row = if left > 1 { MergeRow::Middle } else { MergeRow::Last };
+                output.push(PlacedCell { span, merge: CellMerge::Continue, blocks: &[], layout: origin.in_merge(row) });
+                if left > 1 { active.insert(column, (span, left - 1, origin)); }
                 column += span;
                 continue;
             }
@@ -264,11 +273,11 @@ fn place_cells(rows: &[Vec<Cell>]) -> Vec<Vec<PlacedCell<'_>>> {
                 && next.is_none_or(|at| column + cell.span <= at) {
                 let cell = cells.next().expect("checked above");
                 let height = if cell.row_span == 0 { rows.len() - index } else { cell.row_span.min(rows.len() - index) };
-                let merge = if height > 1 {
-                    active.insert(column, (cell.span, height - 1));
-                    CellMerge::Start
-                } else { CellMerge::None };
-                output.push(PlacedCell { span: cell.span, merge, blocks: &cell.blocks, layout: cell.layout.clone() });
+                let (merge, layout) = if height > 1 {
+                    active.insert(column, (cell.span, height - 1, &cell.layout));
+                    (CellMerge::Start, cell.layout.in_merge(MergeRow::First))
+                } else { (CellMerge::None, cell.layout.clone()) };
+                output.push(PlacedCell { span: cell.span, merge, blocks: &cell.blocks, layout });
                 column += cell.span;
                 continue;
             }
@@ -310,11 +319,12 @@ pub(crate) fn write_paragraph(paragraph: &str, values: &[RichValue], links: &mut
             let (before, after) = text.split_once(&mark).unwrap_or(("", ""));
             SpaceEdges::between(before.chars().next_back(), after.chars().next())
         };
-        let blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet, &value.raw);
+        let mut blocks = read_html(&value.html, value.has_extras, spaces, &value.style_sheet, &value.raw);
+        if is_block && let Some(headings) = &value.headings { apply_headings(&mut blocks, &headings.ids); }
 
         // Alone in its paragraph: the paragraph becomes the value's paragraphs.
         if is_block && !blocks.is_empty() {
-            return write_blocks(&paragraph, &blocks, run_props, links, continued, numbering);
+            return write_blocks(&paragraph, &blocks, run_props, links, continued, numbering, value.container_width);
         }
 
         // Beside other text: the runs go where the tag was, joined by breaks.
@@ -393,13 +403,13 @@ fn write_earlier_marks(paragraph: &str, values: &[RichValue], links: &mut Vec<St
 }
 
 /// The paragraph as the value's paragraphs, in place of its own.
-fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>) -> String {
+fn write_blocks(paragraph: &str, blocks: &[Block], run_props: &str, links: &mut Vec<String>, continued: Option<(&str, &mut u32)>, numbering: Option<&mut Numberings>, width: Option<u32>) -> String {
     let open = &paragraph[..paragraph.find('>').map_or(0, |at| at + 1)];
     let paragraph_props = find_element(paragraph, "w:pPr").unwrap_or("");
     let bookmarks = find_bookmarks(paragraph);
     let mut continued = continued.and_then(|(prefix, next_id)| find_numbered_bookmark(&bookmarks, prefix).map(|name| (name, next_id)));
     let mut out = String::new();
-    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new() } };
+    let mut writer = BlockWriter { run_props, links, lists: ListWriter { numbering, ids: BTreeMap::new(), marker_font: MarkerFont::from_run(run_props) }, width };
     // A section break belongs to the last paragraph only.
     let has_section = find_element_start(paragraph_props, "<w:sectPr").is_some();
     let body_props = if has_section { preserve::without(paragraph_props, "w:sectPr") } else { paragraph_props.to_string() };
@@ -432,6 +442,15 @@ fn join_inline(blocks: &[Block], run_props: &str, links: &mut Vec<String>) -> St
     blocks.iter().map(|block| write_inline(block, run_props, links)).collect::<Vec<_>>().join(&format!("<w:r>{run_props}<w:br/></w:r>"))
 }
 
+fn apply_headings(blocks: &mut [Block], styles: &[String; 6]) {
+    for block in blocks {
+        if block.paragraph_style.is_none() && let Some(level) = block.heading_level { block.paragraph_style = Some(styles[level - 1].clone()); }
+        if let Some(rows) = &mut block.table {
+            for cell in rows.iter_mut().flatten() { apply_headings(&mut cell.blocks, styles); }
+        }
+    }
+}
+
 fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &str, block: &Block, writer: &mut BlockWriter) {
     if let Some(raw) = &block.raw_xml { out.push_str(raw); return; }
     let Some(rows) = &block.table else {
@@ -440,48 +459,7 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
         out.push_str(&format!("{open}{}{bookmarks}{}{after}</w:p>", write_paragraph_props(paragraph_props, block, number, writer.run_props), write_runs(block, writer.run_props, writer.links, number)));
         return;
     };
-    let rows = place_cells(rows);
-    let columns = rows.iter().map(|row| row.iter().map(|cell| cell.span).sum::<usize>()).max().unwrap_or(1).max(1);
-    out.push_str(&format!("<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/>{TABLE_BORDERS}</w:tblPr><w:tblGrid>"));
-    for _ in 0..columns {
-        out.push_str(&format!("<w:gridCol w:w=\"{TABLE_COLUMN_TWIPS}\"/>"));
-    }
-    out.push_str("</w:tblGrid>");
-    for row in rows {
-        out.push_str("<w:tr>");
-        let mut used = 0;
-        for cell in row {
-            out.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/>");
-            if cell.span > 1 {
-                out.push_str(&format!("<w:gridSpan w:val=\"{}\"/>", cell.span));
-            }
-            match cell.merge {
-                CellMerge::Start => out.push_str("<w:vMerge w:val=\"restart\"/>"),
-                CellMerge::Continue => out.push_str("<w:vMerge/>"),
-                CellMerge::None => {}
-            }
-            let margins: String = CELL_SIDES.into_iter().zip(cell.layout.margins).filter_map(|(side, value)| value.map(|value| format!("<w:{side} w:w=\"{}\" w:type=\"dxa\"/>", value.max(0)))).collect();
-            if !margins.is_empty() { out.push_str(&format!("<w:tcMar>{margins}</w:tcMar>")); }
-            if let Some(vertical) = cell.layout.vertical { out.push_str(&format!("<w:vAlign w:val=\"{}\"/>", vertical.as_str())); }
-            out.push_str("</w:tcPr>");
-            for (index, block) in cell.blocks.iter().enumerate() {
-                if follows_table(cell.blocks, index) {
-                    out.push_str("<w:p/>");
-                }
-                write_block(out, "<w:p>", "", "", block, writer);
-            }
-            if cell.blocks.last().is_none_or(|block| block.table.is_some()) {
-                out.push_str("<w:p/>");
-            }
-            out.push_str("</w:tc>");
-            used += cell.span;
-        }
-        for _ in used..columns {
-            out.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr><w:p/></w:tc>");
-        }
-        out.push_str("</w:tr>");
-    }
-    out.push_str("</w:tbl>");
+    table::write(out, rows, block.table_layout.as_ref().expect("table layout accompanies rows"), writer);
 }
 
 /// Whether a table follows another table, which Word would merge into it.
@@ -749,7 +727,7 @@ struct Reader {
     formats: StyleStack<Format>,
     containers: StyleStack<Container>,
     /// Open tables: how many collections were open before each, and its rows.
-    tables: Vec<(usize, Vec<Vec<Cell>>)>,
+    tables: Vec<(usize, Vec<Vec<Cell>>, TableLayout)>,
     /// Open tables past `MAX_TABLE_DEPTH`, printed as part of the table around them.
     ignored_tables: usize,
     spaces: SpaceEdges,
@@ -836,7 +814,7 @@ impl Reader {
 
     /// Ends the open cell, if any, giving it the blocks collected in it.
     fn close_cell(&mut self) {
-        let Some((depth, rows)) = self.tables.last_mut() else { return };
+        let Some((depth, rows, _)) = self.tables.last_mut() else { return };
         if self.collections.len() <= *depth + 1 {
             return;
         }
@@ -1000,10 +978,11 @@ pub(crate) fn validate_style_sheet(sheet: &str) -> Result<(), String> { css::val
 
 const KNOWN_HTML: &[&str] = &["p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b", "em", "i", "u", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "input", "table", "tr", "td", "th", "thead", "tbody", "tfoot", "col", "colgroup", "caption", "img", "svg", "script", "style", "template", "cite", "var", "ins", "s", "strike", "del", "sup", "sub", "mark", "code", "kbd", "samp", "tt", "a", "span", "font", "small", "big", "abbr", "q"];
 const BLOCK_HTML: &[&str] = &["p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "div", "center", "blockquote", "pre", "section", "article", "header", "footer", "main", "hr", "table"];
+const HEADING_HTML: &[&str] = &["h1", "h2", "h3", "h4", "h5", "h6"];
 const VOID_HTML: &[&str] = &["br", "hr", "input", "img", "col"];
 
 pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str, image_mode: ImageMode, hooks: &mut dyn crate::FillHooks) -> PreparedHtml {
-    let mut prepared = PreparedHtml { images: Vec::new(), html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false };
+    let mut prepared = PreparedHtml { images: Vec::new(), html: String::new(), raw: Vec::new(), errors: Vec::new(), has_block: false, has_headings: false };
     if !options.ignore_css_errors {
         for sheet in std::iter::once(sheet.to_string()).chain(embedded_sheets(html)) {
             if let Err(error) = css::validate_sheet(&sheet) { prepared.errors.push(crate::FillError::new(error).with_id(crate::FillErrorId::HtmlCssInvalid)); }
@@ -1088,6 +1067,7 @@ pub(crate) fn prepare_html(html: &str, options: &crate::HtmlOptions, sheet: &str
         }
         let emitted = if known { name.clone() } else if options.custom_tags.get(&name) == Some(&crate::HtmlTagKind::Block) { "p".into() } else { "span".into() };
         prepared.has_block |= BLOCK_HTML.contains(&emitted.as_str());
+        prepared.has_headings |= HEADING_HTML.contains(&emitted.as_str());
         prepared.html.push('<'); prepared.html.push_str(&emitted);
         for (name, value) in &attributes {
             prepared.html.push(' '); prepared.html.push_str(name); prepared.html.push_str("=\""); escape(value, &mut prepared.html); prepared.html.push('"');
@@ -1263,7 +1243,7 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
                     return true;
                 }
                 let depth = reader.collections.len() - 1;
-                reader.tables.push((depth, Vec::new()));
+                reader.tables.push((depth, Vec::new(), table::read_table(attributes)));
                 return true;
             }
             if reader.ignored_tables > 0 {
@@ -1271,8 +1251,8 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
                 return true;
             }
             reader.close_cell();
-            if let Some((_, rows)) = reader.tables.pop() {
-                reader.blocks().push(Block { table: Some(rows), ..Block::default() });
+            if let Some((_, rows, table_layout)) = reader.tables.pop() {
+                reader.blocks().push(Block { table: Some(rows), table_layout: Some(table_layout), ..Block::default() });
             }
             reader.current = None;
             true
@@ -1281,7 +1261,7 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
         "tr" | "td" | "th" if reader.tables.is_empty() => true,
         "tr" => {
             reader.close_cell();
-            if let (false, Some((_, rows))) = (is_closing, reader.tables.last_mut()) {
+            if let (false, Some((_, rows, _))) = (is_closing, reader.tables.last_mut()) {
                 rows.push(Vec::new());
             }
             true
@@ -1291,13 +1271,11 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
             if !is_closing {
                 let span = read_attribute(attributes, "colspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1).clamp(1, MAX_COLUMN_SPAN);
                 let row_span = read_attribute(attributes, "rowspan").and_then(|span| span.trim().parse::<usize>().ok()).unwrap_or(1);
-                if let Some((_, rows)) = reader.tables.last_mut() {
+                if let Some((_, rows, _)) = reader.tables.last_mut() {
                     if rows.is_empty() {
                         rows.push(Vec::new());
                     }
-                    let margins = CELL_SIDES.map(|side| read_style(attributes, &format!("padding-{side}")).and_then(|value| css_twips(value, DEFAULT_FONT_POINTS)));
-                    let vertical = read_style(attributes, "vertical-align").and_then(|value| match value { "top" => Some(CellVertical::Top), "middle" | "center" => Some(CellVertical::Center), "bottom" => Some(CellVertical::Bottom), _ => None });
-                    rows.last_mut().expect("pushed above").push(Cell { span, row_span, blocks: Vec::new(), layout: CellLayout { margins, vertical } });
+                    rows.last_mut().expect("pushed above").push(Cell { span, row_span, blocks: Vec::new(), layout: table::read_cell(attributes) });
                 }
                 reader.collections.push(Vec::new());
                 reader.current = None;
@@ -1311,7 +1289,11 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
             reader.formats.close(tag);
             true
         }
-        "thead" | "tbody" | "tfoot" | "col" | "colgroup" | "caption" | "img" | "svg" | "script" | "style" | "template" => true,
+        "col" => {
+            if !is_closing && let Some((_, _, layout)) = reader.tables.last_mut() { table::read_column(layout, attributes); }
+            true
+        }
+        "thead" | "tbody" | "tfoot" | "colgroup" | "caption" | "img" | "svg" | "script" | "style" | "template" => true,
         _ => false,
     }
 }
@@ -1626,11 +1608,10 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     let mut props = match &block.list {
         Some(item) => {
             let level = if number.is_some() { item.level.min(MAX_LIST_LEVEL) } else { item.level };
-            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_INDENT_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
+            let indent = format!("<w:ind w:left=\"{}\" w:hanging=\"{LIST_HANGING_TWIPS}\"/>", LIST_INDENT_TWIPS * (level as u32 + 1));
             let inner = paragraph_props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("");
-            let inner = remove_first_element(inner, "<w:ind");
             let numbering = number.map(|id| format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{id}\"/></w:numPr>")).unwrap_or_default();
-            let mut inner = set_child(&set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
+            let mut inner = set_child(&set_child(inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
             // Native markers use the paragraph mark's formatting, separate from the text runs.
             if number.is_some() && !run_props.is_empty() {
                 inner = set_child(&inner, "w:rPr", run_props, PARAGRAPH_ORDER);
@@ -1644,6 +1625,7 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
     }
 
     let mut inner = props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("").to_string();
+    if block.heading_level.is_some() && block.paragraph_style.is_some() { inner = headings::paragraph_props(&inner); }
     if let Some(style) = &block.paragraph_style {
         let mut escaped = String::new(); escape(style, &mut escaped);
         inner = set_child(&inner, "w:pStyle", &format!("<w:pStyle w:val=\"{escaped}\"/>"), PARAGRAPH_ORDER);
@@ -1663,6 +1645,8 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
 }
 
 fn write_runs(block: &Block, run_props: &str, links: &mut Vec<String>, number: Option<u32>) -> String {
+    let heading_props = (block.heading_level.is_some() && block.paragraph_style.is_some()).then(|| headings::inherited_props(run_props));
+    let run_props = heading_props.as_deref().unwrap_or(run_props);
     let size = block.heading_level.filter(|_| block.paragraph_style.is_none()).map(|level| HEADING_SIZES[level - 1]);
     let mut out = match &block.list {
         Some(item) if number.is_none() => format!("<w:r>{run_props}<w:t>{}</w:t></w:r><w:r>{run_props}<w:tab/></w:r>", item.format.marker(item.value)),

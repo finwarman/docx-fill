@@ -53,7 +53,8 @@ pub(super) fn write(paragraph: &str, values: &[RichValue], links: &mut Vec<Strin
                     let Some(value) = values.get(index).filter(|value| value.is_block && value.block_mode == crate::HtmlBlockMode::Preserve) else {
                         segment.push_str(&mark); continue;
                     };
-                    let blocks = read_html(&value.html, value.has_extras, SpaceEdges::default(), &value.style_sheet, &value.raw);
+                    let mut blocks = read_html(&value.html, value.has_extras, SpaceEdges::default(), &value.style_sheet, &value.raw);
+                    if let Some(headings) = &value.headings { apply_headings(&mut blocks, &headings.ids); }
                     if blocks.is_empty() { continue; }
                     for open in stack.iter().rev() { segment.push_str(&format!("</{}>", open.name)); }
                     let props = stack.first().map(|open| open.props.concat()).unwrap_or_default();
@@ -71,7 +72,7 @@ pub(super) fn write(paragraph: &str, values: &[RichValue], links: &mut Vec<Strin
                     let opening = stack.first().map_or("<w:p>", |open| open.raw);
                     let shell = format!("{opening}{layout}</w:p>");
                     let run_props = stack.iter().rev().find(|open| open.name == "w:r").map(|open| open.props.concat()).unwrap_or_default();
-                    let inserted = write_blocks(&shell, &blocks, &run_props, links, None, numbering.as_deref_mut());
+                    let inserted = write_blocks(&shell, &blocks, &run_props, links, None, numbering.as_deref_mut(), value.container_width);
                     if out.ends_with("</w:tbl>") && inserted.starts_with("<w:tbl>") { out.push_str("<w:p/>"); }
                     out.push_str(&inserted);
                     is_numbered = true;

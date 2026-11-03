@@ -140,6 +140,8 @@ pub(crate) struct FillState {
     /// The package's main document part, whose body takes sections, footnotes and comments.
     pub main_part: String,
     pub numbering: Option<rich_text::numbering::Numberings>,
+    pub headings: Option<std::sync::Arc<rich_text::headings::Headings>>,
+    pub has_headings: bool,
 }
 
 /// A filled part and the media its drawings show.
@@ -230,7 +232,7 @@ impl Template {
     }
 
     fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (String, Vec<crate::FillError>) {
-        let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id.wrapping_add(1), next_caption: 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
+        let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id.wrapping_add(1), next_caption: 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None, headings: None, has_headings: false };
         let filled = self.fill(data, "", hooks, &mut state);
         let errors = filled.html_errors;
         // Only a package prints subtemplates.
@@ -589,7 +591,7 @@ impl<'a> Render<'a, '_> {
                             }
                         }
                         TagKind::Footnote => self.print_footnote(value, tag.run_props.as_deref()),
-                        TagKind::RichText { is_block } => {
+                        TagKind::RichText { is_block, container_width } => {
                             let html = value.and_then(Value::as_str).unwrap_or_default().to_string();
                             let image_mode = if self.template.html_images { rich_text::ImageMode::Embed } else { rich_text::ImageMode::Ignore };
                             let mut prepared = rich_text::prepare_html(&html, &self.template.html_options, &self.template.html_style_sheet, image_mode, self.hooks);
@@ -613,8 +615,15 @@ impl<'a> Render<'a, '_> {
                                 error
                             }));
                             let is_block = is_block || (prepared.has_block && matches!(self.template.html_options.on_invalid_block, crate::HtmlBlockMode::Block | crate::HtmlBlockMode::Preserve));
+                            self.state.has_headings |= is_block && prepared.has_headings;
                             self.out.push_str(&rich_text::mark(self.rich_values.len()));
-                            self.rich_values.push(RichValue { html: prepared.html, raw: prepared.raw, is_block, block_mode: self.template.html_options.on_invalid_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone() });
+                            let container_width = match container_width {
+                                crate::template::HtmlWidth::Known(width) => Some(width),
+                                crate::template::HtmlWidth::Page => Some(body_or_default(self.template.body.or(self.state.body)).0),
+                                crate::template::HtmlWidth::Unknown => None,
+                            };
+                            let container_width = container_width.map(|width| (width / crate::template::PX_PER_TWIP).round().clamp(1.0, i32::MAX as f64) as u32);
+                            self.rich_values.push(RichValue { html: prepared.html, raw: prepared.raw, container_width, is_block, block_mode: self.template.html_options.on_invalid_block, has_extras: self.template.html_extras, style_sheet: self.template.html_style_sheet.clone(), headings: self.state.headings.clone() });
                             if let Some(paragraph) = self.paragraphs.last_mut() {
                                 paragraph.has_rich_text = true;
                             }

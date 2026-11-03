@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{LIST_INDENT_TWIPS, MAX_LIST_LEVEL, Numbering};
+use super::{LIST_HANGING_TWIPS, LIST_INDENT_TWIPS, MAX_LIST_LEVEL, MarkerFont, Numbering};
 use crate::cell_styling::find_element_start;
 use crate::xml::{ElementKind, Token, escape, read_attribute, tokenize};
 use crate::{CONTENT_TYPES_PART, add_relationship, insert_before_last};
@@ -17,6 +17,8 @@ const FORMAT_UPPER_LETTER: &str = "upperLetter";
 const FORMAT_LOWER_LETTER: &str = "lowerLetter";
 const FORMAT_UPPER_ROMAN: &str = "upperRoman";
 const FORMAT_LOWER_ROMAN: &str = "lowerRoman";
+const SYMBOL_BULLET: &str = "\u{f0b7}";
+const SYMBOL_PROPERTIES: &str = "<w:rPr><w:rFonts w:ascii=\"Symbol\" w:hAnsi=\"Symbol\" w:hint=\"default\"/></w:rPr>";
 
 struct Definition {
     id: u32,
@@ -24,6 +26,7 @@ struct Definition {
     format: Numbering,
     level: usize,
     start: i64,
+    marker_font: MarkerFont,
 }
 
 pub(crate) struct Numberings {
@@ -78,10 +81,10 @@ impl Numberings {
         Self { path, relationship_id, relationship_ids, used_numbers, used_abstracts, definitions: Vec::new(), next_number: 1, next_abstract: 0 }
     }
 
-    pub(super) fn add(&mut self, format: Numbering, level: usize, start: i64) -> Option<u32> {
+    pub(super) fn add(&mut self, format: Numbering, level: usize, start: i64, marker_font: MarkerFont) -> Option<u32> {
         let id = free_id(&mut self.used_numbers, &mut self.next_number)?;
         let abstract_id = free_id(&mut self.used_abstracts, &mut self.next_abstract)?;
-        self.definitions.push(Definition { id, abstract_id, format, level: level.min(MAX_LIST_LEVEL), start });
+        self.definitions.push(Definition { id, abstract_id, format, level: level.min(MAX_LIST_LEVEL), start, marker_font });
         Some(id)
     }
 
@@ -135,9 +138,13 @@ impl Definition {
         let mut xml = format!("<w:abstractNum w:abstractNumId=\"{}\"><w:multiLevelType w:val=\"multilevel\"/>", self.abstract_id);
         for level in 0..=self.level {
             let start = if level == self.level { self.start } else { 1 };
-            let marker = if matches!(self.format, Numbering::Bullet) { "•".to_string() } else { format!("%{}.", level + 1) };
+            let (marker, properties) = match (self.format, self.marker_font) {
+                (Numbering::Bullet, MarkerFont::Symbol) => (SYMBOL_BULLET.to_string(), SYMBOL_PROPERTIES),
+                (Numbering::Bullet, MarkerFont::Inherited) => ("•".to_string(), ""),
+                _ => (format!("%{}.", level + 1), ""),
+            };
             let indent = LIST_INDENT_TWIPS as usize * (level + 1);
-            xml.push_str(&format!("<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"{start}\"/><w:numFmt w:val=\"{format}\"/><w:lvlText w:val=\"{marker}\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"{indent}\"/></w:tabs><w:ind w:left=\"{indent}\" w:hanging=\"{LIST_INDENT_TWIPS}\"/></w:pPr></w:lvl>"));
+            xml.push_str(&format!("<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"{start}\"/><w:numFmt w:val=\"{format}\"/><w:lvlText w:val=\"{marker}\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:tabs><w:tab w:val=\"num\" w:pos=\"{indent}\"/></w:tabs><w:ind w:left=\"{indent}\" w:hanging=\"{LIST_HANGING_TWIPS}\"/></w:pPr>{properties}</w:lvl>"));
         }
         xml.push_str("</w:abstractNum>");
         xml

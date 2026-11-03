@@ -37,8 +37,33 @@ fn writes_native_bullet_lists() {
     assert_eq!(references.len(), 2);
     assert_eq!(references[0], references[1]);
     assert!(numbering.contains("<w:numFmt w:val=\"bullet\"/>"));
+    assert!(numbering.contains("<w:lvlText w:val=\"\u{f0b7}\"/>"));
+    assert!(numbering.contains("<w:rFonts w:ascii=\"Symbol\" w:hAnsi=\"Symbol\" w:hint=\"default\"/>"));
     assert!(part(&parts, "word/_rels/document.xml.rels").contains(&format!("Type=\"{R}/numbering\"")));
     assert!(part(&parts, "[Content_Types].xml").contains("/word/numbering.xml"));
+}
+
+#[test]
+fn aligns_nested_list_text() {
+    let parts = render("<ul><li>A<ol><li>B</li></ol></li><li>C</li></ul>", &[]);
+    let body = part(&parts, "word/document.xml");
+    let numbering = part(&parts, "word/numbering.xml");
+
+    assert_eq!(paragraph_texts(body), ["A", "B", "C"]);
+    assert_eq!(body.matches("<w:ind w:left=\"720\" w:hanging=\"360\"/>").count(), 2);
+    assert!(body.contains("<w:ind w:left=\"1440\" w:hanging=\"360\"/>"), "{body}");
+    for left in [720, 1440] {
+        assert!(numbering.contains(&format!("<w:tab w:val=\"num\" w:pos=\"{left}\"/>")), "{numbering}");
+        assert!(numbering.contains(&format!("<w:ind w:left=\"{left}\" w:hanging=\"360\"/>")), "{numbering}");
+    }
+}
+
+#[test]
+fn keeps_explicit_list_indents() {
+    let parts = render("<ul><li style='margin-left:48px;text-indent:-12px'>A</li></ul>", &[]);
+    let body = part(&parts, "word/document.xml");
+
+    assert!(body.contains("<w:ind w:left=\"720\" w:hanging=\"180\"/>"), "{body}");
 }
 
 #[test]
@@ -59,6 +84,48 @@ fn matches_tag_marker_style() {
         assert!(props.find("<w:ind").unwrap() < props.find("<w:rPr>").unwrap());
     }
     assert!(body.contains("<w:b/>") && body.contains("nested"));
+    let numbering = String::from_utf8_lossy(&rendered.iter().find(|(name, _)| name == "word/numbering.xml").unwrap().1);
+    assert!(!numbering.contains("Symbol") && !numbering.contains('\u{f0b7}'));
+}
+
+#[test]
+fn keeps_nonfont_marker_style() {
+    let run = "<w:rPr><w:b/><w:i/><w:color w:val=\"224466\"/><w:sz w:val=\"22\"/></w:rPr>";
+    let tag = TAG.replace("<w:r>", &format!("<w:r>{run}"));
+    let template = PackageTemplate::parse([("word/document.xml".into(), document(&tag).into_bytes())], &FillOptions::default()).unwrap();
+    let parts: Vec<_> = template.render(&json!({"html":"<ul><li>A</li></ul><ol><li>B</li></ol>"})).into_iter().map(|(name, bytes)| (name, String::from_utf8_lossy(&bytes).into_owned())).collect();
+    let body = part(&parts, "word/document.xml");
+    let numbering = part(&parts, "word/numbering.xml");
+
+    assert_eq!(body.matches(run).count(), 4);
+    assert!(!body.contains("Symbol"));
+    assert_eq!(numbering.matches("<w:rFonts w:ascii=\"Symbol\"").count(), 1);
+    assert!(numbering.contains("<w:lvlText w:val=\"%1.\"/>"));
+}
+
+#[test]
+fn keeps_explicit_marker_fonts() {
+    for fonts in ["<w:rFonts w:asciiTheme=\"majorHAnsi\"/>", "<w:rFonts w:ascii=\"Arial\"></w:rFonts>", "<w:rFonts/>"] {
+        let tag = TAG.replace("<w:r>", &format!("<w:r><w:rPr>{fonts}</w:rPr>"));
+        let template = PackageTemplate::parse([("word/document.xml".into(), document(&tag).into_bytes())], &FillOptions::default()).unwrap();
+        let parts: Vec<_> = template.render(&json!({"html":"<ul><li>A</li></ul>"})).into_iter().map(|(name, bytes)| (name, String::from_utf8_lossy(&bytes).into_owned())).collect();
+
+        assert!(part(&parts, "word/document.xml").contains(fonts));
+        assert!(!part(&parts, "word/numbering.xml").contains("Symbol"));
+        assert!(part(&parts, "word/numbering.xml").contains("<w:lvlText w:val=\"•\"/>"));
+    }
+}
+
+#[test]
+fn keeps_historical_list_indent() {
+    let history = "<w:pPrChange w:id=\"1\" w:author=\"Editor\"><w:pPr><w:ind w:left=\"123\"/></w:pPr></w:pPrChange>";
+    let tag = format!("<w:p><w:pPr>{history}</w:pPr><w:r><w:t>{{~~html}}</w:t></w:r></w:p>");
+    let template = PackageTemplate::parse([("word/document.xml".into(), document(&tag).into_bytes())], &FillOptions::default()).unwrap();
+    let parts: Vec<_> = template.render(&json!({"html":"<ul><li>A</li></ul>"})).into_iter().map(|(name, bytes)| (name, String::from_utf8_lossy(&bytes).into_owned())).collect();
+    let body = part(&parts, "word/document.xml");
+
+    assert!(body.contains(history), "{body}");
+    assert!(body.contains("<w:ind w:left=\"720\" w:hanging=\"360\"/>"), "{body}");
 }
 
 #[test]
@@ -170,7 +237,7 @@ fn keeps_list_indent_in_schema_order() {
     let tag = "<w:p><w:pPr><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr><w:r><w:t>{~~html}</w:t></w:r></w:p>";
     let xml = fill_part(&document(tag), &json!({"html": "<ul><li>A</li></ul>"}), &FillOptions::default()).unwrap();
 
-    assert!(xml.contains("<w:pPr><w:ind w:left=\"360\" w:hanging=\"360\"/><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr>"), "{xml}");
+    assert!(xml.contains("<w:pPr><w:ind w:left=\"720\" w:hanging=\"360\"/><w:jc w:val=\"left\"/><w:rPr><w:b/></w:rPr></w:pPr>"), "{xml}");
 }
 
 #[test]

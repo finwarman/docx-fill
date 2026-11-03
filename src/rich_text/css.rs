@@ -16,6 +16,7 @@ struct Attribute { name: String, value: String, how: AttrMatch }
 struct Simple { tag: Option<String>, ids: Vec<String>, classes: Vec<String>, attributes: Vec<Attribute> }
 struct Step { simple: Simple, relation: Relation }
 struct Selector { steps: Vec<Step>, specificity: (u32, u32, u32) }
+#[derive(Clone)]
 struct Declaration { name: String, value: String, important: bool }
 struct Rule { selector: Selector, declarations: Vec<Declaration> }
 struct Node { tag: String, attributes: Vec<(String, String)>, parent: Option<usize>, previous: Option<usize> }
@@ -68,7 +69,7 @@ impl Cascade {
             let matched = self.matches[order].get(index).map(|state| state.here & last_step != 0)
                 .unwrap_or_else(|| matches_selector(&rule.selector, &self.nodes, index));
             if !matched { continue; }
-            for (at, declaration) in rule.declarations.iter().enumerate() {
+            for (at, declaration) in table_declarations(&rule.declarations, &self.nodes[index].tag).iter().enumerate() {
                 let rank = (declaration.important, rule.selector.specificity, order, at);
                 if values.get(&declaration.name).is_none_or(|(previous, _)| rank >= *previous) {
                     values.insert(declaration.name.clone(), (rank, declaration.value.clone()));
@@ -76,7 +77,7 @@ impl Cascade {
             }
         }
         if let Some((_, inline)) = attributes.iter().find(|(name, _)| name == "style") {
-            for (at, declaration) in recover_declarations(inline).iter().enumerate() {
+            for (at, declaration) in table_declarations(&recover_declarations(inline), &self.nodes[index].tag).iter().enumerate() {
                 let rank = (declaration.important, (u32::MAX, 0, 0), self.rules.len(), at);
                 if values.get(&declaration.name).is_none_or(|(previous, _)| rank >= *previous) {
                     values.insert(declaration.name.clone(), (rank, declaration.value.clone()));
@@ -94,6 +95,71 @@ impl Cascade {
     pub(super) fn close(&mut self, tag: &str) {
         if let Some(at) = self.stack.iter().rposition(|index| self.nodes[*index].tag == tag) { self.stack.truncate(at); }
     }
+}
+
+const BOX_SIDES: [&str; 4] = ["top", "right", "bottom", "left"];
+
+// Expand table shorthands before ranking, so later resets and important values retain their order.
+fn table_declarations<'a>(declarations: &'a [Declaration], tag: &str) -> std::borrow::Cow<'a, [Declaration]> {
+    if !matches!(tag, "table" | "td" | "th" | "col" | "colgroup") { return std::borrow::Cow::Borrowed(declarations); }
+    let mut expanded = Vec::new();
+    for declaration in declarations {
+        expanded.push(declaration.clone());
+        let mut add = |name: String, value: &str| expanded.push(Declaration { name, value: value.to_string(), important: declaration.important });
+        let name = declaration.name.as_str();
+        if matches!(name, "padding" | "margin" | "border-width" | "border-style" | "border-color") {
+            if let Some(values) = box_values(&declaration.value) {
+                for (side, value) in BOX_SIDES.into_iter().zip(values) {
+                    let name = name.strip_prefix("border-").map_or_else(|| format!("{name}-{side}"), |property| format!("border-{side}-{property}"));
+                    add(name, value);
+                }
+            }
+            continue;
+        }
+        let side = name.strip_prefix("border-").filter(|side| BOX_SIDES.contains(side));
+        if name != "border" && side.is_none() { continue; }
+        let mut width = "medium";
+        let mut style = "none";
+        let mut color = "currentColor";
+        for value in css_components(&declaration.value) {
+            if matches!(value, "none" | "hidden" | "solid" | "dotted" | "dashed" | "double" | "groove" | "ridge" | "inset" | "outset") { style = value; }
+            else if matches!(value, "thin" | "medium" | "thick") || value.starts_with(|c: char| c.is_ascii_digit() || c == '.') { width = value; }
+            else { color = value; }
+        }
+        for (property, value) in [("width", width), ("style", style), ("color", color)] {
+            if let Some(side) = side { add(format!("border-{side}-{property}"), value); }
+            else {
+                add(format!("border-{property}"), value);
+                for side in BOX_SIDES { add(format!("border-{side}-{property}"), value); }
+            }
+        }
+    }
+    std::borrow::Cow::Owned(expanded)
+}
+
+fn box_values(value: &str) -> Option<[&str; 4]> {
+    let values = css_components(value);
+    match values.as_slice() {
+        [a] => Some([a; 4]), [a, b] => Some([a, b, a, b]), [a, b, c] => Some([a, b, c, b]), [a, b, c, d] => Some([a, b, c, d]), _ => None,
+    }
+}
+
+fn css_components(value: &str) -> Vec<&str> {
+    let mut values = Vec::new();
+    let mut start = 0;
+    let mut depth = 0usize;
+    for (at, c) in value.char_indices() {
+        match c {
+            '(' => depth += 1, ')' => depth = depth.saturating_sub(1),
+            c if c.is_whitespace() && depth == 0 => {
+                if !value[start..at].trim().is_empty() { values.push(value[start..at].trim()); }
+                start = at + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if !value[start..].trim().is_empty() { values.push(value[start..].trim()); }
+    values
 }
 
 /// Each bit records a matching selector prefix. Ancestor results include this node.
