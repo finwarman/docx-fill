@@ -16,6 +16,7 @@ use crate::cell_styling::{find_element_start, remove_first_element};
 use crate::properties::{PARAGRAPH_ORDER, RUN_ORDER, set_attribute, set_child};
 use crate::xml::{ElementKind, Token, escape, tokenize, unescape};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub(crate) mod numbering;
 mod css;
@@ -86,15 +87,15 @@ struct Format {
     strike: Option<bool>,
     vert_align: Option<&'static str>,
     highlight: Option<&'static str>,
-    color: Option<String>,
+    color: Option<Arc<str>>,
     /// Half-points.
     size: Option<u32>,
-    font: Option<String>,
-    shade: Option<String>,
-    link: Option<String>,
+    font: Option<Arc<str>>,
+    shade: Option<Arc<str>>,
+    link: Option<Arc<str>>,
     pre_spaces: Option<bool>,
     rtl: Option<bool>,
-    paragraph_style: Option<String>,
+    paragraph_style: Option<Arc<str>>,
 }
 
 impl Format {
@@ -769,7 +770,7 @@ impl Reader {
 
     fn start_block(&mut self, block: Block) {
         let container = self.container();
-        let paragraph_style = block.paragraph_style.clone().or_else(|| self.format().paragraph_style);
+        let paragraph_style = block.paragraph_style.clone().or_else(|| self.format().paragraph_style.map(|style| style.to_string()));
         let block = Block { align: block.align.or(container.align), quote_level: container.quote_level, layout: container.layout.inherited().nest(block.layout), paragraph_style, ..block };
         self.blocks().push(block);
         self.current = Some(self.blocks().len() - 1);
@@ -1195,10 +1196,10 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
         "sup" => Some(Format { vert_align: Some("superscript"), ..Format::default() }),
         "sub" => Some(Format { vert_align: Some("subscript"), ..Format::default() }),
         "mark" => Some(Format { highlight: Some("yellow"), ..Format::default() }),
-        "code" | "kbd" | "samp" | "tt" => Some(Format { font: Some(CODE_FONT.to_string()), highlight: Some("lightGray"), ..Format::default() }),
+        "code" | "kbd" | "samp" | "tt" => Some(Format { font: Some(CODE_FONT.into()), highlight: Some("lightGray"), ..Format::default() }),
         "a" => Some(Format {
-            link: read_attribute(attributes, "href").map(str::to_string),
-            color: Some(LINK_COLOR.to_string()),
+            link: read_attribute(attributes, "href").map(Arc::from),
+            color: Some(LINK_COLOR.into()),
             underline: Some(true),
             ..Format::default()
         }),
@@ -1228,7 +1229,7 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
             reader.containers.push(tag, container);
             let mut format = read_css(attributes);
             if tag == "pre" {
-                format.font = format.font.or_else(|| Some(CODE_FONT.to_string()));
+                format.font = format.font.or_else(|| Some(CODE_FONT.into()));
             }
             reader.formats.push(tag, format);
             true
@@ -1434,12 +1435,12 @@ fn read_css(attributes: &[(String, String)]) -> Format {
         italic: style("font-style").map(|font_style| font_style == "italic" || font_style == "oblique"),
         underline: decoration.contains("underline").then_some(true).or_else(|| (decoration == "none").then_some(false)),
         strike: decoration.contains("line-through").then_some(true).or_else(|| (decoration == "none").then_some(false)),
-        color: style("color").and_then(read_color),
-        shade: style("background-color").or_else(|| style("background")).and_then(read_color),
+        color: style("color").and_then(read_color).map(Arc::from),
+        shade: style("background-color").or_else(|| style("background")).and_then(read_color).map(Arc::from),
         size: style("font-size").and_then(read_font_size),
-        font: style("font-family").map(|family| family.split(',').next().unwrap_or(family).trim().trim_matches(['"', '\'']).to_string()).filter(|family| !family.is_empty()),
+        font: style("font-family").map(|family| family.split(',').next().unwrap_or(family).trim().trim_matches(['"', '\''])).filter(|family| !family.is_empty()).map(Arc::from),
         pre_spaces: style("white-space").and_then(|value| match value { "pre" | "pre-wrap" | "break-spaces" => Some(true), "normal" | "nowrap" => Some(false), _ => None }),
-        paragraph_style: read_attribute(attributes, STYLE_ATTRIBUTE).map(str::to_string),
+        paragraph_style: read_attribute(attributes, STYLE_ATTRIBUTE).map(Arc::from),
         rtl: style("direction").and_then(|value| match value { "rtl" => Some(true), "ltr" => Some(false), _ => None }),
         ..Format::default()
     }
@@ -1841,6 +1842,20 @@ fn decode_entity(name: &str) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shares_inherited_strings() {
+        let text: Arc<str> = "x".repeat(16_384).into();
+        let mut styles = StyleStack::new(Format::and);
+        styles.push("span", Format { font: Some(text.clone()), link: Some(text.clone()), paragraph_style: Some(text.clone()), ..Format::default() });
+        for _ in 0..2_000 { styles.push("span", Format::default()); }
+
+        for element in &styles.elements {
+            for value in [&element.inherited.font, &element.inherited.link, &element.inherited.paragraph_style] {
+                assert!(Arc::ptr_eq(value.as_ref().unwrap(), &text));
+            }
+        }
+    }
 
     #[test]
     fn decodes_entities_and_leaves_unknown_ones() {
