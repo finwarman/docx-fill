@@ -29,3 +29,7 @@ svg-preview = ["dep:resvg", "dep:imagesize", "dep:simplecss"]
 [dev-dependencies]
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 qrcode = { version = "0.14", default-features = false }
+
+[[bench]]
+name = "fill"
+harness = false
