@@ -82,3 +82,12 @@ fn adds_a_header_for_the_watermark_when_there_is_none() {
     assert!(part(&parts, "word/_rels/document.xml.rels").contains(r#"Target="header_docx_fill_watermark.xml""#));
     assert!(part(&parts, "[Content_Types].xml").contains(r#"PartName="/word/header_docx_fill_watermark.xml""#));
 }
+
+#[test]
+fn keeps_index_text_in_the_watermark() {
+    let header = r#"<w:hdr xmlns:w="w"><w:p/></w:hdr>"#;
+    let watermark = Watermark { text: "Copy {index}".to_string(), layout: WatermarkLayout::Horizontal };
+    let parts = edit(DocumentEdits { watermark: Some(watermark), ..DocumentEdits::default() }, &[("word/document.xml", &document("<w:sectPr/>")), ("word/header1.xml", header)]);
+
+    assert!(part(&parts, "word/header1.xml").contains(r#"string="Copy {index}""#));
+}

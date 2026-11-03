@@ -74,3 +74,33 @@ fn keeps_assignments_from_loops_over_plain_values() {
 
     assert_eq!(text(&xml), "11|1|2");
 }
+
+struct ObjectHooks;
+
+impl docx_fill::FillHooks for ObjectHooks {
+    fn tag_value(&mut self, name: &str, _scopes: &[&serde_json::Value]) -> Option<serde_json::Value> {
+        (name == "obj").then(|| json!({"k":1}))
+    }
+}
+
+#[test]
+fn computed_scope_assignments_end_with_their_part() {
+    let options = FillOptions { expressions: true, ..FillOptions::default() };
+    let header: String = (0..40).map(|_| "<w:p><w:r><w:t>{#obj}{x}{/obj}</w:t></w:r></w:p>").collect();
+    let parts = [
+        ("word/document.xml".into(), document(&paragraph(&["{#obj}{x='leak'}{/obj}"])).into_bytes()),
+        ("word/header1.xml".into(), format!("<w:hdr xmlns:w=\"w\">{header}</w:hdr>").into_bytes()),
+    ];
+    let template = PackageTemplate::parse(parts, &options).unwrap();
+    let parts = template.render_with(&json!({}), &mut ObjectHooks);
+    let header = parts.iter().find(|(name, _)| name == "word/header1.xml").unwrap();
+
+    assert_eq!(text(&String::from_utf8_lossy(&header.1)), "");
+}
+
+#[test]
+fn placeholder_assignments_run_once() {
+    let xml = fill(&paragraph(&["{?n = n + 1; n}"]), json!({"n":1}));
+
+    assert_eq!(text(&xml), "2");
+}

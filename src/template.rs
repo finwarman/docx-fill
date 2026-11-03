@@ -24,6 +24,8 @@ const RUN_PROPS: &str = "w:rPr";
 const BREAK: &str = "w:br";
 const PRESERVE_SPACE: &str = " xml:space=\"preserve\"";
 const VERTICAL_START: &str = ":vt#";
+// Error text quotes at most this many characters, so a run of stray delimiters stays linear.
+const MAX_ERROR_CONTEXT: usize = 200;
 // Word lengths are twentieths of a point; pixels are 1/96 inch.
 pub(crate) const PX_PER_TWIP: f64 = 96.0 / 1440.0;
 
@@ -585,7 +587,7 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions, par
                 }
                 None if start.overlap_end(text, at, length).is_some() => {
                     if !options.allow_unclosed_tag {
-                        errors.push(unclosed_tag(&text[at..]).at(tag_context(text, at + length, &end), at, paragraph));
+                        errors.push(unclosed_tag(&text[at..clip_after(text, at)]).at(tag_context(text, at + length, &end), at, paragraph));
                     }
                     at += rest.chars().next().map_or(1, char::len_utf8);
                     continue;
@@ -598,7 +600,7 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions, par
             let Some((opened, name)) = open.take() else {
                 if !options.allow_unopened_tag {
                     // A duplicate close names the tag it follows.
-                    let tag = match tags.last() { Some(tag) if tag.end == at => tag.name.clone(), last => last.map_or(0, |tag| tag.end)..at };
+                    let tag = match tags.last() { Some(tag) if tag.end == at => tag.name.clone(), last => clip_before(text, last.map_or(0, |tag| tag.end), at)..at };
                     errors.push(unopened_tag(text, &tags, at, length).at(unescape(&text[tag]), at, paragraph));
                 }
                 at += length;
@@ -639,8 +641,22 @@ fn find_tags(text: &str, delimiters: &mut Delimiters, options: &FillOptions, par
 }
 
 fn tag_context(text: &str, from: usize, end: &DelimiterForms) -> String {
-    let to = text[from..].char_indices().map(|(offset, _)| from + offset).find(|&at| end.find(&text[at..]).is_some()).unwrap_or(text.len());
-    unescape(&text[from..to])
+    unescape(&text[from..context_end(text, from, end)])
+}
+
+/// Where the next `end` delimiter from `from` starts, within `MAX_ERROR_CONTEXT` characters.
+fn context_end(text: &str, from: usize, end: &DelimiterForms) -> usize {
+    text[from..].char_indices().take(MAX_ERROR_CONTEXT).map(|(offset, _)| from + offset).find(|&at| end.find(&text[at..]).is_some()).unwrap_or_else(|| clip_after(text, from))
+}
+
+/// The end of at most `MAX_ERROR_CONTEXT` characters from `from`.
+fn clip_after(text: &str, from: usize) -> usize {
+    text[from..].char_indices().nth(MAX_ERROR_CONTEXT).map_or(text.len(), |(offset, _)| from + offset)
+}
+
+/// The start of at most `MAX_ERROR_CONTEXT` characters before `to`, not before `from`.
+fn clip_before(text: &str, from: usize, to: usize) -> usize {
+    text[from..to].char_indices().rev().nth(MAX_ERROR_CONTEXT - 1).map_or(from, |(offset, _)| from + offset)
 }
 
 /// The delimiters a `=[[ ]]=` tag sets, for `prefix` `=`. `None` for any other tag.
@@ -696,7 +712,7 @@ fn unclosed_tag(context: &str) -> FillError {
 
 /// `{{name}`: a second open delimiter straight after the first.
 fn duplicate_open_tag(text: &str, opened: usize, end: &DelimiterForms) -> FillError {
-    let context_end = text[opened..].char_indices().map(|(offset, _)| opened + offset).find(|&at| end.find(&text[at..]).is_some()).unwrap_or(text.len());
+    let context_end = context_end(text, opened, end);
     FillError::new(format!("The tag beginning with \"{}\" has duplicate open tags", unescape(&text[opened..context_end]))).with_id(crate::FillErrorId::DuplicateOpenTag)
 }
 
@@ -708,7 +724,7 @@ fn unopened_tag(text: &str, tags: &[FoundTag], at: usize, length: usize) -> Fill
             FillError::new(format!("The tag ending with \"{context}\" has duplicate close tags")).with_id(crate::FillErrorId::DuplicateCloseTag)
         }
         last => {
-            let context_start = last.map_or(0, |tag| tag.end);
+            let context_start = clip_before(text, last.map_or(0, |tag| tag.end), at);
             FillError::new(format!("The tag beginning with \"{}\" is unopened", unescape(&text[context_start..at]))).with_id(crate::FillErrorId::UnopenedTag)
         }
     }
