@@ -110,3 +110,15 @@ fn names_duplicate_close_tag() {
 
     assert_eq!(duplicate.tag.as_deref(), Some("x"));
 }
+
+#[test]
+fn bounds_error_text_for_repeated_delimiters() {
+    for text in ["{".repeat(20_000), "}".repeat(20_000), format!("{{a{}", "}".repeat(20_000))] {
+        let started = std::time::Instant::now();
+        let error = Template::parse(&document(&paragraph(&[&text])), &FillOptions::default()).err().unwrap();
+        let size: usize = error.diagnostics().iter().map(|error| error.message.len() + error.tag.as_deref().map_or(0, str::len)).sum();
+
+        assert!(size < 10_000_000, "{size} bytes of error text");
+        assert!(started.elapsed().as_secs() < 5);
+    }
+}

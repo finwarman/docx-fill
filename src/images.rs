@@ -99,7 +99,8 @@ pub(crate) struct MediaUse {
 
 impl MediaUse {
     pub(crate) fn for_image(image: Image) -> MediaUse {
-        let safe: String = image.key.chars().filter(char::is_ascii_alphanumeric).collect();
+        // Other characters are spelled as `_hex_`, so distinct keys keep distinct names.
+        let safe: String = image.key.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_string() } else { format!("_{:x}_", c as u32) }).collect();
         MediaUse { relationship_id: format!("rIdDocxFill_{safe}"), target: format!("media/docx_fill_{safe}.{}", image.extension), image }
     }
 
@@ -114,9 +115,13 @@ impl MediaUse {
 /// The drawing an image tag prints, in pixels: `width` wide, its height from the image's shape.
 /// Outside a table cell it also fits the page's height.
 pub(crate) fn drawing_size(image: &Image, width: f64, is_in_cell: bool, body_height: f64) -> (f64, f64) {
-    let height = if image.width > 0.0 { width * image.height / image.width } else { width };
+    let ratio = image.height / image.width;
+    let ratio = if ratio.is_finite() && ratio >= 0.0 { ratio } else { 1.0 };
+    let height = width * ratio;
     let fit = if is_in_cell || height <= 0.0 { 1.0 } else { (body_height / height).min(1.0) };
-    (width * fit, height * fit)
+    let limit = MAX_WORD_IMAGE_EMU / EMU_PER_PX;
+    let width = (width * fit).min(limit).min(limit / ratio);
+    (width, width * ratio)
 }
 
 /// An inline drawing of relationship `relationship_id`, `width` by `height` pixels.
@@ -173,7 +178,8 @@ pub(crate) fn read_body_size(xml: &str) -> Option<(f64, f64)> {
         return None;
     }
     let margin = |side| twips(margins, side).unwrap_or(0.0);
-    Some(((width - margin("w:left") - margin("w:right")) * PX_PER_TWIP, (height - margin("w:top") - margin("w:bottom")) * PX_PER_TWIP))
+    let body = ((width - margin("w:left") - margin("w:right")) * PX_PER_TWIP, (height - margin("w:top") - margin("w:bottom")) * PX_PER_TWIP);
+    (body.0 > 0.0 && body.1 > 0.0).then_some(body)
 }
 
 pub(crate) fn body_or_default(body: Option<(f64, f64)>) -> (f64, f64) {

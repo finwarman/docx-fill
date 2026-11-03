@@ -48,3 +48,14 @@ fn keeps_vertical_column_widths() {
     assert!(xml.contains("<w:tblW w:w=\"4000\" w:type=\"dxa\"/>"));
     assert_eq!(xml.matches("<w:gridCol w:w=\"2000\"/>").count(), 2);
 }
+
+#[test]
+fn keeps_a_tracked_grid_change_when_refitting_columns() {
+    let template = document("<w:tbl><w:tblPr><w:tblW w:w=\"2000\" w:type=\"dxa\"/></w:tblPr><w:tblGrid><w:gridCol w:w=\"2000\"/><w:tblGridChange w:id=\"9\"><w:tblGrid><w:gridCol w:w=\"1000\"/></w:tblGrid></w:tblGridChange></w:tblGrid><w:tr><w:tc><w:tcPr><w:tcW w:w=\"2000\" w:type=\"dxa\"/></w:tcPr><w:p><w:r><w:t>{:vt#items}{name}{:vt/items}</w:t></w:r></w:p></w:tc></w:tr></w:tbl>");
+    let xml = fill_part(&template, &json!({"items":[{"name":"A"},{"name":"B"}]}), &FillOptions::default()).unwrap();
+
+    assert_eq!(xml.matches("<w:tblGrid>").count(), xml.matches("</w:tblGrid>").count());
+    assert_eq!(xml.matches("<w:tblGridChange").count(), xml.matches("</w:tblGridChange>").count());
+    let grid = &xml[xml.find("<w:tblGrid>").unwrap()..xml.find("<w:tblGridChange").unwrap()];
+    assert_eq!(grid.matches("<w:gridCol w:w=\"1000\"/>").count(), 2);
+}

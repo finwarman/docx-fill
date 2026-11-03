@@ -59,3 +59,10 @@ fn leaves_unset_properties_alone() {
     assert!(ImageBorder::new("invalid", 2.0).is_none());
     assert!(ImageBorder::new("000000", f64::NAN).is_none());
 }
+
+#[test]
+fn rejects_borders_wider_than_drawingml_allows() {
+    // ST_LineWidth ends at 20116800 EMU, 1584 points.
+    assert!(ImageBorder::new("000000", 1584.0).is_some());
+    assert!(ImageBorder::new("000000", 1585.0).is_none());
+}

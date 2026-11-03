@@ -202,6 +202,9 @@ struct Render<'a, 'h> {
     loop_indexes: Vec<usize>,
     pictures: Vec<PictureFrame>,
     charts: Vec<crate::charts::ChartUse>,
+    /// Each open placeholder block's names and values, innermost last, so its tags print them
+    /// without evaluating assignments again.
+    placeholders: Vec<(&'a [String], Vec<Option<&'a Value>>)>,
 }
 
 impl Template {
@@ -227,7 +230,7 @@ impl Template {
     }
 
     fn render_result(&self, data: &Value, hooks: &mut dyn FillHooks) -> (String, Vec<crate::FillError>) {
-        let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id + 1, next_caption: 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
+        let mut state = FillState { assignments: Assignments::default(), next_drawing_id: self.max_drawing_id.wrapping_add(1), next_caption: 1, body: None, container_fill: crate::CONTAINER_FILL, next_footnote_id: 1, next_comment_id: 0, next_bookmark_id: self.max_bookmark_id + 1, main_part: crate::DOCUMENT_PART.to_string(), numbering: None };
         let filled = self.fill(data, "", hooks, &mut state);
         let errors = filled.html_errors;
         // Only a package prints subtemplates.
@@ -279,13 +282,16 @@ impl Template {
             loop_indexes: Vec::new(),
             pictures: Vec::new(),
             charts: Vec::new(),
+            placeholders: Vec::new(),
         };
         let mut scopes = vec![data];
         render.render_range(0, self.parts.len(), &self.top, &mut scopes);
         let xml = if render.ranges.is_empty() { render.out } else { style_ranges(&render.out, &render.ranges) };
         let xml = if self.soft_placeholders { crate::placeholder_lines::collapse(&xml) } else { xml };
         let xml = if self.has_cell_loops { crate::table_grid::fit_table_grids(&xml, self.table_resize).unwrap_or(xml) } else { xml };
-        FilledPart { xml, charts: render.charts, html_errors: render.html_errors, media: render.media, footnotes: render.footnotes, links: render.links, style_definitions: render.style_definitions, includes: render.includes, comments: render.comments, sections: render.sections }
+        let filled = FilledPart { xml, charts: render.charts, html_errors: render.html_errors, media: render.media, footnotes: render.footnotes, links: render.links, style_definitions: render.style_definitions, includes: render.includes, comments: render.comments, sections: render.sections };
+        state.assignments.forget(&computed);
+        filled
     }
 }
 
@@ -308,6 +314,13 @@ impl<'a> Render<'a, '_> {
             Cow::Borrowed(value) => Some(value),
             Cow::Owned(value) => Some(self.computed.keep(value)),
         }
+    }
+
+    /// A placeholder tag's value, as its block read it.
+    fn placeholder_value(&self, kind: &TagKind, name: &str) -> Option<Option<&'a Value>> {
+        if !matches!(kind, TagKind::Placeholder) { return None; }
+        let (names, values) = self.placeholders.last()?;
+        names.iter().position(|each| each == name).map(|index| values[index])
     }
 
     fn render_range(&mut self, from: usize, to: usize, blocks: &[usize], scopes: &mut Vec<&'a Value>) {
@@ -381,7 +394,7 @@ impl<'a> Render<'a, '_> {
                     let body = body_or_default(self.template.body.or(self.state.body));
                     let Some(grid) = self.look_up(scopes, name).and_then(|value| Grid::read(value, body)) else { continue };
                     let columns = grid.columns();
-                    for (index, items) in grid.items.chunks(grid.rows * columns).enumerate() {
+                    for (index, items) in grid.items.chunks(grid.rows.saturating_mul(columns)).enumerate() {
                         grid.write_table_start(&mut self.out, index);
                         for row in items.chunks(columns) {
                             grid.write_row_start(&mut self.out);
@@ -412,7 +425,9 @@ impl<'a> Render<'a, '_> {
                     }
                     // The first list repeats the paragraph; else the first object is its scope.
                     let body = |render: &mut Self, scopes: &mut Vec<&'a Value>| render.render_range(block.body_start, block.body_end, &block.children, scopes);
-                    match values.iter().flatten().find(|value| value.is_array()).or_else(|| values.iter().flatten().find(|value| value.is_object())) {
+                    let scope = values.iter().flatten().find(|value| value.is_array()).or_else(|| values.iter().flatten().find(|value| value.is_object())).copied();
+                    self.placeholders.push((names, values));
+                    match scope {
                         Some(Value::Array(items)) => {
                             for item in items {
                                 scopes.push(item);
@@ -427,6 +442,7 @@ impl<'a> Render<'a, '_> {
                         }
                         None => body(self, scopes),
                     }
+                    self.placeholders.pop();
                 }
                 BlockKind::Loop { name, is_inverted, page_breaks } => {
                     let printed_from = self.out.len();
@@ -496,7 +512,11 @@ impl<'a> Render<'a, '_> {
                 Part::Text(text) => self.out.push_str(text),
                 Part::Tag(index) => {
                     let tag = &template.tags[*index];
-                    let value = if tag.kind.prints_value() { self.look_up(scopes, &tag.name) } else { None };
+                    let value = match self.placeholder_value(&tag.kind, &tag.name) {
+                        Some(value) => value,
+                        None if tag.kind.prints_value() => self.look_up(scopes, &tag.name),
+                        None => None,
+                    };
                     match tag.kind {
                         TagKind::Value => {
                             let Some(value) = value.filter(|value| !value.is_null()) else {
@@ -647,7 +667,7 @@ impl<'a> Render<'a, '_> {
         let replacement = replacement.or_else(|| frame.source_properties.as_deref().and_then(|properties| self.read_qr_picture(properties, start, _scopes)));
         let Some(replacement) = replacement else { return };
         let id = self.state.next_drawing_id;
-        self.state.next_drawing_id += 1;
+        self.state.next_drawing_id = id.wrapping_add(1);
         let mut media = MediaUse::for_image(replacement.image);
         media.relationship_id = format!("rIdDocxFillReplacement_{id}");
         media.target = format!("media/replacements/{id}.{}", media.image.extension);
@@ -843,7 +863,7 @@ impl<'a> Render<'a, '_> {
         } else { None };
         let media = MediaUse::for_image(image);
         let id = self.state.next_drawing_id;
-        self.state.next_drawing_id += 1;
+        self.state.next_drawing_id = id.wrapping_add(1);
 
         let displayed = fallback.as_ref().unwrap_or(&media);
         let svg = fallback.as_ref().map(|_| media.relationship_id.as_str());

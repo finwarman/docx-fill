@@ -106,3 +106,25 @@ fn skips_expanded_line_locations() {
     assert!(error.diagnostics().iter().all(|error| error.paragraph.is_none() && error.offset.is_none()));
     assert_eq!(document.annotate_errors(&error, &CommentDefaults::default()).unwrap(), 0);
 }
+
+#[test]
+fn annotates_many_errors_in_linear_time() {
+    let parts = parts(&paragraph(&["}"]).repeat(5_000), "");
+    let error = PackageTemplate::parse(parts.clone(), &FillOptions::default()).unwrap_err();
+    let mut document = FilledDocument::new(parts);
+    let started = std::time::Instant::now();
+
+    assert_eq!(document.annotate_errors(&error, &CommentDefaults::default()).unwrap(), 5_000);
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+    assert_eq!(document.comments().len(), 5_000);
+}
+
+#[test]
+fn marks_only_a_duplicate_close() {
+    let parts = parts(&paragraph(&["{a}} then a"]), "");
+    let error = PackageTemplate::parse(parts.clone(), &FillOptions::default()).unwrap_err();
+    let mut document = FilledDocument::new(parts);
+
+    assert_eq!(document.annotate_errors(&error, &CommentDefaults::default()).unwrap(), 1);
+    assert_eq!(document.comments()[0].range.text, "}");
+}

@@ -3,6 +3,8 @@ use crate::xml::escape;
 use super::layout::{ImageFloat, ImageTransform};
 
 const EMU_PER_POINT: f64 = 12700.0;
+// ST_LineWidth's upper bound.
+const MAX_LINE_EMU: f64 = 20116800.0;
 const DRAWING_NAMESPACE: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -21,7 +23,7 @@ pub struct ImageBorder { color: String, width: u32 }
 impl ImageBorder {
     pub fn new(color: &str, points: f64) -> Option<Self> {
         let color = color.strip_prefix('#').unwrap_or(color);
-        if color.len() != 6 || !color.bytes().all(|c| c.is_ascii_hexdigit()) || !points.is_finite() || points <= 0.0 || points * EMU_PER_POINT > i32::MAX as f64 { return None; }
+        if color.len() != 6 || !color.bytes().all(|c| c.is_ascii_hexdigit()) || !points.is_finite() || points <= 0.0 || (points * EMU_PER_POINT).round() > MAX_LINE_EMU { return None; }
         Some(Self { color: color.to_ascii_uppercase(), width: (points * EMU_PER_POINT).round() as u32 })
     }
 }

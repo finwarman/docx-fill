@@ -677,6 +677,16 @@ impl Assignments {
         }
         value
     }
+
+    /// Drops names assigned on computed values. Their addresses are free for reuse once the
+    /// values drop, and a later part's values must not inherit them.
+    pub(crate) fn forget(&mut self, computed: &Computed) {
+        let mut next = computed.first.get();
+        while let Some(node) = next {
+            self.scopes.remove(&Self::key(&node.value));
+            next = node.next.get();
+        }
+    }
 }
 
 /// What one evaluation reads.
