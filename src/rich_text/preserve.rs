@@ -53,7 +53,8 @@ pub(super) fn write(paragraph: &str, values: &[RichValue], links: &mut Vec<Strin
                     let Some(value) = values.get(index).filter(|value| value.is_block && value.block_mode == crate::HtmlBlockMode::Preserve) else {
                         segment.push_str(&mark); continue;
                     };
-                    let blocks = read_html(&value.html, value.has_extras, SpaceEdges::default(), &value.style_sheet, &value.raw);
+                    let mut blocks = read_html(&value.html, value.has_extras, SpaceEdges::default(), &value.style_sheet, &value.raw);
+                    if let Some(headings) = &value.headings { apply_headings(&mut blocks, &headings.ids); }
                     if blocks.is_empty() { continue; }
                     for open in stack.iter().rev() { segment.push_str(&format!("</{}>", open.name)); }
                     let props = stack.first().map(|open| open.props.concat()).unwrap_or_default();
