@@ -700,6 +700,41 @@ struct Container {
     first: usize,
 }
 
+impl Container {
+    fn nest(self, inner: &Self) -> Self {
+        Self { align: inner.align.or(self.align), quote_level: self.quote_level + inner.quote_level,
+            is_pre: self.is_pre || inner.is_pre, layout: self.layout.nest(inner.layout), ..Self::default() }
+    }
+}
+
+struct OpenStyle<T> { tag: String, own: T, inherited: T }
+
+/// Cache each prefix so ordinary nested elements inherit without rescanning their ancestors.
+struct StyleStack<T> { elements: Vec<OpenStyle<T>>, merge: fn(T, &T) -> T }
+
+impl<T: Clone + Default> StyleStack<T> {
+    fn new(merge: fn(T, &T) -> T) -> Self { Self { elements: Vec::new(), merge } }
+
+    fn current(&self) -> T { self.elements.last().map(|element| element.inherited.clone()).unwrap_or_default() }
+
+    fn push(&mut self, tag: &str, own: T) {
+        let inherited = (self.merge)(self.current(), &own);
+        self.elements.push(OpenStyle { tag: tag.to_string(), own, inherited });
+    }
+
+    /// Crossed closing tags leave the later elements open, with their inheritance updated.
+    fn close(&mut self, tag: &str) -> Option<T> {
+        let at = self.elements.iter().rposition(|element| element.tag == tag)?;
+        let removed = self.elements.remove(at);
+        let mut inherited = at.checked_sub(1).map(|before| self.elements[before].inherited.clone()).unwrap_or_default();
+        for element in &mut self.elements[at..] {
+            inherited = (self.merge)(inherited, &element.own);
+            element.inherited = inherited.clone();
+        }
+        Some(removed.own)
+    }
+}
+
 /// Builds blocks from HTML tokens.
 struct Reader {
     /// Blocks being collected: the value's, then each open table cell's.
@@ -710,8 +745,8 @@ struct Reader {
     // Without extras, nesting counts of b/strong, i/em and u.
     counts: (i32, i32, i32),
     /// Open inline elements and the format each adds.
-    formats: Vec<(String, Format)>,
-    containers: Vec<(String, Container)>,
+    formats: StyleStack<Format>,
+    containers: StyleStack<Container>,
     /// Open tables: how many collections were open before each, and its rows.
     tables: Vec<(usize, Vec<Vec<Cell>>)>,
     /// Open tables past `MAX_TABLE_DEPTH`, printed as part of the table around them.
@@ -725,17 +760,11 @@ impl Reader {
     }
 
     fn format(&self) -> Format {
-        self.formats.iter().fold(Format::default(), |format, (_, over)| format.and(over))
+        self.formats.current()
     }
 
     fn container(&self) -> Container {
-        self.containers.iter().fold(Container::default(), |outer, (_, inner)| Container {
-            align: inner.align.or(outer.align),
-            quote_level: outer.quote_level + inner.quote_level,
-            is_pre: outer.is_pre || inner.is_pre,
-            layout: outer.layout.nest(inner.layout),
-            ..Container::default()
-        })
+        self.containers.current()
     }
 
     fn start_block(&mut self, block: Block) {
@@ -791,8 +820,7 @@ impl Reader {
     fn preformatted(&self) -> bool { self.format().pre_spaces.unwrap_or(self.container().is_pre) }
 
     fn close_container(&mut self, name: &str) {
-        let Some(at) = self.containers.iter().rposition(|(tag, _)| tag == name) else { return };
-        let (_, container) = self.containers.remove(at);
+        let Some(container) = self.containers.close(name) else { return };
         let Some(blocks) = self.collections.get_mut(container.collection) else { return };
         if let Some(first) = blocks.get_mut(container.first) {
             first.layout.before = container.layout.before.or(first.layout.before);
@@ -818,12 +846,6 @@ impl Reader {
         self.current = None;
     }
 
-    /// Ends the innermost open `name` element of a stack, leaving those opened after it.
-    fn close<T>(stack: &mut Vec<(String, T)>, name: &str) {
-        if let Some(at) = stack.iter().rposition(|(each, _)| each == name) {
-            stack.remove(at);
-        }
-    }
 }
 
 /// The HTML's paragraphs, headings, list items and, with extras, tables, with their runs.
@@ -834,8 +856,8 @@ fn read_html(html: &str, has_extras: bool, spaces: SpaceEdges, style_sheet: &str
         lists: Vec::new(),
         next_list: 0,
         counts: (0, 0, 0),
-        formats: Vec::new(),
-        containers: Vec::new(),
+        formats: StyleStack::new(Format::and),
+        containers: StyleStack::new(Container::nest),
         tables: Vec::new(),
         ignored_tables: 0,
         spaces,
@@ -1185,9 +1207,9 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
     };
     if let Some(format) = inline {
         if is_closing {
-            Reader::close(&mut reader.formats, tag);
+            reader.formats.close(tag);
         } else {
-            reader.formats.push((tag.to_string(), format.and(&read_css(attributes))));
+            reader.formats.push(tag, format.and(&read_css(attributes)));
         }
         return true;
     }
@@ -1197,26 +1219,26 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
             reader.current = None;
             if is_closing {
                 reader.close_container(tag);
-                Reader::close(&mut reader.formats, tag);
+                reader.formats.close(tag);
                 return true;
             }
             let align = if tag == "center" { Some("center") } else { read_style(attributes, "text-align").and_then(read_align) };
             let first = reader.blocks().len();
             let container = Container { align, quote_level: u32::from(tag == "blockquote"), is_pre: tag == "pre", layout: read_layout(attributes), first, collection: reader.collections.len() - 1 };
-            reader.containers.push((tag.to_string(), container));
+            reader.containers.push(tag, container);
             let mut format = read_css(attributes);
             if tag == "pre" {
                 format.font = format.font.or_else(|| Some(CODE_FONT.to_string()));
             }
-            reader.formats.push((tag.to_string(), format));
+            reader.formats.push(tag, format);
             true
         }
         "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" => {
             // The core branch starts or ends the block; its CSS formats the text inside.
             if is_closing {
-                Reader::close(&mut reader.formats, tag);
+                reader.formats.close(tag);
             } else {
-                reader.formats.push((tag.to_string(), read_css(attributes)));
+                reader.formats.push(tag, read_css(attributes));
             }
             false
         }
@@ -1282,10 +1304,10 @@ fn read_extra_tag(reader: &mut Reader, is_closing: bool, tag: &str, attributes: 
                 if tag == "th" {
                     format.bold = format.bold.or(Some(true));
                 }
-                reader.formats.push((tag.to_string(), format));
+                reader.formats.push(tag, format);
                 return true;
             }
-            Reader::close(&mut reader.formats, tag);
+            reader.formats.close(tag);
             true
         }
         "thead" | "tbody" | "tfoot" | "col" | "colgroup" | "caption" | "img" | "svg" | "script" | "style" | "template" => true,
