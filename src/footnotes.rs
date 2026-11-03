@@ -90,8 +90,11 @@ pub(crate) fn add_footnotes(parts: &mut Vec<(String, Cow<[u8]>)>, notes: &[(u32,
 /// relationship and content type when the package has none.
 pub(crate) fn append_notes(parts: &mut Vec<(String, Cow<[u8]>)>, written: &str) {
     let (main, target) = location(parts.iter().map(|(name, bytes)| (name.as_str(), bytes.as_ref())));
-    FOOTNOTES.append_at(parts, written, &main, &target);
+    FOOTNOTES.append_at(parts, written, &main, &target, Metadata::Ensure);
 }
+
+#[derive(PartialEq, Eq)]
+enum Metadata { CreateOnly, Ensure }
 
 pub(crate) fn target<'a>(parts: impl Iterator<Item = (&'a str, &'a [u8])>) -> String {
     location(parts).1
@@ -137,19 +140,19 @@ impl NotesPart {
     /// Adds `written`, whole note elements, creating the part, its relationship and content type
     /// when the package has none.
     pub(crate) fn append(&self, parts: &mut Vec<(String, Cow<[u8]>)>, written: &str) {
-        self.append_at(parts, written, crate::DOCUMENT_PART, self.name);
+        self.append_at(parts, written, crate::DOCUMENT_PART, self.name, Metadata::CreateOnly);
     }
 
-    fn append_at(&self, parts: &mut Vec<(String, Cow<[u8]>)>, written: &str, main: &str, target: &str) {
+    fn append_at(&self, parts: &mut Vec<(String, Cow<[u8]>)>, written: &str, main: &str, target: &str, metadata: Metadata) {
         let close = format!("</{}>", self.root);
         if let Some(part) = parts.iter_mut().find(|(name, _)| name == target) {
             let xml = String::from_utf8_lossy(&part.1).into_owned();
             part.1 = Cow::Owned(insert_before_last(&xml, &close, written).into_bytes());
-            return;
+            if metadata == Metadata::CreateOnly { return; }
+        } else {
+            let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<{} xmlns:w=\"{MAIN_NAMESPACE}\">{}{written}{close}", self.root, self.start);
+            parts.push((target.to_string(), Cow::Owned(xml.into_bytes())));
         }
-
-        let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<{} xmlns:w=\"{MAIN_NAMESPACE}\">{}{written}{close}", self.root, self.start);
-        parts.push((target.to_string(), Cow::Owned(xml.into_bytes())));
 
         let rels_path = crate::includes::relationships_of(main);
         let mut relative = String::new();
@@ -159,7 +162,16 @@ impl NotesPart {
             Token::Element { kind: ElementKind::Open | ElementKind::SelfClosing, name: "Relationship", raw } => Some(raw),
             _ => None,
         }).collect::<Vec<_>>();
-        if !relationships.iter().any(|raw| read_attribute(raw, "Type") == Some(self.relationship)) {
+        let related = |raw: &&str| read_attribute(raw, "Type") == Some(self.relationship);
+        let linked = relationships.iter().any(|raw| related(raw) && (metadata == Metadata::CreateOnly || read_attribute(raw, "TargetMode") != Some("External")));
+        let external = relationships.iter().find(|raw| related(raw) && read_attribute(raw, "TargetMode") == Some("External"));
+        if !linked && let Some(raw) = external {
+            let replacement = crate::properties::set_attribute(&crate::properties::set_attribute(raw, "Target", &relative), "TargetMode", "Internal");
+            let start = crate::xml::offset_in(&xml, raw);
+            let mut updated = xml.clone();
+            updated.replace_range(start..start + raw.len(), &replacement);
+            if let Some((_, bytes)) = parts.iter_mut().find(|(name, _)| *name == rels_path) { *bytes = Cow::Owned(updated.into_bytes()); }
+        } else if !linked {
             let ids = relationships.iter().filter_map(|raw| read_attribute(raw, "Id")).collect::<BTreeSet<_>>();
             let id = (0..).map(|suffix| if suffix == 0 { self.relationship_id.to_string() } else { format!("{}{suffix}", self.relationship_id) }).find(|id| !ids.contains(id.as_str())).expect("finite relationships");
             let relationship = format!("<Relationship Id=\"{id}\" Type=\"{}\" Target=\"{relative}\"/>", self.relationship);

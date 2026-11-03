@@ -60,7 +60,7 @@ fn numbers_new_footnotes_after_the_existing_ones() {
 
     assert!(part(&parts, "word/document.xml").contains(r#"<w:footnoteReference w:id="5"/>"#));
     assert!(part(&parts, "word/footnotes.xml").contains(r#"<w:footnote w:id="4"><w:p/></w:footnote><w:footnote w:id="5">"#));
-    assert!(!part(&parts, "word/_rels/document.xml.rels").contains("footnotes"));
+    assert!(part(&parts, "word/_rels/document.xml.rels").contains("Target=\"footnotes.xml\""));
 }
 
 #[test]
@@ -115,4 +115,28 @@ fn creates_the_notes_relationship_part() {
     let filled = template.render(&json!({"note":"Added"})).into_iter().map(|(name, bytes)| (name, String::from_utf8(bytes.into_owned()).unwrap())).collect::<Vec<_>>();
     assert!(part(&filled, "word/_rels/document.xml.rels").contains("Target=\"footnotes.xml\""));
     assert!(part(&filled, "word/footnotes.xml").contains("Added"));
+}
+
+#[test]
+fn repairs_metadata_for_empty_notes() {
+    let parts = package("<w:p><w:r><w:t>{:footnote note}</w:t></w:r></w:p>", &[("word/footnotes.xml", "<w:footnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"/>")]);
+    assert!(part(&parts, "word/footnotes.xml").contains("<w:footnote w:id=\"1\""));
+    assert!(part(&parts, "word/_rels/document.xml.rels").contains("Target=\"footnotes.xml\""));
+    assert!(part(&parts, "[Content_Types].xml").contains("PartName=\"/word/footnotes.xml\""));
+}
+
+#[test]
+fn replaces_external_note_relationship() {
+    let relations = r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="notes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="https://example.com/notes.xml" TargetMode="External"/></Relationships>"#;
+    let parts = vec![
+        ("word/document.xml".into(), document("<w:p><w:r><w:t>{:footnote note}</w:t></w:r></w:p>").into_bytes()),
+        ("word/_rels/document.xml.rels".into(), relations.as_bytes().to_vec()),
+        ("[Content_Types].xml".into(), TYPES.as_bytes().to_vec()),
+    ];
+    let template = PackageTemplate::parse(parts, &FillOptions::default()).unwrap();
+    let filled = template.render(&json!({"note":"Added"})).into_iter().map(|(name, bytes)| (name, String::from_utf8(bytes.into_owned()).unwrap())).collect::<Vec<_>>();
+    let relations = part(&filled, "word/_rels/document.xml.rels");
+    assert!(relations.contains("Target=\"footnotes.xml\""));
+    assert!(!relations.contains("External") && !relations.contains("https://example.com"));
+    assert_eq!(relations.matches("/relationships/footnotes").count(), 1);
 }
