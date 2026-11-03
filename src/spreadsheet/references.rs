@@ -4,21 +4,53 @@ use crate::xml::{ElementKind, Token, tokenize};
 use crate::properties::set_attribute;
 use crate::{FillError, FillErrorId};
 
+type RowMap = std::collections::BTreeMap<u32, Vec<u32>>;
+
 /// Update row-relative references in a formula copied from `source_row` to `target_row`.
 /// Absolute row references follow Excel's copy semantics and stay fixed.
 #[cfg(test)]
 pub(super) fn update_formula(formula: &str, source_row: u32, target_row: u32, row_map: &[(u32, u32)]) -> Result<String, FillError> {
-    update_formula_with_rows(formula, source_row, target_row, row_map, &[])
+    update_formula_with_rows(formula, source_row, target_row, &row_mapping(row_map), &[])
 }
 
-fn update_formula_with_rows(formula: &str, source_row: u32, target_row: u32, row_map: &[(u32, u32)], original_rows: &[u32]) -> Result<String, FillError> {
-    let mut mapping: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
+#[cfg(test)]
+fn row_mapping(row_map: &[(u32, u32)]) -> RowMap {
+    let mut mapping = RowMap::new();
     for &(source, target) in row_map { mapping.entry(source).or_default().push(target); }
     for targets in mapping.values_mut() { targets.sort_unstable(); targets.dedup(); }
+    mapping
+}
+
+/// True when a formula names another sheet. String literals and error values such as
+/// `#REF!` contain `!` without referring to a sheet.
+pub(super) fn has_sheet_reference(formula: &str) -> bool {
+    let mut quoted = false;
+    for (at, ch) in formula.char_indices() {
+        if ch == '"' { quoted = !quoted; continue; }
+        if quoted || ch != '!' { continue; }
+        let word = formula[..at].trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '/');
+        if !word.ends_with('#') { return true; }
+    }
+    false
+}
+
+fn update_formula_with_rows(formula: &str, source_row: u32, target_row: u32, mapping: &RowMap, original_rows: &[u32]) -> Result<String, FillError> {
     let copy_delta = if let Some(targets) = mapping.get(&source_row) {
         i64::from(target_row) - i64::from(targets[0])
     } else {
         i64::from(target_row) - i64::from(source_row)
+    };
+    let map = |row, absolute, range_end| map_row(row, source_row, target_row, absolute, range_end, copy_delta, mapping, original_rows);
+    let removed = |row: u32| !mapping.contains_key(&row) && original_rows.binary_search(&row).is_ok();
+    // A range endpoint on a removed row moves toward the other endpoint, as Excel shrinks a
+    // range when rows are deleted. None means every row of the range was removed.
+    let shrink = |end: &RowRef, toward: u32, range_end: bool| {
+        let mut row = end.row;
+        loop {
+            if !removed(row) { return map(row, end.absolute, range_end); }
+            if row == toward { return None; }
+            row = if toward > row { row + 1 } else { row - 1 };
+        }
     };
     let mut out = String::with_capacity(formula.len());
     let mut at = 0;
@@ -42,26 +74,32 @@ fn update_formula_with_rows(formula: &str, source_row: u32, target_row: u32, row
             at += ch.len_utf8();
             continue;
         }
-        if let Some((end, row_start, row, abs_row)) = read_cell_ref(formula, at) {
+        if let Some((first, last)) = read_reference(formula, at) {
+            let end = last.as_ref().map_or(first.end, |last| last.end);
             let before = formula[..at].chars().next_back();
             let after = formula[end..].chars().next();
             let boundary_before = before.is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '.' && c != '[');
             let boundary_after = after.is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '(' && c != ']');
             if boundary_before && boundary_after {
-                let right_range_end = before == Some(':');
-                let mapped_row = map_row(row, source_row, target_row, abs_row, right_range_end, copy_delta, &mapping, original_rows);
-                let Some(row) = mapped_row else {
+                let rows = match &last {
+                    None => map(first.row, first.absolute, before == Some(':')).map(|row| vec![(&first, row)]),
+                    Some(last) => shrink(&first, last.row, first.row > last.row)
+                        .zip(shrink(last, first.row, last.row >= first.row))
+                        .map(|(low, high)| vec![(&first, low), (last, high)]),
+                };
+                let Some(rows) = rows else {
                     out.push_str("#REF!");
                     at = end;
                     continue;
                 };
-                let row = i64::from(row);
-                if !(1..=1_048_576).contains(&row) {
-                    return Err(reference_error("A copied formula refers outside Excel's row limits"));
+                for (reference, row) in rows {
+                    if !(1..=1_048_576).contains(&row) {
+                        return Err(reference_error("A copied formula refers outside Excel's row limits"));
+                    }
+                    out.push_str(&formula[at..reference.row_start]);
+                    out.push_str(&row.to_string());
+                    at = reference.end;
                 }
-                out.push_str(&formula[at..row_start]);
-                out.push_str(&row.to_string());
-                at = end;
                 continue;
             }
         }
@@ -72,7 +110,29 @@ fn update_formula_with_rows(formula: &str, source_row: u32, target_row: u32, row
     Ok(out)
 }
 
-fn read_cell_ref(text: &str, start: usize) -> Option<(usize, usize, u32, bool)> {
+/// The row part of one reference endpoint. `end` is where the endpoint ends in the formula.
+struct RowRef {
+    end: usize,
+    row_start: usize,
+    row: u32,
+    absolute: bool,
+}
+
+/// Reads a cell reference, a cell range or a whole-row range such as `$2:$3`.
+/// Whole-column ranges such as `A:A` have no rows and are not read.
+fn read_reference(text: &str, start: usize) -> Option<(RowRef, Option<RowRef>)> {
+    let colon = |end: usize| text[end..].starts_with(':');
+    if let Some(first) = read_cell_ref(text, start) {
+        let last = if colon(first.end) { read_cell_ref(text, first.end + 1) } else { None };
+        return Some((first, last));
+    }
+    let first = read_row(text, start)?;
+    if !colon(first.end) { return None; }
+    let last = read_row(text, first.end + 1)?;
+    Some((first, Some(last)))
+}
+
+fn read_cell_ref(text: &str, start: usize) -> Option<RowRef> {
     let bytes = text.as_bytes();
     let mut at = start;
     if bytes.get(at) == Some(&b'$') { at += 1; }
@@ -80,14 +140,20 @@ fn read_cell_ref(text: &str, start: usize) -> Option<(usize, usize, u32, bool)> 
     while bytes.get(at).is_some_and(u8::is_ascii_alphabetic) { at += 1; }
     if at == col_start { return None; }
     column_number(&text[col_start..at])?;
-    let abs_row = bytes.get(at) == Some(&b'$');
-    if abs_row { at += 1; }
+    read_row(text, at)
+}
+
+fn read_row(text: &str, start: usize) -> Option<RowRef> {
+    let bytes = text.as_bytes();
+    let mut at = start;
+    let absolute = bytes.get(at) == Some(&b'$');
+    if absolute { at += 1; }
     let row_start = at;
     while bytes.get(at).is_some_and(u8::is_ascii_digit) { at += 1; }
     if at == row_start { return None; }
     let row = text[row_start..at].parse::<u32>().ok()?;
     if row == 0 || row > 1_048_576 { return None; }
-    Some((at, row_start, row, abs_row))
+    Some(RowRef { end: at, row_start, row, absolute })
 }
 
 fn column_number(text: &str) -> Option<u32> {
@@ -113,7 +179,7 @@ pub(super) fn update_sheet(xml: &str, row_map: &[(u32, u32)]) -> Result<String, 
 pub(super) fn update_sheet_with_rows(xml: &str, row_map: &[(u32, u32)], original_rows: &[u32]) -> Result<String, FillError> {
     let tokens = tokenize(xml).map_err(reference_error)?;
     let mut emitted_to_source = std::collections::BTreeMap::new();
-    let mut source_to_emitted: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
+    let mut source_to_emitted = RowMap::new();
     for &(source, emitted) in row_map {
         if emitted == 0 || emitted > 1_048_576 || source == 0 || source > 1_048_576 {
             return Err(reference_error("A worksheet row reference is outside Excel's limits"));
@@ -129,13 +195,30 @@ pub(super) fn update_sheet_with_rows(xml: &str, row_map: &[(u32, u32)], original
     let mut offset = 0usize;
     let mut cell_row = None;
     let mut formula_start: Option<(usize, u32)> = None;
+    let mut removing: Option<(usize, &str)> = None;
     for token in tokens {
+        let length = match token { Token::Element { raw, .. } => raw.len(), Token::Text(text) => text.len() };
+        if let Some((start, removed)) = removing {
+            if let Token::Element { kind: ElementKind::Close, name, .. } = token && name == removed {
+                replacements.push((start, offset + length, String::new()));
+                removing = None;
+            }
+            offset += length;
+            continue;
+        }
         match token {
             Token::Text(_) => {}
             Token::Element { kind, name, raw } => {
                 if kind != ElementKind::Close {
-                    if let Some(changed) = rewrite_geometry(raw, name, &source_to_emitted, original_rows)? {
-                        replacements.push((offset, offset + raw.len(), changed));
+                    match rewrite_geometry(raw, name, &source_to_emitted, original_rows)? {
+                        Geometry::Keep => {}
+                        Geometry::Replace(changed) => replacements.push((offset, offset + length, changed)),
+                        Geometry::Remove if kind == ElementKind::Open => {
+                            removing = Some((offset, name));
+                            offset += length;
+                            continue;
+                        }
+                        Geometry::Remove => replacements.push((offset, offset + length, String::new())),
                     }
                 }
                 if kind == ElementKind::Open {
@@ -159,7 +242,7 @@ pub(super) fn update_sheet_with_rows(xml: &str, row_map: &[(u32, u32)], original
                             let end = offset;
                             let formula = &xml[start..end];
                             let formula = crate::xml::unescape(formula);
-                            let replaced = update_formula_with_rows(&formula, source, target, row_map, original_rows)?;
+                            let replaced = update_formula_with_rows(&formula, source, target, &source_to_emitted, original_rows)?;
                             let replaced = escape_formula(&replaced);
                             if replaced != xml[start..end] {
                                 replacements.push((start, end, replaced));
@@ -177,7 +260,7 @@ pub(super) fn update_sheet_with_rows(xml: &str, row_map: &[(u32, u32)], original
                 }
             }
         }
-        offset += match token { Token::Element { raw, .. } => raw.len(), Token::Text(text) => text.len() };
+        offset += length;
     }
     replacements.sort_by_key(|(start, ..)| *start);
     let mut out = String::with_capacity(xml.len());
@@ -189,7 +272,7 @@ pub(super) fn update_sheet_with_rows(xml: &str, row_map: &[(u32, u32)], original
         at = end;
     }
     out.push_str(&xml[at..]);
-    update_merge_count(&out)
+    update_counts(&out)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -200,7 +283,7 @@ fn map_row(
     absolute: bool,
     range_end: bool,
     copy_delta: i64,
-    mapping: &std::collections::BTreeMap<u32, Vec<u32>>,
+    mapping: &RowMap,
     original_rows: &[u32],
 ) -> Option<u32> {
     if !absolute && row == formula_source { return Some(formula_target); }
@@ -227,7 +310,16 @@ fn escape_formula(formula: &str) -> String {
     out
 }
 
-fn update_merge_count(xml: &str) -> Result<String, FillError> {
+/// Sets `count` on collections whose items a loop copied or removed.
+fn update_counts(xml: &str) -> Result<String, FillError> {
+    let mut xml = xml.to_string();
+    for (container, item) in [("mergeCells", "mergeCell"), ("dataValidations", "dataValidation")] {
+        xml = update_count(&xml, container, item)?;
+    }
+    Ok(xml)
+}
+
+fn update_count(xml: &str, container_name: &str, item: &str) -> Result<String, FillError> {
     let tokens = tokenize(xml).map_err(reference_error)?;
     let mut count = 0usize;
     let mut container = None;
@@ -235,8 +327,8 @@ fn update_merge_count(xml: &str) -> Result<String, FillError> {
     for token in &tokens {
         if let Token::Element { kind, name, raw } = token {
             match kind {
-                ElementKind::SelfClosing | ElementKind::Open if local(name) == "mergeCell" => count += 1,
-                ElementKind::SelfClosing | ElementKind::Open if local(name) == "mergeCells" => container = Some((offset, offset + raw.len(), *raw)),
+                ElementKind::SelfClosing | ElementKind::Open if local(name) == item => count += 1,
+                ElementKind::SelfClosing | ElementKind::Open if local(name) == container_name => container = Some((offset, offset + raw.len(), *raw)),
                 _ => {}
             }
         }
@@ -247,65 +339,112 @@ fn update_merge_count(xml: &str) -> Result<String, FillError> {
     Ok(format!("{}{}{}", &xml[..start], updated, &xml[end..]))
 }
 
-#[allow(clippy::collapsible_if)]
-fn rewrite_geometry(raw: &str, element: &str, map: &std::collections::BTreeMap<u32, Vec<u32>>, original_rows: &[u32]) -> Result<Option<String>, FillError> {
-    let kind = local(element);
-    if kind == "dimension" && map.is_empty() { return Ok(Some(String::new())); }
-    if kind == "dimension" {
-        let Some((start, end, value)) = attribute_range(raw, "ref") else { return Ok(None) };
-        let Some((left, right)) = value.split_once(':') else { return Ok(None) };
-        let Some((left_col, first)) = split_cell(left) else { return Ok(None) };
-        let Some((right_col, last)) = split_cell(right) else { return Ok(None) };
-        let (low, high) = (first.min(last), first.max(last));
-        let first = map_row(first, u32::MAX, u32::MAX, false, false, 0, map, original_rows)
-            .or_else(|| map.range(low..=high).find_map(|(_, rows)| rows.first().copied()))
-            .ok_or_else(|| reference_error("Worksheet dimension has no surviving rows"))?;
-        let last = map_row(last, u32::MAX, u32::MAX, false, true, 0, map, original_rows)
-            .or_else(|| map.range(low..=high).next_back().and_then(|(_, rows)| rows.last().copied()))
-            .ok_or_else(|| reference_error("Worksheet dimension has no surviving rows"))?;
-        let updated = format!("{left_col}{first}:{right_col}{last}");
-        if updated == value { return Ok(None); }
-        let mut changed = raw.to_string();
-        changed.replace_range(start..end, &updated);
-        return Ok(Some(changed));
+enum Geometry {
+    Keep,
+    Replace(String),
+    /// Drop the whole element, children included.
+    Remove,
+}
+
+fn rewrite_geometry(raw: &str, element: &str, map: &RowMap, original_rows: &[u32]) -> Result<Geometry, FillError> {
+    match local(element) {
+        "dimension" => rewrite_dimension(raw, map, original_rows),
+        "mergeCell" => rewrite_merge(raw, map, original_rows),
+        "selection" => rewrite_selection(raw, map, original_rows),
+        "conditionalFormatting" | "dataValidation" => {
+            let Some((_, _, value)) = attribute_range(raw, "sqref") else { return Ok(Geometry::Keep) };
+            let Some(next) = remap_reference_list(value, map, original_rows)? else { return Ok(Geometry::Keep) };
+            if next.is_empty() { return Ok(Geometry::Remove); }
+            Ok(Geometry::Replace(with_value(raw, "sqref", &next)))
+        }
+        "autoFilter" | "hyperlink" => {
+            let Some((_, _, value)) = attribute_range(raw, "ref") else { return Ok(Geometry::Keep) };
+            let Some(next) = remap_reference_list(value, map, original_rows)? else { return Ok(Geometry::Keep) };
+            if next.is_empty() { return Err(reference_error("Spreadsheet geometry refers only to rows removed by a loop")); }
+            Ok(Geometry::Replace(with_value(raw, "ref", &next)))
+        }
+        _ => Ok(Geometry::Keep),
     }
-    if kind == "mergeCell" {
-        if let Some((_, _, value)) = attribute_range(raw, "ref") {
-            let Some((left, right)) = value.split_once(':') else { return Ok(None) };
-            let Some((left_col, first)) = split_cell(left) else { return Ok(None) };
-            let Some((right_col, last)) = split_cell(right) else { return Ok(None) };
-            if first == last && let Some(rows) = map.get(&first).filter(|rows| rows.len() > 1) {
-                let mut copies = Vec::with_capacity(rows.len());
-                for row in rows {
-                    let mut copy = raw.to_string();
-                    let Some((value_start, value_end, _)) = attribute_range(&copy, "ref") else { continue };
-                    copy.replace_range(value_start..value_end, &format!("{left_col}{row}:{right_col}{row}"));
-                    copies.push(copy);
-                }
-                return Ok(Some(copies.concat()));
-            }
-            if first == last && original_rows.binary_search(&first).is_ok() && !map.contains_key(&first) { return Ok(Some(String::new())); }
-            if first != last && map.range(first.min(last)..=first.max(last)).any(|(_, rows)| rows.len() > 1) {
-                return Err(reference_error("A merged range crossing a repeated row cannot be updated safely"));
-            }
+}
+
+fn rewrite_dimension(raw: &str, map: &RowMap, original_rows: &[u32]) -> Result<Geometry, FillError> {
+    if map.is_empty() { return Ok(Geometry::Remove); }
+    let Some((_, _, value)) = attribute_range(raw, "ref") else { return Ok(Geometry::Keep) };
+    let Some((left, right)) = value.split_once(':') else { return Ok(Geometry::Keep) };
+    let Some((left_col, first)) = split_cell(left) else { return Ok(Geometry::Keep) };
+    let Some((right_col, last)) = split_cell(right) else { return Ok(Geometry::Keep) };
+    let (low, high) = (first.min(last), first.max(last));
+    let first = map_row(first, u32::MAX, u32::MAX, false, false, 0, map, original_rows)
+        .or_else(|| map.range(low..=high).find_map(|(_, rows)| rows.first().copied()))
+        .ok_or_else(|| reference_error("Worksheet dimension has no surviving rows"))?;
+    let last = map_row(last, u32::MAX, u32::MAX, false, true, 0, map, original_rows)
+        .or_else(|| map.range(low..=high).next_back().and_then(|(_, rows)| rows.last().copied()))
+        .ok_or_else(|| reference_error("Worksheet dimension has no surviving rows"))?;
+    let updated = format!("{left_col}{first}:{right_col}{last}");
+    if updated == value { return Ok(Geometry::Keep); }
+    Ok(Geometry::Replace(with_value(raw, "ref", &updated)))
+}
+
+fn rewrite_merge(raw: &str, map: &RowMap, original_rows: &[u32]) -> Result<Geometry, FillError> {
+    let Some((_, _, value)) = attribute_range(raw, "ref") else { return Ok(Geometry::Keep) };
+    let Some((left, right)) = value.split_once(':') else { return Ok(Geometry::Keep) };
+    let Some((left_col, first)) = split_cell(left) else { return Ok(Geometry::Keep) };
+    let Some((right_col, last)) = split_cell(right) else { return Ok(Geometry::Keep) };
+    if first == last && let Some(rows) = map.get(&first).filter(|rows| rows.len() > 1) {
+        let copies = rows.iter().map(|row| with_value(raw, "ref", &format!("{left_col}{row}:{right_col}{row}")));
+        return Ok(Geometry::Replace(copies.collect()));
+    }
+    if first != last && map.range(first.min(last)..=first.max(last)).any(|(_, rows)| rows.len() > 1) {
+        return Err(reference_error("A merged range crossing a repeated row cannot be updated safely"));
+    }
+    let Some(next) = remap_reference_list(value, map, original_rows)? else { return Ok(Geometry::Keep) };
+    // A merge left with one cell or none merges nothing.
+    match next.split_once(':') {
+        Some((left, right)) if left != right => Ok(Geometry::Replace(with_value(raw, "ref", &next))),
+        _ => Ok(Geometry::Remove),
+    }
+}
+
+/// `activeCell` is one cell, so a repeated row keeps it on the first copy. When its row or
+/// every `sqref` range is removed, the selection falls back to a surviving cell, else A1.
+fn rewrite_selection(raw: &str, map: &RowMap, original_rows: &[u32]) -> Result<Geometry, FillError> {
+    let sqref = attribute_range(raw, "sqref").map(|(_, _, value)| value);
+    let active = attribute_range(raw, "activeCell").map(|(_, _, value)| value);
+    let mut next_sqref = match sqref {
+        Some(value) => remap_reference_list(value, map, original_rows)?,
+        None => None,
+    };
+    let mut next_active = None;
+    let mut active_removed = false;
+    if let Some((col, row)) = active.and_then(split_cell) {
+        match map.get(&row) {
+            Some(rows) if rows[0] != row => next_active = Some(format!("{col}{}", rows[0])),
+            Some(_) => {}
+            None => active_removed = original_rows.binary_search(&row).is_ok(),
         }
     }
-    let names: &[&str] = match kind {
-        "mergeCell" | "autoFilter" | "conditionalFormatting" | "dataValidation" => &["ref", "sqref"],
-        "hyperlink" => &["ref"],
-        "selection" => &["activeCell", "sqref"],
-        _ => return Ok(None),
-    };
-    let mut changed = raw.to_string();
-    let mut modified = false;
-    for name in names {
-        let Some((_, _, value)) = attribute_range(raw, name) else { continue };
-        let Some(next) = remap_reference_list(value, map, original_rows)? else { continue };
-        let Some((start, end, _)) = attribute_range(&changed, name) else { continue };
-        changed.replace_range(start..end, &next);
-        modified = true;
+    let sqref_now = next_sqref.as_deref().or(sqref).unwrap_or_default();
+    if active_removed {
+        let first = sqref_now.split_ascii_whitespace().next().and_then(|token| token.split(':').next());
+        next_active = Some(first.unwrap_or("A1").to_string());
     }
-    Ok(modified.then_some(changed))
+    if sqref.is_some() && sqref_now.is_empty() {
+        let active_now = next_active.as_deref().or(active).unwrap_or("A1");
+        next_sqref = Some(active_now.to_string());
+    }
+    if next_sqref.is_none() && next_active.is_none() { return Ok(Geometry::Keep); }
+    let mut changed = raw.to_string();
+    if let Some(value) = &next_active { changed = with_value(&changed, "activeCell", value); }
+    if let Some(value) = &next_sqref { changed = with_value(&changed, "sqref", value); }
+    Ok(Geometry::Replace(changed))
+}
+
+/// Replaces an existing attribute value in an opening tag.
+fn with_value(raw: &str, name: &str, value: &str) -> String {
+    let Some((start, end, _)) = attribute_range(raw, name) else { return raw.to_string() };
+    let mut changed = raw.to_string();
+    changed.replace_range(start..end, value);
+    changed
 }
 
 fn attribute_range<'a>(raw: &'a str, name: &str) -> Option<(usize, usize, &'a str)> {
@@ -330,7 +469,7 @@ fn attribute_range<'a>(raw: &'a str, name: &str) -> Option<(usize, usize, &'a st
     None
 }
 
-fn remap_reference_list(value: &str, map: &std::collections::BTreeMap<u32, Vec<u32>>, original_rows: &[u32]) -> Result<Option<String>, FillError> {
+fn remap_reference_list(value: &str, map: &RowMap, original_rows: &[u32]) -> Result<Option<String>, FillError> {
     let mut output = Vec::new();
     let mut changed = false;
     for token in value.split_ascii_whitespace() {
@@ -350,7 +489,10 @@ fn remap_reference_list(value: &str, map: &std::collections::BTreeMap<u32, Vec<u
         let high = first.max(last);
         let rows: Vec<u32> = map.range(low..=high).flat_map(|(_, rows)| rows.iter().copied()).collect();
         if rows.is_empty() {
-            if original_rows.iter().any(|row| (low..=high).contains(row)) { return Err(reference_error("Spreadsheet geometry refers only to rows removed by a loop")); }
+            // A range made only of removed rows is dropped; one that also covers blank rows is not safe to guess.
+            let removed = original_rows.iter().filter(|row| (low..=high).contains(*row)).count();
+            if removed as u64 == u64::from(high - low) + 1 { changed = true; continue; }
+            if removed > 0 { return Err(reference_error("Spreadsheet geometry refers only to rows removed by a loop")); }
             output.push(token.to_string()); continue;
         }
         if rows.iter().any(|row| *row < low || *row > high) || rows.len() != (high - low + 1) as usize || rows.iter().enumerate().any(|(index, row)| index > 0 && rows[index - 1] + 1 != *row) {
@@ -464,7 +606,7 @@ mod tests {
     #[test]
     fn deleted_rows_become_ref_errors_and_geometry_is_trimmed() {
         let map = [(1, 1), (3, 2)];
-        assert_eq!(update_formula_with_rows("A2+A3", 1, 1, &map, &[1, 2, 3]).unwrap(), "#REF!+A2");
+        assert_eq!(update_formula_with_rows("A2+A3", 1, 1, &row_mapping(&map), &[1, 2, 3]).unwrap(), "#REF!+A2");
         let xml = r#"<worksheet><dimension ref="A1:B3"/><sheetData><row r="1"/><row r="2"/></sheetData><mergeCells count="0"><mergeCell ref="A2:B2"/></mergeCells></worksheet>"#;
         let result = update_sheet_with_rows(xml, &map, &[1, 2, 3]).unwrap();
         assert!(result.contains(r#"<dimension ref="A1:B2"/>"#));

@@ -69,3 +69,12 @@ fn literal_excel_escape_sequences_and_xml_characters_round_trip() {
     assert!(sheet.contains("xml:space=\"preserve\""),"{sheet}");
     assert!(sheet.contains("&amp; &lt; &gt;"));
 }
+
+#[test]
+fn phonetic_runs_stay_out_of_inline_string_values() {
+    let rows=r#"<row r="1"><c r="A1" t="inlineStr"><is><t>{v}</t><rPh sb="0" eb="3"><t>FURIGANA</t></rPh></is></c></row>"#;
+    let template=WorkbookTemplate::parse(package(rows),&FillOptions::default()).unwrap();
+    let sheet=xml(&template.render(&json!({"v":"Name"})).unwrap(),"xl/worksheets/sheet1.xml").to_string();
+    assert!(sheet.contains("<t>Name</t>"),"{sheet}");
+    assert!(!sheet.contains("FURIGANA"),"{sheet}");
+}

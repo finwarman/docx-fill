@@ -49,6 +49,8 @@ pub struct WorkbookTemplate {
     sheets: Vec<(WorkbookSheet, sheet::Sheet)>,
     row_numbers: Vec<Vec<u32>>,
     calc_chains: BTreeSet<String>,
+    /// Chart sheets, drawings or pivot caches that may read worksheet rows.
+    row_dependents: bool,
 }
 
 #[derive(Debug)]
@@ -112,6 +114,8 @@ impl WorkbookTemplate {
         let mut sheet_paths = BTreeSet::new();
         let mut errors = Vec::new();
         let wb_elements = elements(workbook_xml)?;
+        let mut row_dependents = wb_elements.iter().any(|e| local_name(&e.name) == "pivotCaches")
+            || rels.iter().any(|rel| rel.kind == format!("{OFFICE_NS}/pivotCacheDefinition"));
         let sheet_containers: Vec<_> = direct_children(&wb_elements, &wb_elements[0]).into_iter().filter(|e| e.name == format!("{}sheets", prefix(&wb_elements[0].name))).collect();
         let [sheet_container] = sheet_containers.as_slice() else { return Err(error("Expected one workbook sheets collection")); };
         for item in direct_children(&wb_elements, sheet_container).into_iter().filter(|e| e.name == format!("{}sheet", prefix(&wb_elements[0].name))) {
@@ -124,12 +128,13 @@ impl WorkbookTemplate {
             if rel.external { return Err(error("Worksheets must be internal")); }
             let path = resolve(&workbook, &rel.target)?;
             if !sheet_paths.insert(path.clone()) { return Err(error("Multiple sheets reference the same part")); }
-            if rel.kind == format!("{OFFICE_NS}/chartsheet") { read_xml(&sources, &path)?; continue; }
+            if rel.kind == format!("{OFFICE_NS}/chartsheet") { read_xml(&sources, &path)?; row_dependents = true; continue; }
             if rel.kind != format!("{OFFICE_NS}/worksheet") { return Err(error(format!("Unsupported sheet relationship for {name}"))); }
             if overrides.get(&format!("/{path}")).map(String::as_str) != Some("application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml") { return Err(error(format!("Missing worksheet content type: {path}"))); }
             let xml = read_xml(&sources, &path)?;
             check_root(xml, "worksheet", SHEET_NS)?;
             let sheet_elements = elements(xml)?;
+            row_dependents |= sheet_elements.iter().any(|e| local_name(&e.name) == "drawing");
             let row_prefix = prefix(&sheet_elements[0].name);
             let rows = direct_children(&sheet_elements, &sheet_elements[0]).into_iter().find(|e| e.name == format!("{row_prefix}sheetData"))
                 .map(|data| direct_children(&sheet_elements, data).into_iter().filter(|e| e.name == format!("{row_prefix}row"))
@@ -149,7 +154,7 @@ impl WorkbookTemplate {
                 calc_chains.insert(path);
             }
         }
-        Ok(Self { parts, workbook, relationships: relationships_path, shared_strings, sheets, row_numbers, calc_chains })
+        Ok(Self { parts, workbook, relationships: relationships_path, shared_strings, sheets, row_numbers, calc_chains, row_dependents })
     }
 
     /// Worksheet names and package paths in workbook order. Chart sheets are preserved separately.
@@ -187,6 +192,9 @@ impl WorkbookTemplate {
         if !errors.is_empty() { return Err(FillError::many(errors)); }
         if changed.is_empty() { return Ok(self.parts.iter().map(|(name, bytes)| (name.clone(), Cow::Borrowed(bytes.as_slice()))).collect()); }
         if structural {
+            if self.row_dependents {
+                return Err(error("Row loops in workbooks with chart sheets, drawings or pivot caches are not supported yet").with_id(FillErrorId::SpreadsheetReference).in_part(&self.workbook));
+            }
             let xml = std::str::from_utf8(self.part(&self.workbook)).expect("validated workbook XML");
             if elements(xml)?.iter().any(|e| local_name(&e.name) == "definedName") {
                 return Err(error("Row loops in workbooks with defined names require named-range support").with_id(FillErrorId::SpreadsheetReference).in_part(&self.workbook));
@@ -195,7 +203,7 @@ impl WorkbookTemplate {
                 let xml = changed.get(&info.part).map(Vec::as_slice).unwrap_or_else(|| self.part(&info.part));
                 let xml = std::str::from_utf8(xml).expect("validated worksheet XML");
                 for element in elements(xml)?.into_iter().filter(|e| local_name(&e.name) == "f") {
-                    if xml[element.open_end..element.close_start].contains('!') {
+                    if references::has_sheet_reference(&unescape(&xml[element.open_end..element.close_start])) {
                         return Err(error("Cross-sheet formula references during row expansion are not supported yet").with_id(FillErrorId::SpreadsheetReference).in_part(&info.part));
                     }
                 }
@@ -366,23 +374,33 @@ fn remove_attribute(raw: &str, name: &str) -> String {
 
 fn clear_formula_caches(original: &str, rendered: &str, row_map: &[(u32, u32)]) -> Result<String, FillError> {
     let mut formula_cells = BTreeSet::new();
-    for cell in elements(original)?.into_iter().filter(|e| local_name(&e.name) == "c") {
-        let inner = &original[cell.open_end..cell.close_start];
-        if elements(inner)?.iter().any(|e| local_name(&e.name) == "f")
-            && let Some(reference) = read_attribute(&original[cell.start..cell.open_end], "r") { formula_cells.insert(reference.to_string()); }
+    let mut cell = None;
+    for item in elements(original)? {
+        if local_name(&item.name) == "c" { cell = Some(item); continue; }
+        let Some(current) = &cell else { continue };
+        if local_name(&item.name) != "f" || item.start >= current.end { continue; }
+        if let Some(reference) = read_attribute(&original[current.start..current.open_end], "r") { formula_cells.insert(reference.to_string()); }
+        cell = None;
     }
     let sources: BTreeMap<_, _> = row_map.iter().map(|(old, new)| (*new, *old)).collect();
-    let mut out = rendered.to_string();
-    for cell in elements(rendered)?.into_iter().filter(|e| local_name(&e.name) == "c").rev() {
-        let Some(reference) = read_attribute(&rendered[cell.start..cell.open_end], "r") else { continue };
+    let mut removals = Vec::new();
+    let mut clearing_until = 0;
+    for item in elements(rendered)? {
+        if local_name(&item.name) == "v" && item.start < clearing_until { removals.push((item.start, item.end)); continue; }
+        if local_name(&item.name) != "c" { continue; }
+        clearing_until = 0;
+        let Some(reference) = read_attribute(&rendered[item.start..item.open_end], "r") else { continue };
         let digit = reference.find(|c: char| c.is_ascii_digit()).unwrap_or(reference.len());
         let row = reference[digit..].parse::<u32>().unwrap_or(0);
         let source = sources.get(&row).copied().unwrap_or(row);
-        if formula_cells.contains(&format!("{}{source}", &reference[..digit])) {
-            let inner = &rendered[cell.open_end..cell.close_start];
-            let updated = remove_elements(inner, |name, _| local_name(name) == "v")?;
-            out.replace_range(cell.open_end..cell.close_start, &updated);
-        }
+        if formula_cells.contains(&format!("{}{source}", &reference[..digit])) { clearing_until = item.end; }
     }
+    let mut out = String::with_capacity(rendered.len());
+    let mut at = 0;
+    for (start, end) in removals {
+        out.push_str(&rendered[at..start]);
+        at = end;
+    }
+    out.push_str(&rendered[at..]);
     Ok(out)
 }
