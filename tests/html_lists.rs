@@ -42,6 +42,26 @@ fn writes_native_bullet_lists() {
 }
 
 #[test]
+fn matches_tag_marker_style() {
+    let run = "<w:rPr><w:rFonts w:ascii=\"Arial\" w:hAnsi=\"Arial\"/><w:color w:val=\"224466\"/><w:sz w:val=\"32\"/></w:rPr>";
+    let tag = TAG.replace("<w:r>", &format!("<w:r>{run}"));
+    let parts = [("word/document.xml".into(), document(&tag).into_bytes())];
+    let template = PackageTemplate::parse(parts, &FillOptions::default()).unwrap();
+    let rendered = template.render(&json!({"html":"<ul><li>one<ol><li><b>nested</b></li></ol></li></ul>"}));
+    let body = String::from_utf8_lossy(&rendered.iter().find(|(name, _)| name == "word/document.xml").unwrap().1);
+    let paragraphs: Vec<_> = body.split("<w:p>").skip(1).collect();
+
+    assert_eq!(paragraphs.len(), 2);
+    for paragraph in paragraphs {
+        let props = paragraph.split("</w:pPr>").next().unwrap();
+        assert!(props.contains("<w:numPr>") && props.contains(run));
+        assert!(!props.contains("<w:b"));
+        assert!(props.find("<w:ind").unwrap() < props.find("<w:rPr>").unwrap());
+    }
+    assert!(body.contains("<w:b/>") && body.contains("nested"));
+}
+
+#[test]
 fn preserves_nested_restarts() {
     let parts = render("<ol start=\"3\"><li>A<ul><li>B</li></ul></li><li value=\"10\">C</li><li>D</li></ol>", &[]);
     let body = part(&parts, "word/document.xml");

@@ -436,7 +436,7 @@ fn write_block(out: &mut String, open: &str, paragraph_props: &str, bookmarks: &
     let Some(rows) = &block.table else {
         let number = block.list.as_ref().and_then(|item| writer.lists.id_for(item));
         let after = if block.layout.page_after { "<w:r><w:br w:type=\"page\"/></w:r>" } else { "" };
-        out.push_str(&format!("{open}{}{bookmarks}{}{after}</w:p>", write_paragraph_props(paragraph_props, block, number), write_runs(block, writer.run_props, writer.links, number)));
+        out.push_str(&format!("{open}{}{bookmarks}{}{after}</w:p>", write_paragraph_props(paragraph_props, block, number, writer.run_props), write_runs(block, writer.run_props, writer.links, number)));
         return;
     };
     let rows = place_cells(rows);
@@ -1599,7 +1599,7 @@ fn read_attributes(text: &str, attributes: &mut Vec<(String, String)>) -> Option
     }
 }
 
-fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u32>) -> String {
+fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u32>, run_props: &str) -> String {
     let mut props = match &block.list {
         Some(item) => {
             let level = if number.is_some() { item.level.min(MAX_LIST_LEVEL) } else { item.level };
@@ -1607,7 +1607,11 @@ fn write_paragraph_props(paragraph_props: &str, block: &Block, number: Option<u3
             let inner = paragraph_props.strip_prefix("<w:pPr>").and_then(|props| props.strip_suffix("</w:pPr>")).unwrap_or("");
             let inner = remove_first_element(inner, "<w:ind");
             let numbering = number.map(|id| format!("<w:numPr><w:ilvl w:val=\"{level}\"/><w:numId w:val=\"{id}\"/></w:numPr>")).unwrap_or_default();
-            let inner = set_child(&set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
+            let mut inner = set_child(&set_child(&inner, "w:numPr", &numbering, PARAGRAPH_ORDER), "w:ind", &indent, PARAGRAPH_ORDER);
+            // Native markers use the paragraph mark's formatting, separate from the text runs.
+            if number.is_some() && !run_props.is_empty() {
+                inner = set_child(&inner, "w:rPr", run_props, PARAGRAPH_ORDER);
+            }
             format!("<w:pPr>{inner}</w:pPr>")
         }
         None => paragraph_props.to_string(),
