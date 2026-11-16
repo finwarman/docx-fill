@@ -553,8 +553,9 @@ fn split_piece(xml: &str, piece: &Piece, at: usize, mark: &str, opens: &mut BTre
 /// The text between two positions, paragraphs joined by `\n`.
 fn read_between(body: &BodyText, start: TextPosition, end: TextPosition) -> String {
     let mut text = String::new();
-    for index in start.paragraph..=end.paragraph.min(body.paragraphs.len().saturating_sub(1)) {
-        let chars = body.paragraphs[index].text.chars();
+    let last = end.paragraph.min(body.paragraphs.len().saturating_sub(1));
+    for (index, paragraph) in body.paragraphs.iter().enumerate().take(last + 1).skip(start.paragraph) {
+        let chars = paragraph.text.chars();
         let from = if index == start.paragraph { start.offset } else { 0 };
         let taken: String = if index == end.paragraph { chars.take(end.offset).skip(from).collect() } else { chars.skip(from).collect() };
         if index > start.paragraph {

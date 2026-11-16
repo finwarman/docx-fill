@@ -58,6 +58,8 @@ const TYPES_NS: &str = "http://schemas.openxmlformats.org/package/2006/content-t
 const MAX_PARTS: usize = 10_000;
 const MAX_BYTES: usize = 256 * 1024 * 1024;
 const MAX_XML: usize = 16 * 1024 * 1024;
+const SHEETS: &str = "sheets";
+const SHEET: &str = "sheet";
 
 pub(super) fn error(message: impl Into<String>) -> FillError {
     FillError::new(message).with_id(FillErrorId::SpreadsheetPackage)
@@ -833,7 +835,26 @@ impl WorkbookTemplate {
                 maps_by_name.insert(name.clone(), map.clone());
             }
         }
-        let formula_index = references::QualifiedFormulaIndex::new(&maps_by_name);
+        let workbook_xml = std::str::from_utf8(&package[&self.workbook])
+            .map_err(|_| error("Invalid rendered workbook XML"))?;
+        let nodes = elements(workbook_xml)?;
+        let sheets = direct_children(&nodes, &nodes[0]).into_iter()
+            .find(|node| local_name(&node.name) == SHEETS)
+            .ok_or_else(|| error("Missing rendered workbook sheets"))?;
+        let mut positions = BTreeMap::new();
+        for (position, sheet) in direct_children(&nodes, sheets).into_iter()
+            .filter(|node| local_name(&node.name) == SHEET).enumerate()
+        {
+            let name = unescape(required(&workbook_xml[sheet.start..sheet.open_end], "name")?);
+            positions.insert(name.to_lowercase(), position);
+        }
+        // Original names remain in formulas until the final rename pass.
+        for (original, rendered) in &rendered_names {
+            if let Some(&position) = positions.get(&rendered.to_lowercase()) {
+                positions.entry(original.to_lowercase()).or_insert(position);
+            }
+        }
+        let formula_index = references::QualifiedFormulaIndex::new(&maps_by_name, positions);
         let formula_parts = package
             .keys()
             .filter(|part| part.ends_with(".xml") && *part != &self.workbook)
@@ -1590,6 +1611,11 @@ fn rename_sheet_references(formula: &str, names: &BTreeMap<String, String>) -> S
                     .chars()
                     .next_back()
                     .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+            if before_ok && let Some((length, replacement)) = rename_3d_prefix(&formula[at..], names) {
+                output.push_str(&replacement);
+                at += length;
+                continue;
+            }
             let mut replacement = None;
             for (old, new) in &ordered {
                 let quoted = format!("'{}'!", old.replace('\'', "''"));
@@ -1619,6 +1645,33 @@ fn rename_sheet_references(formula: &str, names: &BTreeMap<String, String>) -> S
         at += ch.len_utf8();
     }
     output
+}
+
+fn rename_3d_prefix(formula: &str, names: &BTreeMap<String, String>) -> Option<(usize, String)> {
+    let (end, qualifier) = if let Some(rest) = formula.strip_prefix('\'') {
+        let mut at = 0;
+        loop {
+            at += rest[at..].find('\'')?;
+            if rest[at..].starts_with("''") { at += 2; continue; }
+            if !rest[at + 1..].starts_with('!') { return None; }
+            break (at + 3, rest[..at].replace("''", "'"));
+        }
+    } else {
+        let start = if formula.starts_with('[') { formula.find(']')? + 1 } else { 0 };
+        let end = start + formula[start..].find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':')))?;
+        if !formula[end..].starts_with('!') { return None; }
+        (end + 1, formula[..end].to_string())
+    };
+    let (first, last) = qualifier.split_once(':')?;
+    if qualifier.contains('[') { return Some((end, formula[..end].to_string())); }
+    let renamed = |name: &str| {
+        let folded = name.to_lowercase();
+        names.iter().find(|(old, _)| old.to_lowercase() == folded).map(|(_, new)| new.as_str())
+    };
+    let new_first = renamed(first).unwrap_or(first);
+    let new_last = renamed(last).unwrap_or(last);
+    if first == new_first && last == new_last { return Some((end, formula[..end].to_string())); }
+    Some((end, format!("'{}:{}'!", new_first.replace('\'', "''"), new_last.replace('\'', "''"))))
 }
 
 fn add_workbook_sheet(

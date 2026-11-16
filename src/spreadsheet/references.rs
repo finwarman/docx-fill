@@ -26,6 +26,7 @@ type CellColumnMap = std::collections::BTreeMap<(u32, u32), Vec<u32>>;
 /// Reusable column indexes for formulas rewritten across many package parts.
 pub(super) struct QualifiedFormulaIndex {
     sheets: std::collections::BTreeMap<String, IndexedWorksheet>,
+    positions: std::collections::BTreeMap<String, usize>,
 }
 
 struct IndexedWorksheet {
@@ -35,7 +36,10 @@ struct IndexedWorksheet {
 }
 
 impl QualifiedFormulaIndex {
-    pub(super) fn new(maps: &std::collections::BTreeMap<String, WorksheetMap>) -> Self {
+    pub(super) fn new(
+        maps: &std::collections::BTreeMap<String, WorksheetMap>,
+        positions: std::collections::BTreeMap<String, usize>,
+    ) -> Self {
         let sheets = maps
             .iter()
             .map(|(name, map)| {
@@ -60,7 +64,7 @@ impl QualifiedFormulaIndex {
                 )
             })
             .collect();
-        Self { sheets }
+        Self { sheets, positions }
     }
 }
 
@@ -1060,7 +1064,8 @@ pub(super) fn transform_qualified_formula_refs(
     formula: &str,
     maps: &std::collections::BTreeMap<String, WorksheetMap>,
 ) -> Result<String, FillError> {
-    let index = QualifiedFormulaIndex::new(maps);
+    let positions = maps.keys().enumerate().map(|(position, name)| (name.to_lowercase(), position)).collect();
+    let index = QualifiedFormulaIndex::new(maps, positions);
     transform_qualified_formula_refs_with_index(formula, &index)
 }
 
@@ -1100,17 +1105,21 @@ pub(super) fn transform_qualified_formula_refs_with_index(
                     &map.original_rows,
                 )
             };
-            for sheet in &sheets {
-                if let Some(map) = index.sheets.get(&sheet.to_lowercase()) {
-                    transformed_forms.push(transform_for_map(map)?);
-                } else {
-                    transformed_forms.push(formula[at..end].to_string());
-                }
-            }
             if sheets.len() > 1 {
-                for map in index.sheets.values() {
+                let first = index.positions.get(&sheets[0].to_lowercase());
+                let last = index.positions.get(&sheets[1].to_lowercase());
+                let (Some(first), Some(last)) = (first, last) else {
+                    return Err(reference_error("A 3D formula reference names an unavailable worksheet"));
+                };
+                let span = (*first).min(*last)..=(*first).max(*last);
+                for (name, map) in &index.sheets {
+                    if !index.positions.get(name).is_some_and(|position| span.contains(position)) {
+                        continue;
+                    }
                     transformed_forms.push(transform_for_map(map)?);
                 }
+            } else if let Some(map) = index.sheets.get(&sheets[0].to_lowercase()) {
+                transformed_forms.push(transform_for_map(map)?);
             }
             if transformed_forms.windows(2).any(|pair| pair[0] != pair[1]) {
                 return Err(reference_error(
@@ -1149,6 +1158,7 @@ fn qualified_sheets_before(formula: &str, at: usize) -> Option<Vec<String>> {
                     continue;
                 }
                 let raw = formula.get(cursor + 1..end - 1)?;
+                if raw.contains('[') { return None; }
                 return Some(
                     raw.replace("''", "'")
                         .split(':')
