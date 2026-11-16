@@ -62,4 +62,28 @@ with tempfile.TemporaryDirectory(prefix="docx-fill-xlsx-") as temp:
     assert len(data_sheets) == 1 and data_sheets[0].sheet_state == "hidden"
     assert data_sheets[0]["B2"].value == 4
 
-print("OpenPyXL checks passed: typed values, dates, styles, hyperlinks, notes, HTML, chart caches and data sheets.")
+    book = Workbook()
+    book.active.title = "Jan"
+    book.create_sheet("Feb")
+    other = book.create_sheet("Other")
+    book["Jan"]["A1"] = "=SUM(Jan:Feb!A2)"
+    book["Jan"]["A2"] = 1
+    book["Feb"]["A2"] = 2
+    other.append(["{#items}{.}", "{/items}"])
+    other["A2"] = "Tail"
+    result = fill(folder, "3d-unrelated", book, {"items": [1, 2]})
+    assert result["Jan"]["A1"].value == "=SUM(Jan:Feb!A2)"
+    assert result["Other"]["A3"].value == "Tail"
+
+    book = Workbook()
+    book.active.title = "Zulu"
+    book.create_sheet("Alpha")
+    book.create_sheet("Beta")
+    for sheet in book:
+        sheet.append(["{#items}{.}", "{/items}"])
+        sheet["A2"] = "Tail"
+    book.create_sheet("Formula")["A1"] = "=SUM('Zulu:Beta'!A2)"
+    result = fill(folder, "3d-span", book, {"items": [1, 2]})
+    assert result["Formula"]["A1"].value == "=SUM('Zulu:Beta'!A3)"
+
+print("OpenPyXL checks passed: values, formatting, links, notes, HTML, charts and 3D references.")
