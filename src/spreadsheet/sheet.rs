@@ -586,8 +586,9 @@ impl Sheet {
                     }
                     let mut item_indexes = indexes.to_vec();
                     item_indexes.push(item_index);
-                    for source_index in block.start_cell..=block.end_cell {
-                        let source_column = row.columns[source_index];
+                    for (source_index, &source_column) in row.columns.iter().enumerate()
+                        .take(block.end_cell + 1).skip(block.start_cell)
+                    {
                         let offset = source_column - block.start_column;
                         let column = u32::try_from(
                             i64::from(block.start_column + offset)
