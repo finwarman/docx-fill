@@ -1158,7 +1158,7 @@ fn qualified_sheets_before(formula: &str, at: usize) -> Option<Vec<String>> {
                     continue;
                 }
                 let raw = formula.get(cursor + 1..end - 1)?;
-                if raw.starts_with('[') { return None; }
+                if raw.contains('[') { return None; }
                 return Some(
                     raw.replace("''", "'")
                         .split(':')

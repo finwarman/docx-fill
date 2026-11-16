@@ -110,11 +110,28 @@ fn resolves_copied_3d_endpoints() {
 
 #[test]
 fn leaves_external_3d_refs_alone() {
-    for formula in ["SUM([Book.xlsx]Jan:Feb!A2)", "SUM('[Book.xlsx]Jan:Feb'!A2)"] {
+    for formula in [
+        "SUM([Book.xlsx]Jan:Feb!A2)",
+        "SUM('[Book.xlsx]Jan:Feb'!A2)",
+        r#"SUM('C:\Reports\[Book.xlsx]Jan:Feb'!A2)"#,
+        "SUM('https://example.com/[Book.xlsx]Jan:Feb'!A2)",
+    ] {
         let template = workbook(&[("Other", loop_rows()), ("Formula", formula_row(formula))]);
         let output = template.render(&json!({"items":[1,2]})).unwrap();
         assert!(xml(&output, "xl/worksheets/sheet2.xml").contains(formula));
     }
+}
+
+#[test]
+fn renames_unicode_3d_names() {
+    let template = workbook(&[
+        ("Ö_{first}", formula_row("SUM('ö_{first}:End'!A2)")),
+        ("End", String::new()),
+        ("Other", loop_rows()),
+    ]);
+    let output = template.render(&json!({"first":"Jan's","items":[1,2]})).unwrap();
+    let formula = xml(&output, "xl/worksheets/sheet1.xml").replace("&apos;", "'");
+    assert!(formula.contains("SUM('Ö_Jan''s:End'!A2)"), "{formula}");
 }
 
 #[test]

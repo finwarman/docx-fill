@@ -1663,8 +1663,11 @@ fn rename_3d_prefix(formula: &str, names: &BTreeMap<String, String>) -> Option<(
         (end + 1, formula[..end].to_string())
     };
     let (first, last) = qualifier.split_once(':')?;
-    if qualifier.starts_with('[') { return Some((end, formula[..end].to_string())); }
-    let renamed = |name: &str| names.iter().find(|(old, _)| old.eq_ignore_ascii_case(name)).map(|(_, new)| new.as_str());
+    if qualifier.contains('[') { return Some((end, formula[..end].to_string())); }
+    let renamed = |name: &str| {
+        let folded = name.to_lowercase();
+        names.iter().find(|(old, _)| old.to_lowercase() == folded).map(|(_, new)| new.as_str())
+    };
     let new_first = renamed(first).unwrap_or(first);
     let new_last = renamed(last).unwrap_or(last);
     if first == new_first && last == new_last { return Some((end, formula[..end].to_string())); }
